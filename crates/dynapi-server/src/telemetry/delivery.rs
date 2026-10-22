@@ -113,7 +113,70 @@ pub struct DeliverySink {
     errors: bool,
     backend: Option<Arc<dyn Delivery>>,
 }
+/// A process-owned deadline also covers synchronous cleanup and runtime drops.
+pub struct ProcessDeadline(Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>);
+impl Drop for ProcessDeadline {
+    fn drop(&mut self) {
+        if let Some((cancel, thread)) = self.0.take() {
+            let _ = cancel.send(());
+            let _ = thread.join();
+        }
+    }
+}
+fn exit_at_deadline(code: i32) -> ! {
+    const MESSAGE: &[u8] =
+        b"Telemetry shutdown deadline exceeded; pending SDK events may be lost\n";
+    #[cfg(unix)]
+    unsafe {
+        // Best effort only: a full stderr pipe must not delay process exit.
+        let flags = libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL);
+        if flags >= 0
+            && libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
+        {
+            libc::write(libc::STDERR_FILENO, MESSAGE.as_ptr().cast(), MESSAGE.len());
+            libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags);
+        }
+        // Unlike exit(), _exit cannot wait for a C atexit hook or stdio lock.
+        libc::_exit(code);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = MESSAGE;
+        std::process::exit(code);
+    }
+}
 impl DeliverySink {
+    /// Arm this before dropping server tasks or capturing startup errors; keep
+    /// it until main-runtime cleanup and diagnostics have finished.
+    pub fn process_deadline(
+        &self,
+        started: tokio::time::Instant,
+        budget: Duration,
+        code: i32,
+    ) -> ProcessDeadline {
+        if self.backend.is_none() {
+            return ProcessDeadline(None);
+        }
+        let reserve = if self.errors {
+            SDK_SHUTDOWN_RESERVE
+        } else {
+            Duration::ZERO
+        };
+        let deadline = (started + budget + reserve).into_std();
+        let (cancel, cancelled) = std::sync::mpsc::channel();
+        let counters = self.counters.clone();
+        let thread = std::thread::spawn(move || {
+            if matches!(
+                cancelled
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                increment(&counters.failed);
+                exit_at_deadline(code);
+            }
+        });
+        ProcessDeadline(Some((cancel, thread)))
+    }
     pub fn from_env() -> Result<Self, &'static str> {
         Self::from_values(&std::env::vars().collect())
     }
@@ -618,6 +681,11 @@ mod tests {
         let sink = DeliverySink::from_values(&BTreeMap::new()).unwrap();
         assert!(sink.sender.lock().unwrap().is_none());
         assert!(sink.worker.lock().await.is_none());
+        assert!(
+            sink.process_deadline(tokio::time::Instant::now(), Duration::ZERO, 99)
+                .0
+                .is_none()
+        );
         for stream in [Stream::Analytics, Stream::Error] {
             sink.emit(stream, json!({}));
         }

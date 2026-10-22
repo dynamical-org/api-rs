@@ -6,6 +6,11 @@ fn main() {
         .enable_all()
         .build()
         .expect("Cannot initialize server runtime");
+    #[cfg(feature = "telemetry-delivery")]
+    let mut process_deadline = None;
+    #[cfg(feature = "telemetry-delivery")]
+    let result = runtime.block_on(run(&mut process_deadline));
+    #[cfg(not(feature = "telemetry-delivery"))]
     let result = runtime.block_on(run());
     // Blocking DNS and compute work cannot be cancelled by dropping their
     // futures. Process exit ends any such work after bounded async cleanup.
@@ -17,10 +22,16 @@ fn main() {
             1
         }
     };
+    #[cfg(feature = "telemetry-delivery")]
+    drop(process_deadline);
     std::process::exit(code);
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run(
+    #[cfg(feature = "telemetry-delivery")] process_deadline: &mut Option<
+        dynapi_server::telemetry::delivery::ProcessDeadline,
+    >,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut bind: IpAddr = "127.0.0.1".parse()?;
     let mut port: u16 = 8000;
     #[cfg(feature = "harness")]
@@ -93,10 +104,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Arc::downgrade(&app),
             app.config.heartbeat_seconds,
         );
+        #[cfg(feature = "telemetry-delivery")]
+        let mut stop = |failed: bool| {
+            let stopped = tokio::time::Instant::now();
+            if let Some(delivery) = &delivery {
+                *process_deadline = Some(delivery.process_deadline(stopped, dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT, i32::from(failed)));
+            }
+            stopped
+        };
+        #[cfg(not(feature = "telemetry-delivery"))]
+        let stop = |_: bool| tokio::time::Instant::now();
         let (served, _stopped) = tokio::select! {
-            result = transport::run(listener, app) => (result, tokio::time::Instant::now()),
-            _ = tokio::signal::ctrl_c() => (Ok(()), tokio::time::Instant::now()),
-            _ = terminate() => (Ok(()), tokio::time::Instant::now()),
+            result = transport::run(listener, app) => { let stopped = stop(result.is_err()); (result, stopped) },
+            _ = tokio::signal::ctrl_c() => (Ok(()), stop(false)),
+            _ = terminate() => (Ok(()), stop(false)),
         };
         #[cfg(feature = "telemetry-delivery")]
         {
@@ -110,6 +131,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "telemetry-delivery")]
     if let Some(delivery) = delivery {
         let shutdown_started = shutdown_started.unwrap_or_else(tokio::time::Instant::now);
+        if process_deadline.is_none() {
+            *process_deadline = Some(delivery.process_deadline(
+                shutdown_started,
+                dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT,
+                i32::from(result.is_err()),
+            ));
+        }
         if result.is_err() {
             use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
             delivery.emit(

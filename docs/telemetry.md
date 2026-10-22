@@ -42,7 +42,9 @@ diagnostic to stderr, shuts down the main runtime without waiting for blocking
 tasks, and exits. Process exit terminates remaining SDK/resolver threads; pending
 SDK events may be lost and their exact number is unavailable. Drain expiry drops
 remaining application records and counts them; SDK close may also discard pending
-envelopes. Queue
+envelopes. An independent process deadline also covers synchronous cleanup and
+runtime destruction; its final diagnostic uses a nonblocking stderr write on Unix
+before immediate process termination. Queue
 overflow, transport failures or drain expiry cannot change an HTTP response.
 
 Configured delivery adds `telemetryDropped` and `telemetryFailed` to stdout
