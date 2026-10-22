@@ -1,5 +1,7 @@
 #![cfg(feature = "native")]
 mod support;
+#[path = "../../../tests/support/time.rs"]
+mod time;
 use dynapi_catalog::native::{FetchContext, FetchError, Fetcher, RuntimeHooks, StacCatalog};
 use dynapi_catalog::refresh::CatalogConfig;
 use futures::future::BoxFuture;
@@ -8,6 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use support::FakeClock;
+use time::guard;
 use tokio::sync::Semaphore;
 const ROOT: &[u8] = br#"{"links":[{"rel":"child","href":"child.json"}]}"#;
 const CHILD:&[u8]=br#"{"id":"example","version":"1","assets":{"icechunk":{"href":"https://data.dynamical.org/example/v1/"}}}"#;
@@ -93,13 +96,12 @@ fn service(fetch: Arc<Mock>, clock: Arc<FakeClock>, config: CatalogConfig) -> St
     .unwrap()
 }
 async fn eventually(predicate: impl Fn() -> bool) {
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    guard(async {
         while !predicate() {
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .unwrap();
+    .await;
 }
 #[tokio::test]
 async fn cold_and_stale_readers_share_one_flight_and_keep_snapshot() {
@@ -163,7 +165,7 @@ async fn failure_backoff_stale_reads_and_recovery() {
     assert_eq!(catalog.status().consecutive_failures, 0);
     catalog.close();
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cold_wait_timeout_late_result_and_close() {
     let fetch = Arc::new(Mock::new());
     let clock = Arc::new(FakeClock::default());
@@ -174,17 +176,31 @@ async fn cold_wait_timeout_late_result_and_close() {
     };
     let catalog = service(fetch.clone(), clock.clone(), config);
     fetch.block.store(true, Ordering::SeqCst);
+    let cold = catalog.list_collections();
+    tokio::pin!(cold);
+    assert!(futures::poll!(&mut cold).is_pending());
+    eventually(|| fetch.active.load(Ordering::SeqCst) == 1).await;
+    // Cold-reader patience and the refresh deadline are independent timers.
+    tokio::time::advance(std::time::Duration::from_millis(9)).await;
+    assert!(futures::poll!(&mut cold).is_pending());
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
     assert_eq!(
-        catalog.list_collections().await.unwrap_err().to_string(),
+        guard(cold).await.unwrap_err().to_string(),
         "Timed out waiting for STAC catalog"
     );
     assert!(catalog.status().refreshing);
+    tokio::time::advance(std::time::Duration::from_millis(39)).await;
+    assert!(catalog.status().refreshing);
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
     eventually(|| !catalog.status().refreshing).await;
     assert_eq!(catalog.status().outstanding_workers, 1);
     assert!(catalog.status().loaded_at.is_none());
     clock.set(5.);
     fetch.block.store(false, Ordering::SeqCst);
-    assert_eq!(catalog.list_collections().await.unwrap()[0].version, "1");
+    assert_eq!(
+        guard(catalog.list_collections()).await.unwrap()[0].version,
+        "1"
+    );
     fetch.gate.add_permits(1);
     eventually(|| catalog.status().outstanding_workers == 0).await;
     catalog.close();
@@ -309,7 +325,7 @@ async fn transient_retries_bounded_and_timeouts_shrink() {
 }
 #[path = "support/fixtures.rs"]
 mod fixtures;
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn twelve_worker_limit_survives_retired_generations_and_cancels_queued_work() {
     struct BlockChildren {
         active: AtomicUsize,
@@ -360,7 +376,19 @@ async fn twelve_worker_limit_survives_retired_generations_and_cancels_queued_wor
     .unwrap();
     for (generation, instant) in [0., 5., 65., 185.].into_iter().enumerate() {
         clock.set(instant);
-        assert!(catalog.list_collections().await.is_err());
+        let cold = catalog.list_collections();
+        tokio::pin!(cold);
+        assert!(futures::poll!(&mut cold).is_pending());
+        if generation == 0 {
+            // Wait for all slots to be occupied before expiring this generation.
+            eventually(|| fetch.active.load(Ordering::SeqCst) == 12).await;
+        } else {
+            // Retired workers hold all slots, so this generation queues its root.
+            eventually(|| catalog.status().outstanding_workers == 13).await;
+        }
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
+        assert!(guard(cold).await.is_err());
+        tokio::time::advance(std::time::Duration::from_millis(40)).await;
         eventually(|| !catalog.status().refreshing).await;
         eventually(|| catalog.status().outstanding_workers == 12).await;
         assert_eq!(catalog.status().consecutive_failures, generation as u64 + 1);

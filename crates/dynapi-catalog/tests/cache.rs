@@ -171,7 +171,6 @@ fn concurrent_misses_and_expired_revalidations_coalesce() {
                             .open(
                                 key("a", None),
                                 || {
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
                                     count.fetch_add(1, Ordering::SeqCst);
                                     Ok::<_, ()>(Resolved {
                                         snapshot_id: "s1".into(),

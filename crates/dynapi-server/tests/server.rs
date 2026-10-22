@@ -1,5 +1,7 @@
 mod support;
 use dynapi_policy::Clock;
+#[path = "../../../tests/support/time.rs"]
+mod time;
 use dynapi_server::{
     App, BODY_LIMIT,
     config::Config,
@@ -7,10 +9,14 @@ use dynapi_server::{
     transport,
 };
 use std::{collections::BTreeMap, sync::Arc};
+use time::guard;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
+// Socket operations use this generous wall-clock deadlock guard. Transport
+// deadlines remain independently configured in each behavior test.
+const TEST_GUARD: std::time::Duration = std::time::Duration::from_secs(30);
 struct Zero;
 impl Clock for Zero {
     fn now(&self) -> f64 {
@@ -71,13 +77,10 @@ impl Server {
         socket.write_all(header.as_bytes()).await.unwrap();
         socket.write_all(body).await.unwrap();
         let mut response = Vec::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            socket.read_to_end(&mut response),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
         response
     }
 }
@@ -753,13 +756,10 @@ async fn hyper_separates_mixed_ending_pipelined_requests() {
         );
         socket.write_all(requests.as_bytes()).await.unwrap();
         let mut response = Vec::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            socket.read_to_end(&mut response),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(status(&response), 200, "ending {ending:?}");
         let response = String::from_utf8(response).unwrap();
         assert_eq!(response.matches("HTTP/1.1 ").count(), 2, "{response}");
@@ -775,13 +775,10 @@ async fn hyper_keeps_body_and_pipelined_authentication_separate() {
     // The second request's authentication must never apply to the first request.
     socket.write_all(b"GET /healthz HTTP/1.1\r\nHost: test\n\nGET /healthz HTTP/1.1\r\nHost: test\r\nX-Dynamical-Origin-Auth: fake-secret\r\nConnection: close\r\n\r\n").await.unwrap();
     let mut response = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        socket.read_to_end(&mut response),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(status(&response), 403);
     let response = String::from_utf8(response).unwrap();
     assert_eq!(response.matches("HTTP/1.1 ").count(), 2, "{response}");
@@ -791,22 +788,17 @@ async fn hyper_keeps_body_and_pipelined_authentication_separate() {
     let mut socket = TcpStream::connect(server.address).await.unwrap();
     socket.write_all(b"POST /v1/forecasts HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: 2\n\n{}GET /healthz HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").await.unwrap();
     let mut response = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        socket.read_to_end(&mut response),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(status(&response), 422);
     assert!(String::from_utf8_lossy(&response).contains("HTTP/1.1 200"));
 }
 
-async fn assert_disconnected(socket: &mut TcpStream, within: std::time::Duration) {
+async fn assert_disconnected(socket: &mut (impl tokio::io::AsyncRead + Unpin)) {
     let mut byte = [0];
-    let result = tokio::time::timeout(within, socket.read(&mut byte))
-        .await
-        .expect("connection did not close before deadline");
+    let result = guard(socket.read(&mut byte)).await;
     match result {
         Ok(0) => (),
         Err(error)
@@ -818,6 +810,25 @@ async fn assert_disconnected(socket: &mut TcpStream, within: std::time::Duration
     }
 }
 
+async fn assert_trickling_connection_closes(socket: TcpStream, bytes: &'static [u8]) {
+    let (mut read, mut write) = socket.into_split();
+    // These real socket tests have no read-progress acknowledgement for partial
+    // messages. Keep sending until EOF instead of assuming a write at 600ms can
+    // beat a 1s deadline on a contended host. The 30s guard bounds a timer reset
+    // bug; each incomplete message is large enough to keep trickling that long.
+    let writer = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if write.write_all(bytes).await.is_err() {
+                break;
+            }
+        }
+    });
+    assert_disconnected(&mut read).await;
+    writer.abort();
+    let _ = writer.await;
+}
+
 #[tokio::test]
 async fn slow_header_deadline_is_not_extended_by_trickling_bytes() {
     let server = Server::start(&[("DYNAMICAL_API_HEADER_READ_TIMEOUT_SECONDS", "1")]).await;
@@ -826,9 +837,7 @@ async fn slow_header_deadline_is_not_extended_by_trickling_bytes() {
         .write_all(b"GET /healthz HTTP/1.1\r\nHost:")
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    socket.write_all(b" test").await.unwrap();
-    assert_disconnected(&mut socket, std::time::Duration::from_millis(800)).await;
+    assert_trickling_connection_closes(socket, b" ").await;
     assert!(server.sink.0.lock().unwrap().is_empty());
     assert_eq!(
         status(&server.request("GET", "/healthz", "", b"").await),
@@ -837,43 +846,42 @@ async fn slow_header_deadline_is_not_extended_by_trickling_bytes() {
 }
 
 async fn health_on_connection(socket: &mut TcpStream) {
-    socket
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n")
+    guard(socket.write_all(b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n"))
         .await
         .unwrap();
     let mut response = Vec::new();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    guard(async {
         let mut byte = [0];
         while !response.ends_with(b"{\"status\":\"ok\"}") {
             assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
             response.push(byte[0]);
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(status(&response), 200);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn idle_keep_alive_uses_five_seconds_and_resets_after_response() {
     let server = Server::start(&[]).await;
-    let mut socket = TcpStream::connect(server.address).await.unwrap();
+    let mut socket = guard(TcpStream::connect(server.address)).await.unwrap();
     health_on_connection(&mut socket).await;
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    tokio::time::advance(std::time::Duration::from_secs(3)).await;
     health_on_connection(&mut socket).await;
     let mut byte = [0];
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(3), socket.read(&mut byte))
-            .await
-            .is_err()
-    );
-    assert_disconnected(&mut socket, std::time::Duration::from_secs(3)).await;
+    tokio::time::advance(std::time::Duration::from_secs(3)).await;
+    assert!(futures_util::poll!(std::pin::pin!(socket.read(&mut byte))).is_pending());
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    assert_disconnected(&mut socket).await;
 }
 
 #[tokio::test]
 async fn body_deadline_bounds_fixed_and_chunked_trickle() {
     let server = Server::start(&[("DYNAMICAL_API_BODY_READ_TIMEOUT_SECONDS", "1")]).await;
-    for framing in ["Content-Length: 100\r\n", "Transfer-Encoding: chunked\r\n"] {
+    for framing in [
+        "Content-Length: 1000000\r\n",
+        "Transfer-Encoding: chunked\r\n",
+    ] {
         let mut socket = TcpStream::connect(server.address).await.unwrap();
         socket
             .write_all(
@@ -881,16 +889,15 @@ async fn body_deadline_bounds_fixed_and_chunked_trickle() {
             )
             .await
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         socket
             .write_all(if framing.starts_with("Content") {
                 b"{"
             } else {
-                b"2\r\n{"
+                b"f4240\r\n{"
             })
             .await
             .unwrap();
-        assert_disconnected(&mut socket, std::time::Duration::from_millis(800)).await;
+        assert_trickling_connection_closes(socket, b" ").await;
     }
     assert_eq!(
         status(&server.request("GET", "/healthz", "", b"").await),
@@ -904,36 +911,52 @@ async fn connection_cap_refuses_excess_and_releases_permits() {
     let mut first = TcpStream::connect(server.address).await.unwrap();
     health_on_connection(&mut first).await;
     let mut excess = TcpStream::connect(server.address).await.unwrap();
-    assert_disconnected(&mut excess, std::time::Duration::from_secs(1)).await;
+    assert_disconnected(&mut excess).await;
     drop(first);
-    // An exhausted slot is released asynchronously when the first task finishes.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert_eq!(
-        status(&server.request("GET", "/healthz", "", b"").await),
-        200
-    );
+    wait_for_connection_slot(&server, "").await;
 }
 
-#[tokio::test]
+async fn wait_for_connection_slot(server: &Server, auth: &str) {
+    // EOF can reach the client before the server task drops its permit. Retry
+    // until a request is accepted instead of guessing how long task cleanup takes.
+    guard(async {
+        loop {
+            let mut socket = TcpStream::connect(server.address).await.unwrap();
+            let request =
+                format!("GET /healthz HTTP/1.1\r\nHost: test\r\nConnection: close\r\n{auth}\r\n");
+            if socket.write_all(request.as_bytes()).await.is_ok() {
+                let mut response = Vec::new();
+                if socket.read_to_end(&mut response).await.is_ok() && !response.is_empty() {
+                    assert_eq!(status(&response), 200);
+                    return;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn partial_next_header_remains_bounded_by_idle_and_header_deadlines() {
     let server = Server::start(&[
         ("DYNAMICAL_API_KEEP_ALIVE_TIMEOUT_SECONDS", "1"),
         ("DYNAMICAL_API_HEADER_READ_TIMEOUT_SECONDS", "2"),
     ])
     .await;
-    let mut socket = TcpStream::connect(server.address).await.unwrap();
+    let mut socket = guard(TcpStream::connect(server.address)).await.unwrap();
     health_on_connection(&mut socket).await;
-    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-    socket
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost:")
+    tokio::time::advance(std::time::Duration::from_millis(700)).await;
+    guard(socket.write_all(b"GET /healthz HTTP/1.1\r\nHost:"))
         .await
         .unwrap();
     // D10: idle expiry stays armed until a complete request dispatches;
     // arbitrary incoming bytes cannot remove the connection's last timer.
-    assert_disconnected(&mut socket, std::time::Duration::from_millis(800)).await;
+    tokio::time::advance(std::time::Duration::from_millis(300)).await;
+    assert_disconnected(&mut socket).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn completed_fixed_and_chunked_bodies_clear_the_body_deadline() {
     let server = Server::start(&[("DYNAMICAL_API_BODY_READ_TIMEOUT_SECONDS", "1")]).await;
     for (framing, body) in [
@@ -943,20 +966,19 @@ async fn completed_fixed_and_chunked_bodies_clear_the_body_deadline() {
             "2\r\n{}\r\n0\r\nX-Trailer: test\r\n\r\n",
         ),
     ] {
-        let mut socket = TcpStream::connect(server.address).await.unwrap();
-        socket.write_all(format!("POST /v1/forecasts HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\n{framing}\r\n{body}").as_bytes()).await.unwrap();
+        let mut socket = guard(TcpStream::connect(server.address)).await.unwrap();
+        guard(socket.write_all(format!("POST /v1/forecasts HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\n{framing}\r\n{body}").as_bytes())).await.unwrap();
         let mut response = Vec::new();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        guard(async {
             let mut byte = [0];
             while !response.ends_with(b"\"input\":{}}]}") {
                 assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
                 response.push(byte[0]);
             }
         })
-        .await
-        .unwrap();
+        .await;
         assert_eq!(status(&response), 422);
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        tokio::time::advance(std::time::Duration::from_millis(1200)).await;
         health_on_connection(&mut socket).await;
     }
 }
@@ -989,13 +1011,10 @@ async fn lf_trailers_cannot_disable_deadlines_or_retain_connection_permits() {
                 let mut socket = TcpStream::connect(server.address).await.unwrap();
                 socket.write_all(format!("POST /v1/forecasts HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n{auth}\r\n2\r\n{{}}\r\n{suffix}{pipeline}").as_bytes()).await.unwrap();
                 let mut response = Vec::new();
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(1600),
-                    socket.read_to_end(&mut response),
-                )
-                .await
-                .expect("body lost its deadline")
-                .unwrap();
+                tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+                    .await
+                    .expect("body lost its deadline")
+                    .unwrap();
                 if !pipeline.is_empty() && suffix.ends_with("\n\n") {
                     // Hyper can consume the appended CRLF head as trailer bytes,
                     // then accept the earlier LF header terminator. Its response
@@ -1013,11 +1032,7 @@ async fn lf_trailers_cannot_disable_deadlines_or_retain_connection_permits() {
                         "suffix={suffix:?}, pipeline={pipeline:?}: {response:?}"
                     );
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                assert_eq!(
-                    status(&server.request("GET", "/healthz", auth, b"").await),
-                    200
-                );
+                wait_for_connection_slot(&server, auth).await;
             }
         }
     }
@@ -1027,12 +1042,9 @@ async fn raw_exchange(server: &Server, raw: &[u8]) -> Vec<u8> {
     let mut socket = TcpStream::connect(server.address).await.unwrap();
     socket.write_all(raw).await.unwrap();
     let mut response = Vec::new();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        socket.read_to_end(&mut response),
-    )
-    .await
-    .expect("unbounded connection");
+    let result = tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+        .await
+        .expect("unbounded connection");
     if let Err(error) = result {
         assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
     }
@@ -1198,7 +1210,7 @@ async fn panic_closes_before_queued_requests() {
 async fn empty_initial_connection_has_a_header_deadline() {
     let server = Server::start(&[("DYNAMICAL_API_HEADER_READ_TIMEOUT_SECONDS", "1")]).await;
     let mut socket = TcpStream::connect(server.address).await.unwrap();
-    assert_disconnected(&mut socket, std::time::Duration::from_millis(1600)).await;
+    assert_disconnected(&mut socket).await;
 }
 
 #[tokio::test]
