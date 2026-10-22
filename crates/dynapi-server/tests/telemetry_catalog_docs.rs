@@ -112,3 +112,23 @@ async fn catalog_metadata_failures_keep_the_catalog_error_category_and_http_cont
 async fn catalog_metadata_cold_waits_keep_the_catalog_error_category_and_http_contract() {
     assert_catalog_errors(true).await;
 }
+
+#[tokio::test]
+async fn rejected_documentation_methods_have_no_matched_telemetry_route() {
+    let server = Server::start(CAPTURE).await;
+    for path in ["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"] {
+        for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            server.sink.0.lock().unwrap().clear();
+            let reply = server.request(method, path, &Value::Null).await;
+            assert_eq!(reply.status, 405, "{method} {path}");
+            assert_eq!(reply.body, br#"{"detail":"Method Not Allowed"}"#);
+            assert_eq!(reply.headers["allow"], "GET, HEAD");
+            let records = server.sink.0.lock().unwrap();
+            assert_eq!(records.len(), 1, "{method} {path}: {records:?}");
+            assert_eq!(records[0].0, Stream::Terminal);
+            assert_eq!(records[0].1["event"], "api_failure");
+            assert_eq!(records[0].1["route"], "unrouted", "{method} {path}");
+            assert_eq!(records[0].1["status"], 405);
+        }
+    }
+}

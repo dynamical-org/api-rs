@@ -598,6 +598,16 @@ impl App {
         );
         let route = find_route(path);
         let matched = route.as_ref().filter(|r| {
+            // Documentation routes rejected by method have no matched scope route.
+            if status == Some(405)
+                && matches!(
+                    r.template,
+                    "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc"
+                )
+                && !r.methods.contains(&method)
+            {
+                return false;
+            }
             if !matches!(status, Some(403 | 429)) {
                 return true;
             }
