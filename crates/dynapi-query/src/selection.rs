@@ -572,7 +572,7 @@ pub fn select_query<'a>(
     let missing: Vec<_> = options
         .variables
         .iter()
-        .filter(|v| !view.variables.contains_key(*v))
+        .filter(|v| !view.variables.get(*v).is_some_and(|var| !var.is_coordinate))
         .cloned()
         .collect();
     if !missing.is_empty() {

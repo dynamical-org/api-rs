@@ -1,0 +1,93 @@
+{
+  "name": "global_aux_data",
+  "snapshot_id": "83A8GKSXN2QK84D30RA0",
+  "kind": "analysis",
+  "collection": {
+    "id": "fixture-global_aux_data",
+    "title": "Synthetic fixture",
+    "description": "Synthetic only",
+    "version": "1.2.3",
+    "license": "CC-BY-4.0",
+    "extent": {
+      "spatial": {
+        "bbox": [
+          [
+            -180,
+            -90,
+            180,
+            90
+          ]
+        ]
+      }
+    },
+    "cube:dimensions": {
+      "time": {
+        "type": "temporal"
+      },
+      "y": {
+        "type": "other"
+      },
+      "x": {
+        "type": "other"
+      }
+    },
+    "cube:variables": {
+      "temperature_2m": {
+        "type": "data",
+        "dimensions": [
+          "time",
+          "y",
+          "x"
+        ],
+        "unit": "K"
+      },
+      "count": {
+        "type": "data",
+        "dimensions": [
+          "x",
+          "time",
+          "y"
+        ],
+        "unit": null
+      }
+    },
+    "assets": {
+      "icechunk": {
+        "href": "s3://synthetic-fixture/baseline/v1.2.3.icechunk/",
+        "xarray:storage_options": {
+          "client_kwargs": {
+            "region_name": "us-west-2"
+          }
+        }
+      }
+    },
+    "links": [
+      {
+        "rel": "self",
+        "href": "https://example.invalid/baseline/collection.json"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "global_aux_data",
+      "queries": [
+        {
+          "dataProductId": "fixture-global_aux_data",
+          "queryId": "example",
+          "location": {
+            "latitude": 41.0,
+            "longitude": -103.0
+          },
+          "variables": [
+            "temperature_2m",
+            "count"
+          ],
+          "startTime": "2026-07-30T00:00:00Z",
+          "endTime": "2026-07-30T02:00:00Z"
+        }
+      ]
+    }
+  ],
+  "reads": []
+}

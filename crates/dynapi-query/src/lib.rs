@@ -38,6 +38,8 @@ pub enum SpatialCrs {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Variable {
+    /// Coordinate metadata remains visible, but cannot satisfy a data-variable query.
+    pub is_coordinate: bool,
     pub dimensions: Vec<String>,
     pub attributes: BTreeMap<String, Value>,
     /// Explicit chunks take precedence, including unknown entries. Unknown axes

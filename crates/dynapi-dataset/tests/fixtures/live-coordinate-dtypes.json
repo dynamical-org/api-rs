@@ -1,0 +1,1094 @@
+[
+  {
+    "id": "dwd-icon-eu-forecast-5-day",
+    "snapshot_id": "DY8PJHFEA4VYR1XTTTAG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          1016
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          93
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          657
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1377
+        ]
+      }
+    }
+  },
+  {
+    "id": "eccc-hrdps-forecast",
+    "snapshot_id": "G3PKNNYFYDCBGMET4ZH0",
+    "coordinates": {
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          49
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          420
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1290
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          2540
+        ]
+      }
+    }
+  },
+  {
+    "id": "ecmwf-aifs-ens-forecast",
+    "snapshot_id": "BKQDPJRB2KNQTT94DQV0",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          51
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          1908
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          61
+        ]
+      }
+    }
+  },
+  {
+    "id": "ecmwf-aifs-single-forecast-virtual",
+    "snapshot_id": "7BKFECFHP3Z4KEK5KFV0",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          3736
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          61
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      }
+    }
+  },
+  {
+    "id": "ecmwf-aifs-single-forecast",
+    "snapshot_id": "T8NP2EKNQG9J7R8QMG7G",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          3736
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          61
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      }
+    }
+  },
+  {
+    "id": "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
+    "snapshot_id": "YQMXKJC7QXTT2W0VZY50",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          51
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          85
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          934
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      }
+    }
+  },
+  {
+    "id": "ecmwf-ifs-ens-forecast-46-day-6-hourly-1-5-degree",
+    "snapshot_id": "P34ZK76X2ZKWV65BP98G",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          101
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          185
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          240
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          121
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          292
+        ]
+      }
+    }
+  },
+  {
+    "id": "ecmwf-ifs-ens-forecast-46-day-daily-1-5-degree",
+    "snapshot_id": "P2F1VX7A2YN1R5G5KVGG",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          101
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          121
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          47
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          240
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          292
+        ]
+      }
+    }
+  },
+  {
+    "id": "google-weathernext2-forecast-historical-virtual",
+    "snapshot_id": "FFKBFYQ1WAHSE16B92X0",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          64
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          4384
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          60
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      }
+    }
+  },
+  {
+    "id": "google-weathernext2-forecast-operational-virtual",
+    "snapshot_id": "EC15SPTH9B3Y5JC5MZBG",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          64
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          60
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          2636
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      }
+    }
+  },
+  {
+    "id": "nasa-imerg-analysis-early",
+    "snapshot_id": "PZ1Y3V6C82HE7MA7KD30",
+    "coordinates": {
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          1800
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          3600
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          505000
+        ]
+      }
+    }
+  },
+  {
+    "id": "nasa-imerg-analysis-late",
+    "snapshot_id": "02NJANPGNDNEDZB89ZM0",
+    "coordinates": {
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          1800
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          504980
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          3600
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gefs-analysis-0-25-degree-virtual",
+    "snapshot_id": "FQRT36KJSJKQDY3XD850",
+    "coordinates": {
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          17696
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gefs-analysis",
+    "snapshot_id": "D5VS0ZQ4569GTWPB91K0",
+    "coordinates": {
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          78327
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gefs-forecast-10-day-0-25-degree-virtual",
+    "snapshot_id": "1A82014EZJDT6690S4FG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          8848
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          81
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          31
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gefs-forecast-16-day-0-5-degree-virtual",
+    "snapshot_id": "18314BB43G7JK7QKMA4G",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          31
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          8848
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          361
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          720
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          105
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gefs-forecast-35-day-0-5-degree-virtual",
+    "snapshot_id": "N9WF4FGVRC1VG84JAACG",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          31
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          2212
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          361
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          181
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          720
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gefs-forecast-35-day",
+    "snapshot_id": "AG9WWN76ASZDSW1RVDHG",
+    "coordinates": {
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          31
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          2212
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          181
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gfs-analysis-virtual",
+    "snapshot_id": "51VKCG2V7QX81K9NCXW0",
+    "coordinates": {
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          48000
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gfs-analysis",
+    "snapshot_id": "QXPR41G85PJEG39JEM5G",
+    "coordinates": {
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          47997
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gfs-forecast-virtual",
+    "snapshot_id": "45PAD4F638PM0M7M6Q80",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          8000
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          209
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-gfs-forecast",
+    "snapshot_id": "6JVGADQM6SX712TZMHPG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          8000
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          1440
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          721
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          209
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-hrrr-analysis-virtual",
+    "snapshot_id": "MFFFJP60F0YJ19WJ0HVG",
+    "coordinates": {
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          105697
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-hrrr-analysis",
+    "snapshot_id": "NTZYHT3F6YB8XRY1RJ7G",
+    "coordinates": {
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          105696
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-hrrr-forecast-18-hour-virtual",
+    "snapshot_id": "S90EBV24X5P6ENKZCR0G",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          72541
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          19
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-hrrr-forecast-48-hour-virtual",
+    "snapshot_id": "A2YNCCCM2TX2DZN2HNDG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          12091
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          49
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-hrrr-forecast-48-hour",
+    "snapshot_id": "B7HWKGM4N0QVSFNRMRQG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          12090
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          49
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-mrms-conus-analysis-hourly",
+    "snapshot_id": "PYBBFR28Z9RNWY5N6PY0",
+    "coordinates": {
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          3500
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          7000
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          104954
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-refs-forecast-3-hourly-virtual",
+    "snapshot_id": "AN9EHA1BZKBWN887YA70",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          280
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          20
+        ]
+      },
+      "statistic": {
+        "dtype": "string",
+        "shape": [
+          2
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-refs-forecast-hourly-virtual",
+    "snapshot_id": "GERFYRDB11QRM1CC4P00",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          280
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          60
+        ]
+      },
+      "statistic": {
+        "dtype": "string",
+        "shape": [
+          2
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-rrfs-ens-forecast-virtual",
+    "snapshot_id": "KVP1CKZ9466RS7H6TNBG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          168
+        ]
+      },
+      "ensemble_member": {
+        "dtype": "int16",
+        "shape": [
+          6
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          61
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-rrfs-forecast-18-hour-virtual",
+    "snapshot_id": "RGE8PF8W8ERZ1A8NYCD0",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          552
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          19
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-rrfs-forecast-84-hour-virtual",
+    "snapshot_id": "Y3NPP17D52EWAEP7GTFG",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          276
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          85
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      }
+    }
+  },
+  {
+    "id": "noaa-rrfs-forecast-sub-hourly-virtual",
+    "snapshot_id": "2MPF7XHYB0T20S8Z7SK0",
+    "coordinates": {
+      "init_time": {
+        "dtype": "int64",
+        "shape": [
+          1680
+        ]
+      },
+      "lead_time": {
+        "dtype": "float64",
+        "shape": [
+          72
+        ]
+      },
+      "y": {
+        "dtype": "float64",
+        "shape": [
+          1059
+        ]
+      },
+      "x": {
+        "dtype": "float64",
+        "shape": [
+          1799
+        ]
+      }
+    }
+  },
+  {
+    "id": "ucsb-chc-chirps-analysis-final",
+    "snapshot_id": "RNSPEJ6NM48EJV0T704G",
+    "coordinates": {
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          2400
+        ]
+      },
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          7200
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          16709
+        ]
+      }
+    }
+  },
+  {
+    "id": "ucsb-chc-chirps-analysis-preliminary",
+    "snapshot_id": "BK7PQAJE9DHPXSGDJ22G",
+    "coordinates": {
+      "longitude": {
+        "dtype": "float64",
+        "shape": [
+          7200
+        ]
+      },
+      "latitude": {
+        "dtype": "float64",
+        "shape": [
+          2400
+        ]
+      },
+      "time": {
+        "dtype": "int64",
+        "shape": [
+          653
+        ]
+      }
+    }
+  }
+]

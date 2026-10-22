@@ -11,6 +11,7 @@ to serve the API while the Rust implementation is verified during migration.
 - `dynapi-contract`: portable request validation, ordered JSON, formatting and error envelopes.
 - `dynapi-policy`: portable rate limits, compute permits, CORS, cache and timing rules.
 - `dynapi-query`: portable point/run/time selection, budgets, load plans and response encoding over an opened dataset view.
+- `dynapi-dataset`: native, bounded dataset metadata and CF coordinates with a shared snapshot session for query reads.
 - `dynapi-reader`: native, snapshot-pinned Icechunk/Zarr numeric reads and explicit CF time decoding.
 - `dynapi-read`: single-request JSON command-line adapter for exercising the reader.
 - `dynapi-server`: native Hyper HTTP/1.1 server, middleware, admission and telemetry sink boundaries.
@@ -82,6 +83,16 @@ still follows redirects and has no body memory cap; repository URLs and redirect
 targets must be trusted. These prototype bounds are not production qualification.
 The full contract, codec policy, CF tuples and transport limitations are in
 [docs/reader.md](docs/reader.md).
+
+## Opened datasets
+
+`dynapi-dataset` opens a branch or explicit snapshot once and provides a bounded,
+CF-decoded `dynapi-query::DatasetView` and shared-session `DataReader`.
+`run_with_permit` keeps the compute permit until the worker finishes, including
+when its caller is cancelled. The adapter adds no HTTP routes, catalog cache or
+TTLs. The original reader entrypoints retain their stricter coordinate contract.
+See [the adapter documentation](docs/dataset.md) for metadata accounting,
+codec policy, typed storage errors and CRS limitations.
 
 ## Pins and portability
 

@@ -20,6 +20,7 @@ fn forecast(run: i64, leads: Vec<i64>) -> (DatasetView, Collection) {
         variables: BTreeMap::from([(
             "temperature".into(),
             Variable {
+                is_coordinate: false,
                 dimensions: dimensions.to_vec(),
                 chunks: Some(vec![Some(1); 4]),
                 ..Variable::default()

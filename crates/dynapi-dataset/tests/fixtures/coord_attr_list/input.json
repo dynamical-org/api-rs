@@ -1,0 +1,126 @@
+{
+  "name": "coord_attr_list",
+  "snapshot_id": "JC0M8NBBKAYT23EYMPZ0",
+  "kind": "analysis",
+  "collection": {
+    "id": "fixture-coord_attr_list",
+    "title": "Synthetic fixture",
+    "description": "Synthetic only",
+    "version": "1.2.3",
+    "license": "CC-BY-4.0",
+    "extent": {
+      "spatial": {
+        "bbox": [
+          [
+            -180,
+            -90,
+            180,
+            90
+          ]
+        ]
+      }
+    },
+    "cube:dimensions": {
+      "time": {
+        "type": "temporal"
+      },
+      "y": {
+        "type": "other"
+      },
+      "x": {
+        "type": "other"
+      }
+    },
+    "cube:variables": {
+      "temperature_2m": {
+        "type": "data",
+        "dimensions": [
+          "time",
+          "y",
+          "x"
+        ],
+        "unit": "K"
+      },
+      "count": {
+        "type": "data",
+        "dimensions": [
+          "x",
+          "time",
+          "y"
+        ],
+        "unit": null
+      }
+    },
+    "assets": {
+      "icechunk": {
+        "href": "s3://synthetic-fixture/coord_attr_list/v1.2.3.icechunk/",
+        "xarray:storage_options": {
+          "client_kwargs": {
+            "region_name": "us-west-2"
+          }
+        }
+      }
+    },
+    "links": [
+      {
+        "rel": "self",
+        "href": "https://example.invalid/coord_attr_list/collection.json"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "coord_attr_list",
+      "queries": [
+        {
+          "dataProductId": "fixture-coord_attr_list",
+          "queryId": "example",
+          "location": {
+            "latitude": 41.0,
+            "longitude": -103.0
+          },
+          "variables": [
+            "temperature_2m",
+            "count"
+          ],
+          "startTime": "2026-07-30T00:00:00Z",
+          "endTime": "2026-07-30T02:00:00Z"
+        }
+      ]
+    }
+  ],
+  "reads": [
+    {
+      "variable": "temperature_2m",
+      "positions": {
+        "time": [
+          1,
+          0,
+          1
+        ],
+        "y": [
+          2,
+          0,
+          2
+        ],
+        "x": 0
+      }
+    },
+    {
+      "variable": "count",
+      "positions": {
+        "time": [
+          1,
+          0,
+          1
+        ],
+        "y": [
+          2,
+          0,
+          2
+        ],
+        "x": 0
+      }
+    }
+  ]
+}

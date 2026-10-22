@@ -1,0 +1,109 @@
+{
+  "name": "ensemble_int16",
+  "snapshot_id": "RSVF29XCVMAM6CSHPKP0",
+  "kind": "analysis",
+  "collection": {
+    "id": "fixture-ensemble_int16",
+    "title": "Synthetic fixture",
+    "description": "Synthetic only",
+    "version": "1.2.3",
+    "license": "CC-BY-4.0",
+    "extent": {
+      "spatial": {
+        "bbox": [
+          [
+            -180,
+            -90,
+            180,
+            90
+          ]
+        ]
+      }
+    },
+    "cube:dimensions": {
+      "x": {
+        "type": "other"
+      },
+      "ensemble_member": {
+        "type": "other"
+      },
+      "time": {
+        "type": "temporal"
+      },
+      "y": {
+        "type": "other"
+      }
+    },
+    "cube:variables": {
+      "count": {
+        "type": "data",
+        "dimensions": [
+          "x",
+          "ensemble_member",
+          "time",
+          "y"
+        ],
+        "unit": null
+      },
+      "temperature_2m": {
+        "type": "data",
+        "dimensions": [
+          "time",
+          "ensemble_member",
+          "y",
+          "x"
+        ],
+        "unit": "K"
+      }
+    },
+    "assets": {
+      "icechunk": {
+        "href": "s3://synthetic-fixture/ensemble_int16/v1.2.3.icechunk/",
+        "xarray:storage_options": {
+          "client_kwargs": {
+            "region_name": "us-west-2"
+          }
+        }
+      }
+    },
+    "links": [
+      {
+        "rel": "self",
+        "href": "https://example.invalid/ensemble_int16/collection.json"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "ensemble_int16",
+      "queries": [
+        {
+          "dataProductId": "fixture-ensemble_int16",
+          "queryId": "example",
+          "location": {
+            "latitude": 41.0,
+            "longitude": -103.0
+          },
+          "variables": [
+            "temperature_2m",
+            "count"
+          ],
+          "startTime": "2026-07-30T00:00:00Z",
+          "endTime": "2026-07-30T02:00:00Z"
+        }
+      ]
+    }
+  ],
+  "reads": [
+    {
+      "variable": "ensemble_member",
+      "positions": {
+        "ensemble_member": [
+          2,
+          0,
+          2
+        ]
+      }
+    }
+  ]
+}
