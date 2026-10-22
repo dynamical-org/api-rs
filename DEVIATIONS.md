@@ -217,3 +217,20 @@ surface; they do not qualify the pending execution handlers.
   tests use per-thread allocation tracking to prove that 2 MiB unused dimension
   strings cause no request-sized copy, and oversized list/detail projections fail
   with total request allocations below 256 KiB and no allocation above 128 KiB.
+
+## D18 — One catalog generation per forecast batch
+
+- Trigger: a background catalog refresh publishes between product lookups in a
+  multi-query forecast request.
+- Python: looks up each product separately and may observe different published
+  generations within the batch.
+- Rust: lazily retains one immutable catalog snapshot at the first product
+  lookup and uses it for every query in that batch. Admission and initial lookup
+  error precedence are unchanged. Separate requests can observe newer snapshots;
+  catalog and execution routes share the same refresh and backoff state.
+- Rationale: keep one batch's product metadata consistent while allowing refresh
+  publication and other requests to proceed independently.
+- Test: `forecast_batch_retains_one_catalog_generation_during_refresh` blocks the
+  first dataset open, publishes a new generation, and verifies both batch results
+  retain the first generation while subsequent catalog/forecast requests see the
+  new one. Removing the snapshot pin makes this regression fail.
