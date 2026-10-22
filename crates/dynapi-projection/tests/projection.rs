@@ -254,3 +254,89 @@ fn nonfinite_and_out_of_range_points_are_rejected() {
         Err(Error::InvalidCoordinate)
     );
 }
+
+#[test]
+fn lambert_opposite_meridian_retains_the_published_seam_band() {
+    // PROJ's published adjlon rule preserves |lambda| < pi + 1e-12,
+    // including representable neighbors just across the opposite meridian.
+    // Expected coordinates use Snyder section 15 with that longitude rule.
+    let projection = Projection::from_wkt(HRRR_WKT).unwrap();
+    let parallel = 38.5_f64.to_radians();
+    let n = parallel.sin();
+    let c = parallel.cos() * (std::f64::consts::FRAC_PI_4 + parallel / 2.0).tan().powf(n) / n;
+    let rho0 = c
+        * (std::f64::consts::FRAC_PI_4 + parallel / 2.0)
+            .tan()
+            .powf(-n);
+    let rho = c * std::f64::consts::FRAC_PI_4.tan().powf(-n);
+    for longitude in [82.5_f64.next_down(), 82.5, 82.5_f64.next_up(), 82.5 + 1e-11] {
+        let delta = longitude.to_radians() - (-97.5_f64).to_radians();
+        assert!(delta.abs() < std::f64::consts::PI + 1e-12);
+        let theta = n * delta;
+        let point = projection
+            .forward(GeographicPoint {
+                longitude,
+                latitude: 0.0,
+            })
+            .unwrap();
+        assert!(point.x > 0.0);
+        close(point.x, 6_371_229.0 * (rho * theta.sin()), 1e-8);
+        close(point.y, 6_371_229.0 * (rho0 - rho * theta.cos()), 1e-8);
+    }
+    assert!(
+        projection
+            .forward(GeographicPoint {
+                longitude: 82.5 + 1e-10,
+                latitude: 0.0
+            })
+            .unwrap()
+            .x
+            < 0.0
+    );
+}
+
+#[test]
+fn rotated_inverse_preserves_a_dateline_seam_overshoot() {
+    // Generate the grid input from an explicit geographic meridian, then
+    // evaluate Snyder 5-10b independently, before longitude reduction.
+    let projection = Projection::from_wkt(HRDPS_WKT).unwrap();
+    let pole = 36.08852_f64.to_radians();
+    let mut overshoots = 0;
+    for longitude in [-180.0, 180.0] {
+        for latitude in [-65.0, -5.0, 0.0, 35.0, 65.0] {
+            let base = projection
+                .forward(GeographicPoint {
+                    longitude,
+                    latitude,
+                })
+                .unwrap();
+            for x in [base.x.next_down(), base.x, base.x.next_up()] {
+                for y in [base.y.next_down(), base.y, base.y.next_up()] {
+                    let longitude = x.to_radians();
+                    let latitude = y.to_radians();
+                    let delta = (latitude.cos() * longitude.sin()).atan2(
+                        pole.sin() * latitude.cos() * longitude.cos() - pole.cos() * latitude.sin(),
+                    );
+                    let unwrapped = delta + (-114.694858_f64).to_radians();
+                    if unwrapped.abs() <= std::f64::consts::PI {
+                        continue;
+                    }
+                    assert!(unwrapped.abs() < std::f64::consts::PI + 1e-12);
+                    let geographic = projection.inverse(GridPoint { x, y }).unwrap();
+                    assert_eq!(
+                        geographic.longitude.to_bits(),
+                        unwrapped.to_degrees().to_bits()
+                    );
+                    assert!(geographic.longitude.abs() > 180.0);
+                    // Forward input validation stays strict; output is not clipped.
+                    assert_eq!(
+                        projection.forward(geographic),
+                        Err(Error::InvalidCoordinate)
+                    );
+                    overshoots += 1;
+                }
+            }
+        }
+    }
+    assert!(overshoots > 0);
+}

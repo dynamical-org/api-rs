@@ -339,12 +339,16 @@ through stuck synchronous cleanup.
 
 ## D-proj-1 — Correct HRDPS rotated geographic selection
 
-- Trigger: geographic request selection or canonical location reconstruction on the catalog-attested HRDPS rotated-pole grid.
-- Previous reference behavior: the geographic-CRS shortcut treated rotated x/y as ordinary longitude/latitude, both for selection and canonical point reconstruction. Geographic classification itself is accurate; an identity coordinate operation is not.
-- Correction: use the HRDPS rotated-pole transform for geographic request selection and returned geographic locations, including canonical GET; preserve stored grid indices/value representation. `dynapi-projection` implements that operation and canonical index reconstruction. Dataset/query adapter and server wiring remain separate work; this library alone enables no route. The reference Python service is being corrected to the same behavior.
-- Measured differences: the previous shortcut rejected all 20,000 sampled actual-domain geographic requests and all 121 sampled corners/centers; across 28,229 requests including global and boundary cases, 23,483 admission decisions differed. The center's returned location was about 10,770 km from its geographic position. Correcting the operation can change admission, selected cells and returned locations, not merely coordinate precision.
-- Admission policy: only the exact attested rotated WKT chooses this operation. The later adapter must select it before D12's identity shortcut without changing the five identity CRS cases. Retain coordinate membership, attribute precedence, missing-versus-unsupported handling, and fail-closed unknown/reformatted WKT behavior.
-- Tests: `rotation_origin_and_geographic_pole_follow_the_grib_convention`, `rotation_preserves_spherical_distances`, and `rotated_grid_returns_geographic_locations_and_preserves_indices` use published spherical formulas, analytic invariants and explicit axes. Reference comparisons stay outside the repository.
+## D-proj-1 — HRDPS rotated operation matches the reference
+
+This is an alignment note, not an active contract deviation. Both the reference
+Python service and `dynapi-projection` use the rotated-pole transform for HRDPS
+geographic request selection and returned locations, including canonical point
+reconstruction, while preserving stored grid indices/value representation.
+HRDPS is a derived geographic CRS; its operation must be selected before any
+identity-geographic shortcut. Dataset/query adapter and server wiring remain
+separate work and must preserve the five identity CRS cases and D12's fail-closed
+metadata policy. The library alone enables no service route.
 
 ## D-proj-2 — Projected selection is unsupported on WASM
 

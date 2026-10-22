@@ -51,7 +51,8 @@ pub enum ProjectionKind {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeographicPoint {
-    /// Degrees east, in [-180, 180].
+    /// Input degrees east, in [-180, 180]. Inverse output follows PROJ's
+    /// longitude seam rule and may exceed either endpoint by <1e-12 radians.
     pub longitude: f64,
     /// Degrees north, in [-90, 90].
     pub latitude: f64,
@@ -110,6 +111,8 @@ impl Projection {
         self.operation.forward(point)
     }
 
+    /// Inverse longitude preserves PROJ's <1e-12-radian seam overshoot.
+    /// Forward request validation still requires longitude in [-180, 180].
     pub fn inverse(self, point: GridPoint) -> Result<GeographicPoint, Error> {
         self.operation.inverse(point)
     }

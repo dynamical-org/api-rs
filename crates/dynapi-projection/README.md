@@ -13,6 +13,12 @@ preserve attribute precedence, coordinate membership and missing-versus-unknown
 CRS errors, and verify axis dtype and units. This crate does not read metadata.
 
 `GeographicPoint` uses longitude/latitude degrees in [-180,180]/[-90,90].
+Those are strict forward-input ranges. Inverse longitude follows PROJ's
+published [adjlon seam convention](https://github.com/OSGeo/PROJ/blob/9.5.1/src/adjlon.cpp): angles with magnitude less than pi + 1e-12
+radians remain unchanged before conversion to degrees. Output can therefore
+slightly exceed +/-180 degrees (by less than about 5.73e-11 degrees); it is not
+silently clipped or automatically accepted as a new forward request. This
+longitude-reduction rule adds no tolerance to grid admission or nearest indices.
 `GridPoint` uses x/y metres for HRRR and rotated x/y degrees for HRDPS. These are
 spherical horizontal operations with radius 6,371,229 m; no geocentric datum
 shift, height, epoch or external projection database is involved. Formulas follow
@@ -47,10 +53,10 @@ See D-proj-2 for the future target/selector qualification gate. Native numerical
 qualification must identify the release compiler and math runtime; compilation
 alone does not establish universal bit-for-bit parity.
 
-The HRDPS operation corrects the reference Python service's previous identity
-shortcut; request admission, selected cells and returned geographic locations can
-change. See D-proj-1. The library performs correct rotation, but this crate does
-not enable either projected family in any service route.
+Both the reference Python service and this library use HRDPS rotation for
+geographic selection and canonical locations while preserving stored indices and
+values. D-proj-1 records this alignment. This crate does not enable either
+projected family in any service route.
 
 Tests own analytic origins, published spherical equations, inverse/forward and
 rotation invariants, exact WKT rejection, pole/dateline behavior, explicit axis

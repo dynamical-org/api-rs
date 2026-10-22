@@ -12,10 +12,13 @@ pub(crate) enum Operation {
 }
 
 fn wrap(angle: f64) -> f64 {
-    if angle.abs() <= PI {
+    // PROJ 9.5.1 adjlon.cpp preserves a tiny seam overshoot to avoid
+    // switching meridian sides spuriously. This is not a selector tolerance.
+    if angle.abs() < PI + 1e-12 {
         angle
     } else {
-        (angle + PI).rem_euclid(2.0 * PI) - PI
+        let shifted = angle + PI;
+        (shifted - (2.0 * PI) * (shifted / (2.0 * PI)).floor()) - PI
     }
 }
 
@@ -139,5 +142,38 @@ impl Operation {
             longitude,
             latitude,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PI, wrap};
+
+    #[test]
+    fn longitude_reduction_preserves_the_published_band_until_its_strict_edge() {
+        // PROJ 9.5.1 adjlon.cpp preserves |angle| < pi + 1e-12.
+        // This tolerance belongs to longitude reduction, never grid selection.
+        let edge = PI + 1e-12;
+        for angle in [
+            0.0,
+            -0.0,
+            PI,
+            -PI,
+            PI.next_up(),
+            (-PI).next_down(),
+            edge.next_down(),
+            -edge.next_down(),
+        ] {
+            assert_eq!(wrap(angle).to_bits(), angle.to_bits());
+        }
+        for angle in [edge, edge.next_up()] {
+            assert!(wrap(angle) < 0.0);
+            assert!(wrap(-angle) > 0.0);
+            assert!((wrap(angle) + PI).abs() < 2e-12);
+            assert!((wrap(-angle) - PI).abs() < 2e-12);
+        }
+        for angle in [3.0 * PI, -3.0 * PI] {
+            assert_eq!(wrap(angle).to_bits(), (-PI).to_bits());
+        }
     }
 }
