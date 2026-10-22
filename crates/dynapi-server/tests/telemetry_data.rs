@@ -87,6 +87,61 @@ async fn dataset_observations_feed_success_failures_and_cumulative_heartbeats() 
 }
 
 #[tokio::test]
+async fn canonical_analytics_counts_one_query_on_success_and_handler_error() {
+    let server = Server::start(&[("POSTHOG_PROJECT_TOKEN", "fake-project-token")]).await;
+    let first = server.request("POST", "/v1/forecasts", &payload()).await;
+    assert_eq!(first.status, 200);
+    let canonical = first.json()["results"][0]["forecasts"][0]["links"]["canonical"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (path, status) in [
+        (canonical.clone(), 200),
+        (
+            canonical.replace("variables=", "variables=unknown-variable,"),
+            422,
+        ),
+    ] {
+        assert_eq!(
+            server.request("GET", &path, &Value::Null).await.status,
+            status
+        );
+        let records = server.sink.0.lock().unwrap();
+        let analytics = &records
+            .iter()
+            .rfind(|(stream, _)| *stream == Stream::Analytics)
+            .unwrap()
+            .1;
+        assert_eq!(analytics["properties"]["query_count"], 1);
+        assert_eq!(analytics["properties"]["status"], status);
+        assert_eq!(
+            analytics["properties"]["data_product_ids"],
+            json!(["fixture-forecast"])
+        );
+        let terminal = &records
+            .iter()
+            .rfind(|(stream, _)| *stream == Stream::Terminal)
+            .unwrap()
+            .1;
+        assert_eq!(terminal["queryCount"], 1);
+    }
+    assert_eq!(
+        server
+            .request("GET", &(canonical + "&maxLeadTimeHours=bad"), &Value::Null)
+            .await
+            .status,
+        422
+    );
+    let records = server.sink.0.lock().unwrap();
+    let analytics = &records
+        .iter()
+        .rfind(|(stream, _)| *stream == Stream::Analytics)
+        .unwrap()
+        .1;
+    assert!(analytics["properties"]["query_count"].is_null());
+}
+
+#[tokio::test]
 async fn pinned_handles_and_eviction_are_observed_as_new_sessions() {
     let server = Server::start(&[("DYNAMICAL_API_DATASET_CACHE_ENTRIES", "1")]).await;
     let first = server.request("POST", "/v1/forecasts", &payload()).await;

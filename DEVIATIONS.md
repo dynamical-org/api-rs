@@ -261,3 +261,11 @@ surface; they do not qualify the pending execution handlers.
 - Consequence: SDK-added analytics metadata, transport batching/retries and loss behavior differ. Core analytics event/properties, caller hash, nulls and capture conditions are preserved. No key/DSN means no client, worker or network activity; default builds omit delivery dependencies. Malformed sink configuration disables delivery using a static diagnostic, preserving stdout and request processing.
 - Rationale: bound observability work and memory independently of endpoint availability, keep native delivery opt-in, and preserve the portable crate dependency boundary. This completes the delivery and heartbeat follow-up described in D8; its data-handler configuration limitations remain separate.
 - Tests: `unconfigured_delivery_creates_no_worker_or_http_client`, `bounded_queue_drops_without_waiting_for_a_stalled_backend`, `oversized_events_are_dropped_before_the_queue`, `stalled_delivery_does_not_delay_an_http_response`, `loopback_wire_contract_and_shutdown_flush_both_destinations`, `saturated_sdk_and_stalled_endpoint_have_a_bounded_joined_shutdown`, `application_drain_and_sdk_flush_share_one_budget`, and `only_handler_success_records_are_sampled_and_all_fields_pass_through`.
+
+## D-tel-4 — Count canonical queries consistently across telemetry streams
+
+- Trigger: a canonical point GET enters its handler, on success or a handled query error.
+- Reference: stdout records `queryCount: 1`, but analytics records `query_count: null`. Analytics reads `request.state.usage`, which the canonical handler never sets; its separate `request.state.query_count` is ignored.
+- Rust: records one logical query in both streams. Requests rejected by validation before entering the handler retain a null query count.
+- Rationale: preserve the known single-query count instead of copying an accidental omission from the reference analytics state.
+- Tests: `canonical_analytics_counts_one_query_on_success_and_handler_error` covers success, a handler error and rejection before the handler, using synthetic committed fixtures.
