@@ -290,13 +290,13 @@ impl App {
                 }),
             );
         }
-        if response
-            .extensions()
-            .get::<telemetry::ErrorKind>()
-            .is_none()
-            && let Some(kind) = usage.lock().unwrap().error_kind
         {
-            response.extensions_mut().insert(kind);
+            let mut usage = usage.lock().unwrap();
+            if let Some(kind) = response.extensions().get::<telemetry::ErrorKind>().copied() {
+                usage.error_kind = Some(kind);
+            } else if let Some(kind) = usage.error_kind {
+                response.extensions_mut().insert(kind);
+            }
         }
         self.record_error(&response, &headers, authenticated, non_ascii_auth);
         if status == 500 {

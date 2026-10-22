@@ -10,7 +10,7 @@ pub(crate) struct ResponseTooLarge;
 pub(crate) async fn list(catalog: &StacCatalog) -> HttpResponse {
     match catalog.snapshot().await {
         Ok(snapshot) => encode(Projection::List(&snapshot)),
-        Err(error) => detail(503, &error.to_string()),
+        Err(error) => unavailable(&error.to_string()),
     }
 }
 pub(crate) async fn describe(catalog: &StacCatalog, id: &str) -> HttpResponse {
@@ -27,8 +27,15 @@ pub(crate) async fn describe(catalog: &StacCatalog, id: &str) -> HttpResponse {
                 Some("application/json"),
             ),
         },
-        Err(error) => detail(503, &error.to_string()),
+        Err(error) => unavailable(&error.to_string()),
     }
+}
+fn unavailable(message: &str) -> HttpResponse {
+    let mut response = detail(503, message);
+    response
+        .extensions_mut()
+        .insert(crate::telemetry::ErrorKind::CatalogUnavailable);
+    response
 }
 fn visible(product: &Collection) -> bool {
     matches!(product.kind(), "forecast" | "analysis")
