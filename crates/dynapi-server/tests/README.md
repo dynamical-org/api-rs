@@ -25,7 +25,16 @@ reference-service responses are used.
 The `harness` feature also enables loopback store substitution for synthetic
 catalog recipes and one-shot typed reader failure injection. These hooks are
 omitted from ordinary builds. These tests do not qualify remaining handlers,
-projected transforms, routing or real telemetry delivery.
+projected transforms, routing or external telemetry availability.
+
+`telemetry.rs` and `fixtures/telemetry.json` own event conditions, keyed identities,
+metadata bounds, nulls, request isolation and cancellation. Telemetry module tests
+own sampling, heartbeat deltas/lifecycle and cumulative load observations. With
+`telemetry-delivery`, tests also own bounded overflow, stalled-backend response
+independence, payload allowlists and shutdown flush using a loopback collector.
+No external telemetry service or credentials are needed.
+
+These tests do not qualify unfinished data handlers or external sink availability.
 Maintainers verify migration output against the reference Python service outside
 the repository and record intentional differences in `DEVIATIONS.md`.
 

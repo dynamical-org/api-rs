@@ -234,3 +234,30 @@ surface; they do not qualify the pending execution handlers.
   first dataset open, publishes a new generation, and verifies both batch results
   retain the first generation while subsequent catalog/forecast requests see the
   new one. Removing the snapshot pin makes this regression fail.
+
+## D-tel-1 — Native error categories and explicit SDK context
+
+- Trigger: an unexpected request/server failure or application startup failure is reported.
+- Reference Python service: its framework and logging integrations capture Python exception types, messages and traceback frames, and attach scrubbed framework request context. A null caller tag can be present.
+- Rust: reports bounded static error categories with native stacks captured at the reporting site. A caught panic's original unwound stack is unavailable. Request tags are copied explicitly per event; an absent caller remains null at the injectable sink and is omitted by the native SDK's string-valued tag map. No automatic request, panic, logging, tracing or context integration is installed. Request bodies, raw client addresses, headers, exception messages, panic payloads, frame locals, source text and absolute source paths are excluded entirely.
+- Consequence: capture conditions and keyed correlation remain available, while exception/stack and SDK envelope metadata differ. Python exception messages and framework stack shapes are not reproduced. Startup events drain before exit. Expected client errors, cancellation and `ServerBusy` admission rejections do not become error events; catalog server failures do.
+- Rationale: use the native SDK without allowing framework context or raw exception text to disclose caller payloads or credentials. A native stack still identifies the Rust reporting path.
+- Tests: `telemetry_condition_fixture_preserves_nulls_routes_and_event_counts`, `authenticated_identity_and_metadata_are_shared_and_payloads_stay_private`, `authentication_encoding_failure_captures_an_untagged_error_only`, `panic_captures_once_with_request_scoped_tags`, `cancelled_request_releases_admission_and_emits_no_analytics_or_error`, `rate_and_busy_rejections_are_not_reported_as_errors`, `wire_payloads_exclude_unapproved_context_and_busy_errors`, and `startup_failure_is_reported_and_drained_before_process_exit`.
+
+## D-tel-2 — Native heartbeat resource counters
+
+- Trigger: a stdout `api_container` heartbeat is emitted.
+- Reference Python service: emits `pythonThreads`, process CPU, admitted-request/compute counters and available cgroup throttling deltas.
+- Rust: emits `nativeThreads` on Linux using the process thread count, alongside process CPU, admitted-request/compute counters and available cgroup throttling deltas. Unsupported measurements are omitted. Native threads include runtime and transport workers; there is no Python thread registry.
+- Consequence: thread-count field and meaning differ. CPU deltas, compute occupancy, cumulative dataset observations and cgroup delta semantics retain their meaning. Task ownership is native: first beat follows one interval, and cancellation/drop/shutdown stop the task without retaining the application.
+- Rationale: report a measured native runtime quantity rather than inventing a Python-equivalent count or zero for an unavailable source.
+- Tests: `heartbeat_deltas_and_optional_measurements_are_explicit`, `heartbeat_waits_one_interval_stops_and_does_not_own_the_app`, `coldness_progresses_only_on_success_and_counts_failures_cumulatively`, and `snapshot_and_session_lru_caps_keep_the_last_eight_successful_loads`.
+
+## D-tel-3 — Optional bounded delivery adapters
+
+- Trigger: the native server is built with `telemetry-delivery` and a PostHog project token or Sentry DSN is configured.
+- Reference Python service: uses its PostHog/Sentry SDK background transports and lifecycle shutdown.
+- Rust: sends PostHog capture JSON over reqwest and uses the selective native Sentry SDK. Application enqueue is immediate and bounded to 256 records of at most 64 KiB each. Overflow/oversize events are dropped; counters saturate at `u64::MAX`. HTTP requests have a two-second timeout, do not follow redirects and do not inherit proxy settings. Failed PostHog sends are dropped without retry. The SDK's separate bounded envelope queue and rate-limit handling remain active. Shutdown shares a ten-second drain/flush budget and reserves four additional seconds for the SDK's bounded blocking enqueue and HTTP-thread join (fourteen seconds nominal total with Sentry, subject to scheduling; ten without). Application draining stops before the reserve. Pending application events are counted as dropped when the drain budget expires; pending SDK envelopes may also be discarded on close. SDK cleanup is awaited, not detached. Configured stdout heartbeats add application `telemetryDropped` and `telemetryFailed` counters; SDK-internal loss accounting is separate.
+- Consequence: SDK-added analytics metadata, transport batching/retries and loss behavior differ. Core analytics event/properties, caller hash, nulls and capture conditions are preserved. No key/DSN means no client, worker or network activity; default builds omit delivery dependencies. Malformed sink configuration disables delivery using a static diagnostic, preserving stdout and request processing.
+- Rationale: bound observability work and memory independently of endpoint availability, keep native delivery opt-in, and preserve the portable crate dependency boundary. This completes the delivery and heartbeat follow-up described in D8; its data-handler configuration limitations remain separate.
+- Tests: `unconfigured_delivery_creates_no_worker_or_http_client`, `bounded_queue_drops_without_waiting_for_a_stalled_backend`, `oversized_events_are_dropped_before_the_queue`, `stalled_delivery_does_not_delay_an_http_response`, `loopback_wire_contract_and_shutdown_flush_both_destinations`, `saturated_sdk_and_stalled_endpoint_have_a_bounded_joined_shutdown`, `application_drain_and_sdk_flush_share_one_budget`, and `only_handler_success_records_are_sampled_and_all_fields_pass_through`.
