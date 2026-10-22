@@ -148,8 +148,9 @@ async fn serve_connection_until(
         tokio::select! {
             biased;
             _ = expired => break,
-            _ = &mut connection => break,
+            // Disable keep-alive before HTTP readiness can dispatch new work.
             _ = stopping.changed(), if !draining => {},
+            _ = &mut connection => break,
             changed = updates.changed() => if changed.is_err() { break; },
         }
     }
@@ -159,6 +160,102 @@ async fn serve_connection_until(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn queued_stop_prevents_idle_connection_from_dispatching_a_request() {
+        let app = Arc::new(
+            App::new(
+                crate::config::Config::from_values(&Default::default()).unwrap(),
+                Arc::new(crate::Monotonic::default()),
+                Arc::new(crate::telemetry::RecordingSink::default()),
+            )
+            .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let (stop, stopped) = watch::channel(false);
+        let connection = serve_connection_until(stream, app, "127.0.0.1".into(), stopped);
+        tokio::pin!(connection);
+        assert!(futures_util::poll!(&mut connection).is_pending());
+        // Suspend inside select!, then queue both stop and socket readiness
+        // before polling again. No executor scheduling race decides their order.
+        stop.send_replace(true);
+        client
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), &mut connection)
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        // An unread request may cause a reset rather than an orderly EOF.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .unwrap();
+        assert!(
+            response.is_empty(),
+            "request dispatched after stop: {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_stop_finishes_in_flight_request_without_dispatching_pipeline() {
+        let app = Arc::new(
+            App::new(
+                crate::config::Config::from_values(&Default::default()).unwrap(),
+                Arc::new(crate::Monotonic::default()),
+                Arc::new(crate::telemetry::RecordingSink::default()),
+            )
+            .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let (stop, stopped) = watch::channel(false);
+        let connection = serve_connection_until(stream, app, "127.0.0.1".into(), stopped);
+        tokio::pin!(connection);
+        client
+            .write_all(b"POST /v1/forecasts HTTP/1.1\r\nHost: example.test\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(futures_util::poll!(&mut connection).is_pending());
+        // The handler awaits its last body byte. Complete it and queue another
+        // request after stop, while keeping the connection future suspended.
+        stop.send_replace(true);
+        client
+            .write_all(b"}GET /healthz HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), &mut connection)
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 422"), "{response}");
+        assert_eq!(
+            response.matches("HTTP/1.1 ").count(),
+            1,
+            "pipeline dispatched after stop: {response}"
+        );
+    }
 
     #[tokio::test]
     async fn drain_waits_for_detached_compute_without_connection_tasks() {
