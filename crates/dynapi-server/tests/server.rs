@@ -1139,7 +1139,32 @@ async fn hyper_owns_header_syntax_and_parser_error_responses() {
     )
     .await;
     assert_eq!(status(&response), 200);
+    let prefix = "GET /healthz HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
+    let padding = "X-Padding: \r\n\r\n".len();
+    // Include Host and Connection in the 100-field limit and all framing in
+    // the 417,792-byte limit. Complete heads must obey both explicit limits.
     for (label, fields) in [
+        ("100 fields", "X-Test: x\r\n".repeat(98)),
+        (
+            "417,792 bytes",
+            format!(
+                "X-Padding: {}\r\n",
+                "x".repeat(417_792 - prefix.len() - padding)
+            ),
+        ),
+    ] {
+        let response = raw_exchange(&server, format!("{prefix}{fields}\r\n").as_bytes()).await;
+        assert_eq!(status(&response), 200, "{label}");
+    }
+    for (label, fields) in [
+        ("101 fields", "X-Test: x\r\n".repeat(99)),
+        (
+            "417,793 bytes",
+            format!(
+                "X-Padding: {}\r\n",
+                "x".repeat(417_793 - prefix.len() - padding)
+            ),
+        ),
         ("header count", "X-Test: x\r\n".repeat(101)),
         (
             "header bytes",
