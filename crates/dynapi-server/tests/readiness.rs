@@ -254,6 +254,10 @@ async fn stuck_handler_cannot_hold_process_past_drain_and_finalization_bound() {
     process.event("api_harness_stuck").await;
     let started = Instant::now();
     process.signal("-TERM");
+    let failure = process.event("api_failure").await;
+    assert_eq!(failure["cancelled"], true);
+    let drained = process.event("api_shutdown_drained").await;
+    assert_eq!(drained["drained"], false);
     let status = process.exited(Duration::from_secs(2)).await;
     assert!(!status.success());
     assert!(started.elapsed() >= Duration::from_millis(180));

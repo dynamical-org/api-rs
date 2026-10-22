@@ -88,7 +88,9 @@ impl Server {
         .is_ok();
         if !drained {
             // Cancels HTTP futures, never native workers or their compute permits.
-            self.connections.abort_all();
+            // Await request destructors/terminal records before telemetry flush.
+            // The process watchdog also bounds a stuck cancellation destructor.
+            self.connections.shutdown().await;
         }
         drained
     }

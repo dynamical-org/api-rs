@@ -48,6 +48,8 @@ Idle connections close immediately. Request drain waits for both connection task
 and zero occupied compute permits, including workers whose clients disconnected.
 Permits belong to the workers until their work ends; reaching a timeout does not
 release them. At the request deadline remaining HTTP futures are cancelled.
+Cancellation cleanup and terminal records finish before telemetry flush; a stuck
+request destructor is covered by the same total process watchdog.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
