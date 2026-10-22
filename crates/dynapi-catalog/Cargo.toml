@@ -1,0 +1,32 @@
+[package]
+name = "dynapi-catalog"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[features]
+default = ["native", "reader"]
+native = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:rand", "dep:chrono", "dep:tracing"]
+reader = ["dep:dynapi-reader"]
+
+[dependencies]
+dynapi-contract = { path = "../dynapi-contract" }
+dynapi-policy = { path = "../dynapi-policy" }
+dynapi-reader = { path = "../dynapi-reader", optional = true }
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip", "arbitrary_precision"] }
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
+indexmap = { version = "2", features = ["serde"] }
+url = "2"
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream"], optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
+futures = { version = "0.3", optional = true }
+rand = { version = "0.10", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tokio = { workspace = true, features = ["sync", "net", "io-util"] }

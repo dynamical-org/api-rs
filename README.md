@@ -7,6 +7,7 @@ to serve the API while the Rust implementation is verified during migration.
 
 ## Crates
 
+- `dynapi-catalog`: STAC parsing, refresh, store recipes and dataset-cache policy with portable and native adapters.
 - `dynapi-contract`: portable request validation, ordered JSON, formatting and error envelopes.
 - `dynapi-policy`: portable rate limits, compute permits, CORS, cache and timing rules.
 - `dynapi-query`: portable point/run/time selection, budgets, load plans and response encoding over an opened dataset view.
@@ -91,7 +92,7 @@ additional storage/cloud dependencies transitively because Cargo features are
 additive. Zarrs' ndarray feature works around unguarded types in its async code.
 
 CI compile-checks `dynapi-contract`, `dynapi-policy` and `dynapi-query` for
-`wasm32-unknown-unknown`. Native storage, runtimes and C-backed codecs remain
+`wasm32-unknown-unknown`, plus `dynapi-catalog` with default features disabled. Native storage, runtimes and C-backed codecs remain
 portability blockers; these checks do not qualify the reader or server for WASM.
 
 ## ABI rule and CI
@@ -111,4 +112,5 @@ workflow permissions are read-only, with no secrets or deployment.
 ## License
 
 [BSD-3-Clause](LICENSE). Third-party numeric parser notices are retained in
-[LICENSE-numeric](crates/dynapi-contract/LICENSE-numeric).
+[LICENSE-numeric](crates/dynapi-contract/LICENSE-numeric). URL compatibility code retains
+[LICENSE-httpx](crates/dynapi-catalog/LICENSE-httpx).
