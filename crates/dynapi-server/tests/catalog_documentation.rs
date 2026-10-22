@@ -246,6 +246,14 @@ async fn catalog_detail_includes_nullable_metadata_and_preserves_numeric_and_fie
     assert_eq!(analysis.json()["boundingBox"], Value::Null);
     assert_eq!(analysis.json()["license"], "proprietary");
     assert_eq!(analysis.json()["version"], "unknown");
+    let unsupported = server
+        .request("GET", "/v1/data-products/example-unsupported-grid", "")
+        .await;
+    assert_eq!(unsupported.status, 200);
+    assert_eq!(
+        unsupported.json()["boundingBox"],
+        json!([null, null, null, 0.0])
+    );
 }
 
 #[tokio::test]

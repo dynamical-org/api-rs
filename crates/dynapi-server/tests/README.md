@@ -55,3 +55,5 @@ The templates retain their response-significant whitespace; the documentation
 asset directory disables Git's trailing-blank checks for those HTML files.
 Catalog numeric tests distinguish the Pydantic/Ryū layout used by dict responses
 from the Python JSON float layout used by explicit JSONResponse endpoints.
+The fictional catalog also includes non-finite bounding-box strings, whose
+coerced values serialize as null under that dict-response policy.

@@ -31,6 +31,7 @@
     },
     {
       "id": "example-unsupported-grid",
+      "extent": {"spatial": {"bbox": [["NaN", "Infinity", "-Infinity", "0"]]}},
       "cube:dimensions": {"time": {}, "station": {}},
       "assets": {"icechunk": {"href": "s3://example-bucket/stations", "xarray:storage_options": {"client_kwargs": {"region_name": "us-west-2"}}}}
     },

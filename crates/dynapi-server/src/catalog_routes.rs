@@ -125,7 +125,8 @@ fn product_detail(product: &Collection) -> Value {
 }
 
 /// Preserve integer/float identity and insertion order from the catalog parser.
-/// Non-finite metadata remains a serialization error, as in a JSONResponse.
+/// Bounding-box coercion can produce non-finite floats; the dict serializer
+/// maps those to null, just like Pydantic's default JSON policy.
 fn metadata(value: &serde_json::Value) -> Value {
     match value {
         serde_json::Value::Null => Value::Null,
@@ -172,7 +173,7 @@ fn wire_value(value: Value) -> Option<serde_json::Value> {
         Value::Int(value) => Json::Number(value.to_string().parse().ok()?),
         Value::Float(value) => {
             if !value.is_finite() {
-                return None;
+                return Some(Json::Null);
             }
             let mut buffer = ryu::Buffer::new();
             let raw = buffer.format_finite(value);
