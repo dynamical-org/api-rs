@@ -23,6 +23,10 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["rustls",
 
 icechunk-s3.workspace = true
 zstd = "=0.14.3"
+bytes = "1"
+chrono = "0.4"
+typetag = "0.2"
+thiserror = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "sync"] }

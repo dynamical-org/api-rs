@@ -81,24 +81,36 @@ range plus one excess byte). That byte count is what the staged test server obse
 general guarantee is that the collector never holds more than the requested range: it
 rejects the first data frame that would overflow it.
 
-**Repository HTTP transport residual risk:** these virtual-payload bounds do not
-cover Icechunk's repository objects: config, snapshots, manifests **and ordinary
-stored chunks** under the repository's `chunks/`. In 2.2.2, `new_http_storage` accepts only
-ClientOptions strings and headers; neither redirect policy nor a body limit is a
-ClientOptions key. ObjectStorage's client/backend constructor is private, so using
-the bounded connector there would require a separate storage implementation or an
-upstream injection API. Its HttpObjectStoreBackend uses object_store's default
-reqwest client, which follows up to ten redirects, including different paths and
-origins. This is bounded by that hop limit, the explicit 5 s connect / 20 s read
-and request timeouts, one retry, and the reader's 90 s deadline; it is **not**
-confined to the repository URL's prefix. Repository URLs and their redirect targets
-must therefore be trusted. Config YAML is collected with `read_to_end`; snapshots
-and manifests use AssetManager's `fetch_and_decode`, which also reads to EOF into
-a Vec (a known manifest size is only a preallocation hint), then decompresses.
-The downstream Zarr metadata and chunk checks do not cap those upstream allocations.
-A hostile repository response or compressed metadata can still exhaust memory;
-there is no repository HTTP memory cap in this prototype. This remains outside
-the virtual-chunk transport fix.
+Repository HTTP uses a separate readonly implementation of Icechunk's storage
+trait. Every config, repo, snapshot, manifest and ordinary stored-chunk read goes
+through a no-redirect client; no native HTTP repository fallback is used. Object
+keys are appended as path segments beneath the repository URL. Credentials,
+query strings and fragments in repository URLs are rejected. Writes and object
+listing are unsupported. Branch lookup uses the bounded repo object.
+
+Full `config.yaml` and `repo` responses are capped at 1 MiB; other full metadata
+objects at 64 MiB; chunks and individual requested ranges at 72 MiB + 16 bytes
+(the existing int64 chunk, shard-index and codec envelope). Invalid or oversized
+requested ranges fail before I/O. Full reads require HTTP 200; ranged reads
+require HTTP 206 with the exact checked Content-Range endpoints and a numeric
+total containing that range. A supplied Content-Length must fit the cap and
+equal the requested range length. Streaming collection checks each frame before
+copying, limits buffer growth, and checks EOF against the expected length.
+Missing lengths remain bounded by the object cap or exact range length. Content
+encodings other than identity are refused. Headers never determine an allocation.
+Error/redirect bodies are dropped, including on the single retry for request
+transport failures, 429 or 5xx. The client uses 5 s connect and 20 s read/request
+timeouts under the reader's 90 s deadline. Repository range requests are sequential.
+Typed missing objects remain missing; other failures cannot become fill data.
+
+**Remaining repository-content trust requirement:** these are encoded transport
+bounds, not a whole-process memory guarantee. Icechunk can preallocate from
+repository metadata and decompress/parse snapshots and manifests after delivery;
+its metadata expansion and caches are not bounded by this transport. Hostile
+compressed metadata can still exhaust memory. Repository contents must remain
+trusted until the upstream asset decode path is separately bounded. The reader
+still has native dependencies and this HTTP implementation does not establish
+WASM support.
 
 Success: `{"dtype":"float32","shape":[4],"data_b64":"..."}`.
 Failure: `{"error":{"kind":"Unsupported","message":"..."}}`.

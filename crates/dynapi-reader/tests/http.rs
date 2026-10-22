@@ -59,6 +59,16 @@ struct ServerOptions {
     redirect: Option<String>,
     payload: Option<Payload>,
     omit_checksums: bool,
+    repository_fault: Option<(&'static str, RepositoryFault)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RepositoryFault {
+    Redirect,
+    Oversized,
+    WrongRange,
+    Truncated,
+    Unavailable,
 }
 
 #[derive(Clone, Copy)]
@@ -215,6 +225,17 @@ async fn respond(
         path: path.into(),
         range: range.map(str::to_owned),
     });
+    if let Some((prefix, fault)) = options.repository_fault
+        && path.starts_with(prefix)
+    {
+        return match fault {
+            RepositoryFault::Redirect => socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: /denied/repo\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await,
+            RepositoryFault::Oversized => socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9999999999\r\nConnection: close\r\n\r\n").await,
+            RepositoryFault::WrongRange => socket.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-16/30\r\nContent-Length: 16\r\nConnection: close\r\n\r\nXXXXXXXXXXXXXXXX").await,
+            RepositoryFault::Truncated => socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\nX").await,
+            RepositoryFault::Unavailable => send_error(&mut socket, 503).await,
+        };
+    }
     if let Some(status) = options.status {
         return send_error(&mut socket, status).await;
     }
@@ -596,6 +617,60 @@ async fn http_storage_error(status: u16) {
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Storage, "{error}");
     assert!(!server.accesses().is_empty());
+}
+
+#[tokio::test]
+async fn repository_objects_cannot_bypass_bounded_transport() {
+    for prefix in [
+        "/repository/repo",
+        "/repository/config.yaml",
+        "/repository/snapshots/",
+        "/repository/manifests/",
+        "/repository/chunks/",
+    ] {
+        for fault in [
+            RepositoryFault::Redirect,
+            RepositoryFault::Oversized,
+            RepositoryFault::Truncated,
+            RepositoryFault::Unavailable,
+        ] {
+            let server = Server::new(ServerOptions {
+                repository_fault: Some((prefix, fault)),
+                ..Default::default()
+            })
+            .await;
+            let result = server.read("stored", false, selection(), &[]).await;
+            if prefix == "/repository/config.yaml" {
+                // Icechunk probes this optimistically, but V2 keeps config in
+                // repo and ignores errors from the unused V1 config file.
+                assert_values(&result.unwrap().0);
+            } else {
+                assert!(result.is_err(), "{prefix}: {fault:?} was accepted");
+            }
+            assert!(
+                server.accesses().iter().any(|a| a.path.starts_with(prefix)),
+                "fault was not exercised: {prefix}"
+            );
+            assert!(
+                server
+                    .accesses()
+                    .iter()
+                    .all(|a| a.path.starts_with("/repository/")),
+                "repository redirect escaped its prefix"
+            );
+        }
+    }
+    let server = Server::new(ServerOptions {
+        repository_fault: Some(("/repository/chunks/", RepositoryFault::WrongRange)),
+        ..Default::default()
+    })
+    .await;
+    assert!(
+        server
+            .read("stored", false, selection(), &[])
+            .await
+            .is_err()
+    );
 }
 
 async fn invalid_http_container(prefix: &str) {

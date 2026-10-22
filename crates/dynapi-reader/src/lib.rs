@@ -25,6 +25,7 @@ use zarrs_storage::{
 
 pub mod cf_time;
 mod http;
+mod repository_http;
 
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 16 * 1024 * 1024;
@@ -57,16 +58,6 @@ pub struct HttpVirtualChunkContainer {
     pub url_prefix: String,
     #[serde(default)]
     pub name: Option<String>,
-}
-
-// The HTTP repository backend does not translate StorageSettings timeouts into
-// ClientOptions, so supply them explicitly. Virtual payloads use their own client.
-fn http_options() -> HashMap<String, String> {
-    HashMap::from([
-        ("connect_timeout".into(), "5s".into()),
-        ("read_timeout".into(), "20s".into()),
-        ("timeout".into(), "20s".into()),
-    ])
 }
 
 fn http_virtual_options() -> HashMap<String, String> {
@@ -1518,12 +1509,10 @@ impl ReadSession {
                 if !(url.starts_with("https://") || url.starts_with("http://")) {
                     return Err(unsupported("Expected HTTP(S) repository URL"));
                 }
-                icechunk::storage::new_http_storage(
-                    url.trim_end_matches('/'),
-                    Some(http_options()),
-                    None,
+                Arc::new(
+                    repository_http::BoundedRepositoryStorage::new(url)
+                        .map_err(|e| err(ErrorKind::Storage, e))?,
                 )
-                .map_err(|e| err(ErrorKind::Storage, e))?
             }
             StoreDescriptor::AnonymousS3 {
                 bucket,

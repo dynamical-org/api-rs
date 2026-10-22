@@ -83,9 +83,10 @@ ranges and decode each touched inner chunk once. Trace counters describe logical
 deliveries, not physical storage traffic or whole-process memory.
 
 Virtual HTTP payloads require declared anonymous container prefixes and bounded
-range responses without redirects. Icechunk's repository-object HTTP transport
-still follows redirects and has no body memory cap; repository URLs and redirect
-targets must be trusted. These prototype bounds are not production qualification.
+range responses without redirects. Repository HTTP reads also reject redirects,
+validate ranges and cap encoded response bodies. Icechunk's subsequent metadata
+decompression and parsing still require trusted repository contents. These
+prototype bounds are not production qualification.
 The full contract, codec policy, CF tuples and transport limitations are in
 [docs/reader.md](docs/reader.md).
 
