@@ -5,11 +5,21 @@ use crate::{
     output,
 };
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 use speedate::{
     Date, DateTime, DateTimeConfig, MicrosecondsPrecisionOverflowBehavior, Time, TimeConfig,
 };
 use strum::EnumMessage;
+
+// Shared with documentation so enforced bounds and literal values stay aligned.
+pub const MAX_QUERIES: usize = 10;
+pub const MAX_VARIABLES: usize = 25;
+pub const MAX_QUERY_ID_LENGTH: usize = 128;
+pub const MIN_NONEMPTY_LENGTH: usize = 1;
+pub const LATITUDE_BOUND: f64 = 90.;
+pub const LONGITUDE_BOUND: f64 = 180.;
+pub const LATEST_INIT_TIME: &str = "latest";
+pub const MIN_LEAD_TIME_HOURS: i64 = 0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForecastBatch {
@@ -25,6 +35,15 @@ pub enum Representation {
     #[default]
     Auto,
     Requested,
+}
+impl Representation {
+    pub const ALL: [Self; 2] = [Self::Auto, Self::Requested];
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Requested => "requested",
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForecastQuery {
@@ -84,7 +103,7 @@ impl ForecastQuery {
             (
                 "initTime",
                 match self.init_time {
-                    Some(InitTime::Latest) => Value::from("latest"),
+                    Some(InitTime::Latest) => Value::from(LATEST_INIT_TIME),
                     Some(InitTime::Exact(d)) => Value::from(output::datetime(&d)),
                     None => Value::Null,
                 },
@@ -100,13 +119,7 @@ impl ForecastQuery {
                     .map(Value::Int)
                     .unwrap_or(Value::Null),
             ),
-            (
-                "representation",
-                Value::from(match self.representation {
-                    Representation::Auto => "auto",
-                    Representation::Requested => "requested",
-                }),
-            ),
+            ("representation", Value::from(self.representation.as_str())),
         ])
     }
 }
@@ -240,8 +253,8 @@ pub fn validate_forecast(body: &[u8], content_type: Option<&str>) -> ValidationR
     let loc = path(&root, "queries");
     if let Some(raw) = input.get("queries") {
         if let Value::Array(values) = raw {
-            if values.len() > 10 {
-                validator.length(raw, &loc, 10, true, values.len());
+            if values.len() > MAX_QUERIES {
+                validator.length(raw, &loc, MAX_QUERIES, true, values.len());
             } else {
                 let before = validator.errors.len();
                 for (i, value) in values.iter().enumerate() {
@@ -250,7 +263,7 @@ pub fn validate_forecast(body: &[u8], content_type: Option<&str>) -> ValidationR
                     }
                 }
                 if values.is_empty() && validator.errors.len() == before {
-                    validator.length(raw, &loc, 1, false, 0);
+                    validator.length(raw, &loc, MIN_NONEMPTY_LENGTH, false, 0);
                 }
             }
         } else {
@@ -464,7 +477,7 @@ impl Validator {
             self.push(kind, loc, msg, input, None);
             return None;
         };
-        if value < BigInt::zero() {
+        if value < BigInt::from(MIN_LEAD_TIME_HOURS) {
             self.push(
                 "greater_than_equal",
                 loc,
@@ -603,10 +616,10 @@ impl Validator {
         used.push(key);
         let query_id = raw
             .filter(|x| **x != Value::Null)
-            .and_then(|v| self.string(v, &p, Some(1), Some(128)));
+            .and_then(|v| self.string(v, &p, Some(MIN_NONEMPTY_LENGTH), Some(MAX_QUERY_ID_LENGTH)));
         let (raw, p, key) = self.field(input, "dataProductId", "data_product_id", true, loc);
         used.push(key);
-        let product = raw.and_then(|v| self.string(v, &p, Some(1), None));
+        let product = raw.and_then(|v| self.string(v, &p, Some(MIN_NONEMPTY_LENGTH), None));
         let (raw, p, key) = self.field(input, "location", "location", true, loc);
         used.push(key);
         let mut latitude = None;
@@ -614,9 +627,9 @@ impl Validator {
         if let Some(raw) = raw {
             if let Some(pairs) = self.model(raw, &p) {
                 let (v, l, _) = self.field(raw, "latitude", "latitude", true, &p);
-                latitude = v.and_then(|v| self.float(v, &l, 90.));
+                latitude = v.and_then(|v| self.float(v, &l, LATITUDE_BOUND));
                 let (v, l, _) = self.field(raw, "longitude", "longitude", true, &p);
-                longitude = v.and_then(|v| self.float(v, &l, 180.));
+                longitude = v.and_then(|v| self.float(v, &l, LONGITUDE_BOUND));
                 self.extras(pairs, &["latitude", "longitude"], &p);
             }
         }
@@ -626,8 +639,8 @@ impl Validator {
         if let Some(raw) = raw {
             match raw {
                 Value::Array(values) => {
-                    if values.len() > 25 {
-                        self.length(raw, &p, 25, true, values.len());
+                    if values.len() > MAX_VARIABLES {
+                        self.length(raw, &p, MAX_VARIABLES, true, values.len());
                     } else {
                         for (i, v) in values.iter().enumerate() {
                             if let Some(s) = self.string(v, &path(&p, i), None, None) {
@@ -635,7 +648,7 @@ impl Validator {
                             }
                         }
                         if values.is_empty() {
-                            self.length(raw, &p, 1, false, 0);
+                            self.length(raw, &p, MIN_NONEMPTY_LENGTH, false, 0);
                         }
                     }
                 }
@@ -645,7 +658,7 @@ impl Validator {
         let (raw, p, key) = self.field(input, "initTime", "init_time", false, loc);
         used.push(key);
         let init_time = raw.filter(|x| **x != Value::Null).and_then(|v| {
-            if v == &Value::from("latest") {
+            if v == &Value::from(LATEST_INIT_TIME) {
                 Some(InitTime::Latest)
             } else {
                 let d = self.datetime(v, &path(&p, "datetime"));
@@ -686,9 +699,13 @@ impl Validator {
         let (raw, p, key) = self.field(input, "representation", "representation", false, loc);
         used.push(key);
         let representation = match raw {
-            None => Representation::Auto,
-            Some(Value::String(value)) if value == "auto" => Representation::Auto,
-            Some(Value::String(value)) if value == "requested" => Representation::Requested,
+            None => Representation::default(),
+            Some(Value::String(value)) if value == Representation::Auto.as_str() => {
+                Representation::Auto
+            }
+            Some(Value::String(value)) if value == Representation::Requested.as_str() => {
+                Representation::Requested
+            }
             Some(value) => {
                 self.push(
                     "literal_error",

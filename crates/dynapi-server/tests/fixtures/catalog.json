@@ -1,0 +1,43 @@
+{
+  "collections": [
+    {
+      "id": "z-example-forecast",
+      "title": "Example météo ☀",
+      "description": "A fictional forecast.",
+      "version": "v1",
+      "license": "CC0-1.0",
+      "model_id": "example-model",
+      "model_name": "Example Model",
+      "links": [{"rel": "self", "href": "https://catalog.example.test/z-example-forecast.json"}],
+      "extent": {"spatial": {"bbox": [[-180, -90, 180, 90]]}},
+      "cube:dimensions": {
+        "init_time": {"type": "temporal"},
+        "lead_time": {"type": "temporal", "values": [0, 6, 12]},
+        "latitude": {"type": "spatial", "extent": [-90.0, 90.0]},
+        "longitude": {"type": "spatial", "step": 0.00001, "offset": -0.0, "tiny": 0.000001, "scale": 10000000000000000.0}
+      },
+      "cube:variables": {
+        "wind": {"type": "data", "dimensions": ["init_time", "lead_time", "latitude", "longitude"], "unit": "m/s", "long_name": "Example wind", "standard_name": "wind_speed"},
+        "temperature": {"type": "data", "dimensions": ["init_time", "lead_time", "latitude", "longitude"]},
+        "latitude": {"type": "coordinate", "dimensions": ["latitude"]}
+      },
+      "assets": {"icechunk": {"href": "s3://example-bucket/forecast", "xarray:storage_options": {"client_kwargs": {"region_name": "us-west-2"}}}}
+    },
+    {
+      "id": "a-example-analysis",
+      "cube:dimensions": {"time": {}, "x": {}, "y": {}},
+      "cube:variables": {"rain": {"type": "data", "dimensions": ["time", "y", "x"], "unit": "mm"}},
+      "assets": {"icechunk": {"href": "s3://example-bucket/analysis", "xarray:storage_options": {"client_kwargs": {"region_name": "us-west-2"}}}}
+    },
+    {
+      "id": "example-unsupported-grid",
+      "cube:dimensions": {"time": {}, "station": {}},
+      "assets": {"icechunk": {"href": "s3://example-bucket/stations", "xarray:storage_options": {"client_kwargs": {"region_name": "us-west-2"}}}}
+    },
+    {
+      "id": "example-hidden",
+      "cube:dimensions": {"station": {}},
+      "assets": {"icechunk": {"href": "s3://example-bucket/hidden", "xarray:storage_options": {"client_kwargs": {"region_name": "us-west-2"}}}}
+    }
+  ]
+}

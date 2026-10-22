@@ -22,6 +22,7 @@ http-body-util = "0.1"
 futures-util = "0.3"
 tokio = { workspace = true, features = ["net", "signal", "io-util", "sync"] }
 serde_json.workspace = true
+ryu = "1"
 uuid = { version = "1", features = ["v4"] }
 subtle = "2"
 hmac = "0.12"
