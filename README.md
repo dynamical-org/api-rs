@@ -131,3 +131,9 @@ workflow permissions are read-only, with no secrets or deployment.
 [BSD-3-Clause](LICENSE). Third-party numeric parser notices are retained in
 [LICENSE-numeric](crates/dynapi-contract/LICENSE-numeric). URL compatibility code retains
 [LICENSE-httpx](crates/dynapi-catalog/LICENSE-httpx).
+
+## Process readiness
+
+See [startup and shutdown](docs/readiness.md) for the bounded pre-bind catalog
+wait, release response marker, HTTPS slash redirects, required origin auth,
+SIGTERM/SIGINT drain and total process shutdown deadline.

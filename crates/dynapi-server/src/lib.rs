@@ -194,6 +194,7 @@ impl App {
             response
                 .headers_mut()
                 .insert("x-request-id", id.parse().unwrap());
+            self.add_release(&mut response);
             return Ok(response);
         }
         let _admission = self.heartbeat.admit();
@@ -330,6 +331,7 @@ impl App {
         response
             .headers_mut()
             .insert("x-request-id", id.parse().unwrap());
+        self.add_release(&mut response);
         Ok(response)
     }
     fn record_error(
@@ -382,6 +384,13 @@ impl App {
             }));
         }
     }
+    fn add_release(&self, response: &mut HttpResponse) {
+        if let Some(release) = &self.config.release {
+            response
+                .headers_mut()
+                .insert("x-dynamical-release", release.clone());
+        }
+    }
     async fn route(
         &self,
         request: Request<Incoming>,
@@ -403,6 +412,29 @@ impl App {
             return Ok(response);
         }
         #[cfg(feature = "harness")]
+        if let Some(mode) = request.headers().get("x-dynapi-harness-stuck") {
+            if mode == "worker" {
+                let permit = self.gate.try_acquire().expect("harness compute slot");
+                tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    println!(
+                        "{}",
+                        json!({"event": "api_harness_stuck", "mode": "worker"})
+                    );
+                    loop {
+                        std::thread::park();
+                    }
+                });
+                std::future::pending::<()>().await;
+            } else if mode == "handler" {
+                println!(
+                    "{}",
+                    json!({"event": "api_harness_stuck", "mode": "handler"})
+                );
+                std::future::pending::<()>().await;
+            }
+        }
+        #[cfg(feature = "harness")]
         if request
             .headers()
             .get("x-dynapi-harness-panic")
@@ -417,7 +449,11 @@ impl App {
                 format!("{path}/")
             };
             if path != "/" && find_route(&redirected).is_some() {
-                let host = scope_authority(request.headers().get("host"), local);
+                let host = scope_authority(
+                    request.headers().get("host"),
+                    local,
+                    &self.config.public_scheme,
+                );
                 let query = request
                     .uri()
                     .query()
@@ -426,7 +462,11 @@ impl App {
                     .unwrap_or_default();
                 return Ok(redirect(
                     307,
-                    &format!("http://{host}{}{query}", quote_location(&redirected)),
+                    &format!(
+                        "{}://{host}{}{query}",
+                        self.config.public_scheme,
+                        quote_location(&redirected)
+                    ),
                 ));
             }
             return Ok(detail(404, "Not Found"));
@@ -540,6 +580,13 @@ impl App {
     }
     pub fn warm_catalog(&self) {
         self.data.warm();
+    }
+    pub fn catalog_status(&self) -> dynapi_catalog::refresh::CatalogStatus {
+        self.catalog.status()
+    }
+    /// Called after request drain and telemetry flush, before runtime shutdown.
+    pub fn close_catalog(&self) {
+        self.catalog.close();
     }
     fn stub(&self) -> HttpResponse {
         let Some(_permit) = self.gate.try_acquire() else {
@@ -748,10 +795,10 @@ fn starlette_host(host: &[u8]) -> bool {
     }
 }
 
-fn scope_authority(host: Option<&HeaderValue>, local: SocketAddr) -> String {
+fn scope_authority(host: Option<&HeaderValue>, local: SocketAddr, scheme: &str) -> String {
     if let Some(host) = host.filter(|host| starlette_host(host.as_bytes())) {
         latin1(host.as_bytes())
-    } else if local.port() == 80 {
+    } else if matches!((scheme, local.port()), ("http", 80) | ("https", 443)) {
         local.ip().to_string()
     } else {
         // Starlette interpolates the scope's server host directly, including IPv6.
@@ -760,21 +807,28 @@ fn scope_authority(host: Option<&HeaderValue>, local: SocketAddr) -> String {
 }
 
 #[test]
-fn scope_authority_elides_only_the_http_listener_default_port() {
-    for (local, expected) in [
-        ("127.0.0.2:80", "127.0.0.2"),
-        ("127.0.0.2:443", "127.0.0.2:443"),
-        ("[::1]:80", "::1"),
-        ("[::1]:8080", "::1:8080"),
+fn scope_authority_elides_only_the_configured_scheme_default_port() {
+    for (scheme, local, expected) in [
+        ("http", "127.0.0.2:80", "127.0.0.2"),
+        ("http", "127.0.0.2:443", "127.0.0.2:443"),
+        ("https", "127.0.0.2:443", "127.0.0.2"),
+        ("https", "127.0.0.2:80", "127.0.0.2:80"),
+        ("http", "[::1]:80", "::1"),
+        ("http", "[::1]:8080", "::1:8080"),
+        ("https", "[::1]:443", "::1"),
     ] {
         let local = local.parse().unwrap();
-        assert_eq!(scope_authority(None, local), expected);
+        assert_eq!(scope_authority(None, local, scheme), expected);
         assert_eq!(
-            scope_authority(Some(&HeaderValue::from_static("example%2Etest")), local),
+            scope_authority(
+                Some(&HeaderValue::from_static("example%2Etest")),
+                local,
+                scheme
+            ),
             expected
         );
         assert_eq!(
-            scope_authority(Some(&HeaderValue::from_static("test:80")), local),
+            scope_authority(Some(&HeaderValue::from_static("test:80")), local, scheme),
             "test:80"
         );
     }

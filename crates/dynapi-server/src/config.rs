@@ -8,6 +8,11 @@ pub const MAX_HEADER_BYTES: usize = 417_792;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub origin_secret: Option<String>,
+    pub release: Option<hyper::header::HeaderValue>,
+    pub public_scheme: String,
+    pub catalog_wait: Duration,
+    pub drain_timeout: Duration,
+    pub finalization_timeout: Duration,
     pub rate: RateProfile,
     pub query_rate: RateProfile,
     pub compute_slots: usize,
@@ -69,6 +74,47 @@ impl Config {
         if origin_secret.as_deref() == Some("") {
             return Err("DYNAMICAL_API_ORIGIN_SECRET must not be empty".into());
         }
+        if values
+            .get("DYNAMICAL_API_REQUIRE_ORIGIN_AUTH")
+            .is_some_and(|v| v == "1")
+            && origin_secret.as_deref().is_none_or(|v| v.trim().is_empty())
+        {
+            return Err(
+                "DYNAMICAL_API_REQUIRE_ORIGIN_AUTH requires a nonblank DYNAMICAL_API_ORIGIN_SECRET"
+                    .into(),
+            );
+        }
+        let release = values
+            .get("DYNAMICAL_API_RELEASE")
+            .map(|value| value.parse().map_err(|_| "Invalid DYNAMICAL_API_RELEASE"))
+            .transpose()?;
+        let public_scheme = get("DYNAMICAL_API_PUBLIC_SCHEME", "http");
+        if !matches!(public_scheme.as_str(), "http" | "https") {
+            return Err("DYNAMICAL_API_PUBLIC_SCHEME must be http or https".into());
+        }
+        let seconds = |key: &str, default: &str, allow_zero: bool| -> Result<Duration, String> {
+            let value = get(key, default)
+                .parse::<f64>()
+                .map_err(|_| format!("Invalid {key}"))?;
+            let duration =
+                Duration::try_from_secs_f64(value).map_err(|_| format!("Invalid {key}"))?;
+            if (!allow_zero && duration.is_zero())
+                || std::time::Instant::now().checked_add(duration).is_none()
+            {
+                return Err(format!("Invalid {key}"));
+            }
+            Ok(duration)
+        };
+        let catalog_wait = seconds("DYNAMICAL_API_CATALOG_WAIT_SECONDS", "10", true)?;
+        let drain_timeout = seconds("DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS", "30", false)?;
+        let finalization_timeout =
+            seconds("DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS", "15", false)?;
+        let total = drain_timeout
+            .checked_add(finalization_timeout)
+            .ok_or("Shutdown budget exceeds clock capacity")?;
+        if std::time::Instant::now().checked_add(total).is_none() {
+            return Err("Shutdown budget exceeds clock capacity".into());
+        }
         let clients = positive("DYNAMICAL_API_RATE_LIMIT_CLIENTS", "10000")? as usize;
         let heartbeat = get("DYNAMICAL_API_HEARTBEAT_SECONDS", "30")
             .parse::<f64>()
@@ -87,6 +133,11 @@ impl Config {
             );
         }
         Ok(Self {
+            release,
+            public_scheme,
+            catalog_wait,
+            drain_timeout,
+            finalization_timeout,
             main_dataset_ttl_seconds,
             origin_secret,
             max_connections,

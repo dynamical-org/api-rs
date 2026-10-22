@@ -1,13 +1,10 @@
-use dynapi_server::{
-    App, Monotonic,
-    config::Config,
-    telemetry::{
-        StdoutSink,
-        shutdown::{ProcessDeadline, SHUTDOWN_TIMEOUT},
-    },
-    transport,
-};
-use std::{net::IpAddr, sync::Arc};
+mod shutdown;
+mod startup;
+
+use dynapi_server::{App, Monotonic, config::Config, telemetry::StdoutSink, transport};
+use shutdown::{ProcessDeadline, Signals};
+use std::{net::IpAddr, sync::Arc, time::Duration};
+use tokio::time::Instant;
 
 fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -16,17 +13,16 @@ fn main() {
         .expect("Cannot initialize server runtime");
     let mut process_deadline = None;
     let result = runtime.block_on(run(&mut process_deadline));
-    // Blocking DNS and compute work cannot be cancelled by dropping their
-    // futures. Process exit ends any such work after bounded async cleanup.
-    runtime.shutdown_timeout(std::time::Duration::ZERO);
+    // Never join stuck spawn_blocking work. The watchdog remains armed through
+    // runtime destruction and process::exit (including C atexit handlers).
+    runtime.shutdown_timeout(Duration::ZERO);
     let code = match result {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("Error: {error:?}");
+            eprintln!("Error: {error}");
             1
         }
     };
-    drop(process_deadline);
     std::process::exit(code);
 }
 
@@ -56,138 +52,99 @@ async fn run(
             _ => return Err(format!("Unknown argument {arg}").into()),
         }
     }
-    let stdout = Arc::new(StdoutSink::default());
-    let sink: Arc<dyn dynapi_server::telemetry::Telemetry> = stdout.clone();
-    #[cfg(feature = "telemetry-delivery")]
-    let delivery = match dynapi_server::telemetry::delivery::DeliverySink::from_env_with_stdout(
-        stdout.clone(),
-    ) {
-        Ok(delivery) => Some(Arc::new(delivery)),
-        Err(message) => {
-            eprintln!("Telemetry disabled: {message}");
-            None
-        }
+    let config = Config::from_env()?;
+    let mut signals = Signals::new()?;
+    let clock: Arc<dyn dynapi_policy::Clock> = Arc::new(Monotonic::default());
+    #[cfg(feature = "harness")]
+    let clock: Arc<dyn dynapi_policy::Clock> = if config.fixed_clock {
+        Arc::new(dynapi_server::FixedClock)
+    } else {
+        clock
     };
-    #[cfg(feature = "telemetry-delivery")]
-    let sink: Arc<dyn dynapi_server::telemetry::Telemetry> = delivery
-        .as_ref()
-        .map(|delivery| delivery.clone() as Arc<dyn dynapi_server::telemetry::Telemetry>)
-        .unwrap_or(sink);
-    let mut shutdown_started = None;
-    let mut stop = |failed: bool| {
-        let stopped = tokio::time::Instant::now();
-        let budget = SHUTDOWN_TIMEOUT;
-        #[cfg(feature = "telemetry-delivery")]
-        let budget = delivery
-            .as_ref()
-            .map(|sink| sink.total_shutdown_budget(budget))
-            .unwrap_or(budget);
-        *process_deadline = Some(stdout.process_deadline(stopped, budget, i32::from(failed)));
-        stopped
-    };
-    let mut app_owner = None;
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let config = Config::from_env()?;
-        let clock: Arc<dyn dynapi_policy::Clock> = Arc::new(Monotonic::default());
-        #[cfg(feature = "harness")]
-        let clock: Arc<dyn dynapi_policy::Clock> = if config.fixed_clock {
-            Arc::new(dynapi_server::FixedClock)
+    let sink: Arc<dyn dynapi_server::telemetry::Telemetry> = Arc::new(StdoutSink);
+    #[cfg(feature = "harness")]
+    let sink: Arc<dyn dynapi_server::telemetry::Telemetry> =
+        if std::env::var("DYNAPI_HARNESS_RECORD_HOOKS").as_deref() == Ok("1") {
+            Arc::new(dynapi_server::telemetry::HarnessSink)
         } else {
-            clock
+            sink
         };
-        #[cfg(feature = "harness")]
-        let sink: Arc<dyn dynapi_server::telemetry::Telemetry> =
-            if std::env::var("DYNAPI_HARNESS_RECORD_HOOKS").as_deref() == Ok("1") {
-                Arc::new(dynapi_server::telemetry::HarnessSink)
-            } else {
-                sink
-            };
-        let app = Arc::new(App::new(config, clock, sink.clone())?);
-        app_owner = Some(app.clone());
-        app.warm_catalog();
-        let listener = tokio::net::TcpListener::bind((bind, port)).await?;
-        #[cfg(feature = "harness")]
-        let listener = if let Some(fd) = inherited_fd {
-            use std::os::fd::FromRawFd;
-            // The harness transfers ownership of an inherited listening socket.
-            let socket = unsafe { std::net::TcpListener::from_raw_fd(fd) };
-            socket.set_nonblocking(true)?;
-            tokio::net::TcpListener::from_std(socket)?
-        } else {
-            listener
-        };
-        let heartbeat = dynapi_server::telemetry::heartbeat::HeartbeatTask::start(
-            Arc::downgrade(&app),
-            app.config.heartbeat_seconds,
-        );
-        let (served, _stopped) = tokio::select! {
-            result = transport::run(listener, app) => { let stopped = stop(result.is_err()); (result, stopped) },
-            _ = tokio::signal::ctrl_c() => (Ok(()), stop(false)),
-            _ = terminate() => (Ok(()), stop(false)),
-        };
-        shutdown_started = Some(_stopped);
-        heartbeat.stop().await;
-        served?;
-        Ok(())
-    }
-    .await;
-    let shutdown_started = shutdown_started.unwrap_or_else(|| stop(result.is_err()));
-    #[cfg(feature = "telemetry-delivery")]
-    if result.is_err()
-        && let Some(delivery) = &delivery
-    {
-        use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
-        delivery.emit(
-            Stream::Error,
-            error_record(ErrorKind::Startup, serde_json::json!({})).unwrap(),
-        );
-    }
-    flush_telemetry(
-        &stdout,
-        #[cfg(feature = "telemetry-delivery")]
-        delivery.as_deref(),
-        shutdown_started,
-    )
-    .await;
-    // Keep the shared catalog alive through telemetry flushing. Dropping the
-    // final application owner closes it after the flush phase.
-    drop(app_owner);
-    result
-}
-/// Call after request draining and before closing the application/catalog.
-/// Reuse the original shutdown start; neither drain gets a fresh time budget.
-async fn flush_telemetry(
-    stdout: &StdoutSink,
-    #[cfg(feature = "telemetry-delivery")] delivery: Option<
-        &dynapi_server::telemetry::delivery::DeliverySink,
-    >,
-    started: tokio::time::Instant,
-) {
-    let network_shutdown = async {
-        #[cfg(feature = "telemetry-delivery")]
-        if let Some(delivery) = delivery
-            && !delivery
-                .shutdown_started_at(started, SHUTDOWN_TIMEOUT)
-                .await
-        {
-            eprintln!("Telemetry shutdown deadline exceeded; pending SDK events may be lost");
-        }
+    let app = Arc::new(App::new(config, clock, sink)?);
+    let waiting = Instant::now();
+    let outcome = tokio::select! {
+        outcome = startup::wait_for_catalog(&app) => outcome,
+        _ = signals.recv() => {
+            *process_deadline = Some(ProcessDeadline::start(std::time::Instant::now(), app.config.drain_timeout + app.config.finalization_timeout));
+            app.close_catalog();
+            return Ok(());
+        },
     };
-    tokio::join!(
-        stdout.shutdown_started_at(started, SHUTDOWN_TIMEOUT),
-        network_shutdown
+    #[cfg(feature = "harness")]
+    let listener = if let Some(fd) = inherited_fd {
+        use std::os::fd::FromRawFd;
+        // The harness transfers ownership of an inherited listening socket.
+        let socket = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+        socket.set_nonblocking(true)?;
+        tokio::net::TcpListener::from_std(socket)?
+    } else {
+        tokio::net::TcpListener::bind((bind, port)).await?
+    };
+    #[cfg(not(feature = "harness"))]
+    let listener = tokio::net::TcpListener::bind((bind, port)).await?;
+    let bound = Instant::now();
+    let ready = app.catalog_status().loaded_at.is_some();
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "api_ready", "address": listener.local_addr()?.to_string(),
+            "catalogReady": ready, "catalogWaitOutcome": outcome,
+            "catalogWaitMs": waiting.elapsed().as_secs_f64() * 1000.,
+            "bindToCatalogReadyMs": if ready { Some(0) } else { None },
+        })
     );
-    stdout.report_loss();
-}
-#[cfg(unix)]
-async fn terminate() {
-    if let Ok(mut signal) =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-    {
-        signal.recv().await;
+    let readiness =
+        (!ready).then(|| tokio::spawn(startup::report_catalog_ready(app.clone(), bound)));
+    let mut server = transport::Server::new(listener, app.clone());
+    let result = tokio::select! {
+        biased;
+        _ = signals.recv() => Ok(()),
+        result = server.accept() => result,
+    };
+    let stopped = Instant::now();
+    *process_deadline = Some(ProcessDeadline::start(
+        stopped.into_std(),
+        app.config.drain_timeout + app.config.finalization_timeout,
+    ));
+    server.stop_accepting();
+    if let Some(readiness) = readiness {
+        readiness.abort();
     }
-}
-#[cfg(not(unix))]
-async fn terminate() {
-    std::future::pending::<()>().await;
+    println!(
+        "{}",
+        serde_json::json!({"event": "api_shutdown", "phase": "request_drain"})
+    );
+    let drained = server.drain_until(stopped + app.config.drain_timeout).await;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "api_shutdown_drained", "drained": drained,
+            "computeInUse": app.gate.snapshot().in_use,
+        })
+    );
+    // Telemetry flush plugs in here, using the shared finalization deadline:
+    // stopped + drain_timeout + finalization_timeout. Do not start a watchdog
+    // or grant a fresh process budget in any individual cleanup step.
+    #[cfg(feature = "harness")]
+    if std::env::var("DYNAPI_HARNESS_STUCK_FINALIZATION").as_deref() == Ok("1") {
+        // Exercises synchronous cleanup which cannot be cancelled by Tokio.
+        loop {
+            std::thread::park();
+        }
+    }
+    app.close_catalog();
+    result?;
+    if !drained {
+        return Err("Request drain deadline exceeded".into());
+    }
+    Ok(())
 }

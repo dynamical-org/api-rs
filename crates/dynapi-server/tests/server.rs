@@ -98,6 +98,167 @@ fn status(response: &[u8]) -> u16 {
 }
 const VALID: &[u8] = br#"{"queries":[{"dataProductId":"fixture-forecast","location":{"latitude":44,"longitude":0},"variables":["temperature_2m"]}]}"#;
 
+#[test]
+fn readiness_configuration_validates_auth_marker_scheme_and_deadlines() {
+    let defaults = Config::from_values(&BTreeMap::new()).unwrap();
+    assert_eq!(defaults.public_scheme, "http");
+    assert!(defaults.release.is_none());
+    assert_eq!(defaults.catalog_wait, std::time::Duration::from_secs(10));
+    assert_eq!(defaults.drain_timeout, std::time::Duration::from_secs(30));
+    assert_eq!(
+        defaults.finalization_timeout,
+        std::time::Duration::from_secs(15)
+    );
+    let required = ("DYNAMICAL_API_REQUIRE_ORIGIN_AUTH".into(), "1".into());
+    assert!(Config::from_values(&BTreeMap::from([required.clone()])).is_err());
+    for secret in ["", " ", "\t\n", "\u{2003}"] {
+        assert!(
+            Config::from_values(&BTreeMap::from([
+                required.clone(),
+                ("DYNAMICAL_API_ORIGIN_SECRET".into(), secret.into()),
+            ]))
+            .is_err()
+        );
+    }
+    assert!(
+        Config::from_values(&BTreeMap::from([
+            required,
+            (
+                "DYNAMICAL_API_ORIGIN_SECRET".into(),
+                "example-secret".into()
+            ),
+        ]))
+        .is_ok()
+    );
+    for (key, values) in [
+        (
+            "DYNAMICAL_API_PUBLIC_SCHEME",
+            vec!["ftp", "HTTPS", "https://", ""],
+        ),
+        (
+            "DYNAMICAL_API_RELEASE",
+            vec!["bad\r\nInjected: yes", "bad\0value"],
+        ),
+        (
+            "DYNAMICAL_API_CATALOG_WAIT_SECONDS",
+            vec!["-1", "NaN", "inf", "1e300"],
+        ),
+        (
+            "DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS",
+            vec!["0", "-1", "NaN", "inf", "1e300"],
+        ),
+        (
+            "DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS",
+            vec!["0", "-1", "NaN", "inf", "1e300"],
+        ),
+    ] {
+        for value in values {
+            assert!(
+                Config::from_values(&BTreeMap::from([(key.into(), value.into())])).is_err(),
+                "{key}: {value}"
+            );
+        }
+    }
+    assert!(
+        Config::from_values(&BTreeMap::from([(
+            "DYNAMICAL_API_CATALOG_WAIT_SECONDS".into(),
+            "0".into()
+        )]))
+        .is_ok()
+    );
+    assert!(
+        Config::from_values(&BTreeMap::from([(
+            "DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS".into(),
+            "0.1".into()
+        )]))
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn public_redirect_scheme_uses_host_and_ignores_forwarded_headers() {
+    let server = Server::start(&[("DYNAMICAL_API_PUBLIC_SCHEME", "https")]).await;
+    let response = server.request("GET", "/v1/data-products/?a=b", "Forwarded: proto=http;host=other.test\r\nX-Forwarded-Proto: http\r\nX-Forwarded-Host: other.test\r\n", b"").await;
+    assert_eq!(status(&response), 307);
+    assert!(
+        String::from_utf8_lossy(&response)
+            .contains("location: https://example.test/v1/data-products?a=b\r\n")
+    );
+    let root = server.request("GET", "/", "", b"").await;
+    assert!(String::from_utf8_lossy(&root).contains("location: https://dynamical.org/api/\r\n"));
+}
+
+#[tokio::test]
+async fn release_marker_covers_application_responses_without_cors_exposure() {
+    let server = Server::start(&[("DYNAMICAL_API_RELEASE", "rust:example")]).await;
+    for (method, path, headers, body, expected) in [
+        ("GET", "/healthz", "", &b""[..], 200),
+        ("GET", "/", "", &b""[..], 301),
+        ("GET", "/healthz/", "", &b""[..], 307),
+        ("GET", "/missing", "", &b""[..], 404),
+        ("POST", "/healthz", "", &b""[..], 405),
+        (
+            "POST",
+            "/v1/forecasts",
+            "Content-Type: application/json\r\n",
+            &b"{}"[..],
+            422,
+        ),
+        (
+            "OPTIONS",
+            "/v1/forecasts",
+            "Origin: https://example.test\r\nAccess-Control-Request-Method: POST\r\n",
+            &b""[..],
+            200,
+        ),
+    ] {
+        let response = server.request(method, path, headers, body).await;
+        assert_eq!(status(&response), expected);
+        let text = String::from_utf8_lossy(&response);
+        assert!(
+            text.contains("x-dynamical-release: rust:example\r\n"),
+            "{text}"
+        );
+        assert!(
+            !text
+                .lines()
+                .filter(|line| line.starts_with("access-control-expose-headers:"))
+                .any(|line| line.to_lowercase().contains("x-dynamical-release"))
+        );
+    }
+    let parser_error = raw_exchange(
+        &server,
+        b"GET / HTTP/1.1\r\nHost: test\r\nContent-Length: no\r\n\r\n",
+    )
+    .await;
+    assert_eq!(status(&parser_error), 400);
+    assert!(!String::from_utf8_lossy(&parser_error).contains("x-dynamical-release"));
+    let auth = Server::start(&[
+        ("DYNAMICAL_API_RELEASE", "rust:example"),
+        ("DYNAMICAL_API_ORIGIN_SECRET", "example-secret"),
+    ])
+    .await;
+    let forbidden = auth.request("GET", "/healthz", "", b"").await;
+    assert_eq!(status(&forbidden), 403);
+    assert!(String::from_utf8_lossy(&forbidden).contains("x-dynamical-release: rust:example\r\n"));
+    let unset = Server::start(&[]).await;
+    assert!(
+        !String::from_utf8_lossy(&unset.request("GET", "/healthz", "", b"").await)
+            .contains("x-dynamical-release")
+    );
+}
+
+#[cfg(feature = "harness")]
+#[tokio::test]
+async fn release_marker_covers_unhandled_application_errors() {
+    let server = Server::start(&[("DYNAMICAL_API_RELEASE", "rust:example")]).await;
+    let response = server
+        .request("GET", "/healthz", "X-Dynapi-Harness-Panic: 1\r\n", b"")
+        .await;
+    assert_eq!(status(&response), 500);
+    assert!(String::from_utf8_lossy(&response).contains("x-dynamical-release: rust:example\r\n"));
+}
+
 #[tokio::test]
 async fn slash_redirect_falls_back_to_accepted_socket_authority() {
     for bind in ["127.0.0.1:0", "127.0.0.2:0", "0.0.0.0:0", "[::1]:0"] {

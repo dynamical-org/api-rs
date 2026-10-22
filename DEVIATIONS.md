@@ -292,3 +292,45 @@ surface; they do not qualify the pending execution handlers.
 - Rust: both single selections return the internal Storage timeout at the existing 90-second deadline. The reference read-path comparison completed the historical selection after more than 90 seconds. A separate one-off Rust diagnostic completed that workload as 60 member-slice reads through one shared session, matching all output bits; this does not qualify a single full selection under the shipped deadline.
 - Judgement: retain sequential decoding, per-chunk bounds and the reader deadline. Full ensemble latency qualification remains open. Coalescing does not avoid fetching and decoding the global planes. RSS was measured from actual processes; logical byte counts are not RSS or a general memory guarantee. Upstream metadata expansion still requires trusted repository contents (D24).
 - Verification: network/RSS measurements are one-off development checks outside the test suite. Durable Rust tests remain offline. Full geographic coordinates and northern/southern point reads pass for both products. This change adds no server wiring or HTTP timeout contract.
+
+## D-ready-1 — Bounded catalog wait before binding
+
+The reference Python service launches a best-effort catalog load and binds
+without waiting. Rust waits up to `DYNAMICAL_API_CATALOG_WAIT_SECONDS` (10 seconds
+by default) for that first flight, then binds on success, failure or timeout.
+Timeout leaves the shared load running. This improves initial readiness without
+making a catalog outage prevent health/documentation serving. Set zero for an
+immediate bind. Readiness logs report wait outcome and observed bind-to-ready
+time. Rust subprocess tests in `tests/readiness.rs` cover all three outcomes and
+a late successful load.
+
+## D-ready-2 — Optional deployment identity, authentication and redirect scheme
+
+`DYNAMICAL_API_RELEASE` adds an application response marker when configured,
+including errors and CORS preflight. The marker is omitted from CORS exposure
+and from Hyper parser errors. It is absent by default. The reference service at
+the comparison revision does not add this marker. Tests in `tests/server.rs`
+assert its scope and absence when unset.
+
+`DYNAMICAL_API_REQUIRE_ORIGIN_AUTH=1` adds startup validation for a missing or
+blank secret; local unauthenticated startup remains available by default.
+`DYNAMICAL_API_PUBLIC_SCHEME=https` makes slash redirects use HTTPS while
+preserving Host validation and ignoring forwarded headers. The default `http`
+retains local reference behavior; HTTPS deployments must opt in. Fixed root
+redirects and relative canonical links are unchanged. Configuration and
+subprocess tests cover these deliberate deployment controls.
+
+## D-ready-3 — Explicit bounded process drain
+
+On SIGTERM/SIGINT Rust closes the listener, drains current requests and detached
+compute permits, then closes the catalog and exits. The configurable defaults
+allow 30 seconds for requests and 15 additional seconds for finalization. A
+single independent watchdog enforces their sum through runtime/process teardown;
+on Unix expiry uses lock-free `_exit(1)`. Compute permits are never released on
+a caller's behalf. Forced exit may discard responses/telemetry and skip cleanup.
+This explicit total bound includes stuck native work rather than relying on
+runtime destruction or only an async timeout. See `docs/readiness.md` for the
+telemetry integration order and the requirement to qualify the budget against
+the deployment's actual shutdown grace. Rust subprocess tests verify completion,
+connection refusal, stuck-handler expiry and a worker retaining its permit
+through stuck synchronous cleanup.
