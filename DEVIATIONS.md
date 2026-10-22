@@ -76,14 +76,14 @@ Dataset ensemble compatibility is covered in `crates/dynapi-dataset/tests/fixtur
 - Rationale: make the native artifact self-contained; file-range compatibility can land before the whole-service cutover.
 - Tests: `robots_get_head_and_packaged_metadata` checks complete GET bytes, empty HEAD body and mtime/size-derived ETag and Last-Modified; `documented_robots_range_difference_is_explicit` checks status 200, the complete packaged asset and no Content-Range. Expected metadata is computed from the build input; no saved answer file is used.
 
-## D9 — Configuration validation and deferred operational emitters
+## D9 — Startup configuration validation
 
-- Trigger: invalid numeric configuration, or enabled heartbeat/PostHog/Sentry settings.
-- Python: reads some budgets and sample rates lazily during requests, and has real container heartbeat, PostHog and Sentry integrations.
-- Rust: parses its supported budgets, slots, rate limits, transport bounds, sample rate, heartbeat interval, dataset-cache entries and STAC URL at startup. Invalid bounds fail startup. The telemetry trait records unsampled api_failure and analytics api_request hooks under the same covered conditions; stdout emits failures. Real operational emitters and data-success records remain telemetry follow-up work. Heartbeat settings are parsed but no heartbeat task starts yet.
-- Consequence: malformed numeric settings can fail earlier. Data-handler settings `DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS`, `DYNAMICAL_API_CHUNK_CACHE_BYTES`, `DYNAMICAL_API_GROUPED_READS` and `DYNAMICAL_API_MAX_GROUP_POINTS` are not implemented by this Config. No operational telemetry delivery or heartbeat parity is claimed; no credentialed PostHog/Sentry network connection is made by this milestone.
-- Rationale: keep integration I/O in the native adapter and land/test the request event contracts before telemetry integration.
-- Tests: `configuration_defaults_and_empty_secret`, `failure_events_are_unsampled_and_analytics_conditions_match`, `task_cancellation_claims_one_terminal_record_without_analytics` and `handler_panic_returns_the_500_envelope_and_one_terminal_record` own configuration and fake-sink conditions. Broader event-envelope coverage remains pending in the Rust-owned test coverage tracking issue (server middleware); real delivery belongs to the telemetry implementation.
+- Trigger: invalid numeric configuration at startup.
+- Python: reads some budgets and sample rates lazily during requests.
+- Rust: parses its supported budgets, slots, rate limits, transport bounds, sample rate, heartbeat interval, dataset-cache entries and STAC URL at startup. Invalid bounds fail startup.
+- Consequence: malformed numeric settings can fail earlier. Data-handler settings `DYNAMICAL_API_CHUNK_CACHE_BYTES`, `DYNAMICAL_API_GROUPED_READS` and `DYNAMICAL_API_MAX_GROUP_POINTS` are not implemented by this Config.
+- Rationale: validate native resource bounds before accepting requests. The earlier milestone's deferred-emitter statements are superseded: native heartbeat, handler success/failure records and optional PostHog/Sentry delivery are implemented. D19 through D22 describe their error, resource, delivery and canonical analytics differences; D23 covers stdout backpressure.
+- Tests: `configuration_defaults_and_empty_secret` owns startup validation. Telemetry integration and delivery tests cover the implemented event and shutdown behavior; see [docs/telemetry.md](docs/telemetry.md).
 
 ## D10 — Hyper HTTP/1 wire parsing and bounded native connections
 
@@ -234,3 +234,47 @@ surface; they do not qualify the pending execution handlers.
   first dataset open, publishes a new generation, and verifies both batch results
   retain the first generation while subsequent catalog/forecast requests see the
   new one. Removing the snapshot pin makes this regression fail.
+
+## D19 — Native error categories and explicit SDK context
+
+- Trigger: an unexpected request/server failure or application startup failure is reported.
+- Reference Python service: its framework and logging integrations capture Python exception types, messages and traceback frames, and attach scrubbed framework request context. A null caller tag can be present.
+- Rust: reports bounded static error categories with native stacks captured at the reporting site. A caught panic's original unwound stack is unavailable. Request tags are copied explicitly per event; an absent caller remains null at the injectable sink and is omitted by the native SDK's string-valued tag map. No automatic request, panic, logging, tracing or context integration is installed. Request bodies, raw client addresses, headers, exception messages, panic payloads, frame locals, source text and absolute source paths are excluded entirely.
+- Consequence: capture conditions and keyed correlation remain available, while exception/stack and SDK envelope metadata differ. Python exception messages and framework stack shapes are not reproduced. Startup events drain before exit. Expected client errors, cancellation and `ServerBusy` admission rejections do not become error events; catalog server failures do.
+- Rationale: use the native SDK without allowing framework context or raw exception text to disclose caller payloads or credentials. A native stack still identifies the Rust reporting path.
+- Tests: `telemetry_condition_fixture_preserves_nulls_routes_and_event_counts`, `authenticated_identity_and_metadata_are_shared_and_payloads_stay_private`, `authentication_encoding_failure_captures_an_untagged_error_only`, `panic_captures_once_with_request_scoped_tags`, `cancelled_request_releases_admission_and_emits_no_analytics_or_error`, `rate_and_busy_rejections_are_not_reported_as_errors`, `wire_payloads_exclude_unapproved_context_and_busy_errors`, and `startup_failure_is_reported_and_drained_before_process_exit`.
+
+## D20 — Native heartbeat resource counters
+
+- Trigger: a stdout `api_container` heartbeat is emitted.
+- Reference Python service: emits `pythonThreads`, process CPU, admitted-request/compute counters and available cgroup throttling deltas.
+- Rust: emits `nativeThreads` on Linux using the process thread count, alongside process CPU, admitted-request/compute counters and available cgroup throttling deltas. Unsupported measurements are omitted. Native threads include runtime and transport workers; there is no Python thread registry.
+- Consequence: thread-count field and meaning differ. CPU deltas, compute occupancy, cumulative dataset observations and cgroup delta semantics retain their meaning. Task ownership is native: first beat follows one interval, and cancellation/drop/shutdown stop the task without retaining the application.
+- Rationale: report a measured native runtime quantity rather than inventing a Python-equivalent count or zero for an unavailable source.
+- Tests: `heartbeat_deltas_and_optional_measurements_are_explicit`, `heartbeat_waits_one_interval_stops_and_does_not_own_the_app`, `coldness_progresses_only_on_success_and_counts_failures_cumulatively`, and `snapshot_and_session_lru_caps_keep_the_last_eight_successful_loads`.
+
+## D21 — Optional bounded delivery adapters
+
+- Trigger: the native server is built with `telemetry-delivery` and a PostHog project token or Sentry DSN is configured.
+- Reference Python service: uses its PostHog/Sentry SDK background transports and lifecycle shutdown.
+- Rust: sends PostHog capture JSON over reqwest and uses the selective native Sentry SDK. Application enqueue is immediate and bounded to 256 records of at most 64 KiB each. Overflow/oversize events are dropped; counters saturate at `u64::MAX`. HTTP requests have a two-second timeout, do not follow redirects and do not inherit proxy settings. Failed PostHog sends are dropped without retry. The SDK's separate bounded envelope queue and rate-limit handling remain active. Shutdown shares a ten-second drain/flush budget and reserves four additional seconds for SDK enqueue/join: fourteen seconds total with Sentry, ten without. Application draining stops before the reserve. Pending application events are counted as dropped when the drain budget expires; pending SDK envelopes may also be discarded on close. If SDK cleanup exceeds the total deadline (including blocking DNS/NSS), the failure counter increments and a static stderr diagnostic notes possible SDK event loss. The executable shuts down its main runtime without waiting for blocking tasks and explicitly exits, terminating stalled SDK/resolver threads. Exact SDK losses are unavailable. Configured stdout heartbeats add application `telemetryDropped` and `telemetryFailed` counters; SDK-internal loss accounting is separate.
+- Consequence: SDK-added analytics metadata, transport batching/retries and loss behavior differ. Core analytics event/properties, caller hash, nulls and capture conditions are preserved. No key/DSN means no network client, network worker or network activity; default builds omit delivery dependencies. Malformed sink configuration disables delivery using a static diagnostic, preserving stdout and request processing.
+- Rationale: bound observability work and memory independently of endpoint availability, keep native delivery opt-in, and preserve the portable crate dependency boundary. Startup configuration differences remain documented in D9.
+- Tests: `unconfigured_delivery_creates_no_worker_or_http_client`, `bounded_queue_drops_without_waiting_for_a_stalled_backend`, `oversized_events_are_dropped_before_the_queue`, `stalled_delivery_does_not_delay_an_http_response`, `loopback_wire_contract_and_shutdown_flush_both_destinations`, `saturated_sdk_and_stalled_endpoint_have_a_bounded_joined_shutdown`, `application_drain_and_sdk_flush_share_one_budget`, and `only_handler_success_records_are_sampled_and_all_fields_pass_through`.
+
+## D22 — Count canonical queries consistently across telemetry streams
+
+- Trigger: a canonical point GET enters its handler, on success or a handled query error.
+- Reference: stdout records `queryCount: 1`, but analytics records `query_count: null`. Analytics reads `request.state.usage`, which the canonical handler never sets; its separate `request.state.query_count` is ignored.
+- Rust: records one logical query in both streams. Requests rejected by validation before entering the handler retain a null query count.
+- Rationale: preserve the known single-query count instead of copying an accidental omission from the reference analytics state.
+- Tests: `canonical_analytics_counts_one_query_on_success_and_handler_error` covers success, a handler error and rejection before the handler, using synthetic committed fixtures.
+
+## D23 — Bounded stdout delivery under backpressure
+
+- Trigger: a full or stalled stdout pipe, an oversized terminal record, or shutdown before stdout draining completes.
+- Reference Python service: synchronous flushed printing can block request completion indefinitely when the consumer stops reading.
+- Rust: immediate enqueue into a 256-record queue, with one dedicated native writer and a 64 KiB serialized-record limit including the newline. Overflow and oversize records are dropped; write failures are counted. Stdout drains concurrently with network delivery under the shared ten-second deadline, then pending records are counted as abandoned. Process exit ends a stalled writer; partially written in-flight records are possible.
+- Observable difference: requests complete despite stdout backpressure, with bounded output loss. `telemetryDropped`/`telemetryFailed` heartbeats include stdout losses, even without network configuration once a loss occurs. A best-effort shutdown diagnostic reports stdout loss totals. Healthy terminal record fields and sampling rules are unchanged.
+- Rationale: logging backpressure must not stall HTTP responses or process shutdown. No per-record blocking task or extra shutdown budget is introduced.
+- Tests: `full_undrained_stdout_does_not_block_http_and_counts_loss_at_bounded_shutdown`, `overflow_size_limit_and_abandoned_records_are_counted_without_waiting_for_writer`, `heartbeat_exposes_stdout_losses_added_to_network_counters_and_drains`, and `stdout_and_network_shutdown_share_one_drain_deadline`.

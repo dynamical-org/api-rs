@@ -24,6 +24,7 @@ pub struct Config {
     pub main_dataset_ttl_seconds: f64,
     pub stac_url: String,
     pub analytics_enabled: bool,
+    pub error_reporting_enabled: bool,
     pub container: String,
     #[cfg(feature = "harness")]
     pub fixed_clock: bool,
@@ -124,6 +125,7 @@ impl Config {
             analytics_enabled: values
                 .get("POSTHOG_PROJECT_TOKEN")
                 .is_some_and(|v| !v.is_empty()),
+            error_reporting_enabled: values.get("SENTRY_DSN").is_some_and(|v| !v.is_empty()),
             container: get("MODAL_TASK_ID", "local"),
             #[cfg(feature = "harness")]
             fixture_store_base: values.get("DYNAPI_HARNESS_STORE_BASE_URL").cloned(),

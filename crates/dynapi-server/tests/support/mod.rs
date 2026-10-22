@@ -235,6 +235,8 @@ impl Server {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
+        env.entry("DYNAMICAL_API_TIMING_LOG_SAMPLE_RATE".into())
+            .or_insert_with(|| "1".into());
         env.insert(
             "DYNAMICAL_API_STAC_URL".into(),
             format!("{}/catalog.json", host.url),

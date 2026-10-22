@@ -40,9 +40,9 @@ jobs:
               cargo check --locked --target wasm32-unknown-unknown -p dynapi-catalog --no-default-features
               cargo fmt --all --check
               cargo check --locked -p dynapi-server --no-default-features
-              cargo build --locked --release --workspace --features dynapi-server/harness
-              cargo test --locked --release --workspace --features dynapi-server/harness
-              cargo clippy --locked --release --workspace --all-targets --features dynapi-server/harness -- -D warnings
+              cargo build --locked --release --workspace --features dynapi-server/harness,dynapi-server/telemetry-delivery
+              cargo test --locked --release --workspace --features dynapi-server/harness,dynapi-server/telemetry-delivery
+              cargo clippy --locked --release --workspace --all-targets --features dynapi-server/harness,dynapi-server/telemetry-delivery -- -D warnings
             '
       - name: Restore Cargo cache ownership and readability
         if: always()

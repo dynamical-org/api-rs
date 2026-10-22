@@ -15,7 +15,6 @@ use dynapi_policy::{
     query_limited, simple_cors,
 };
 use futures_util::FutureExt;
-use hmac::{Hmac, Mac};
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Request, Response,
@@ -23,7 +22,6 @@ use hyper::{
     header::{HeaderName, HeaderValue},
 };
 use serde_json::json;
-use sha2::Sha256;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -104,6 +102,7 @@ pub struct App {
     pub config: Config,
     catalog: dynapi_catalog::native::StacCatalog,
     pub gate: ComputeGate<SharedClock>,
+    pub heartbeat: telemetry::heartbeat::Heartbeat,
     rate: Mutex<RateLimiter<SharedClock>>,
     query_rate: Mutex<RateLimiter<SharedClock>>,
     sink: Arc<dyn Telemetry>,
@@ -141,17 +140,21 @@ impl App {
             ("last-modified", ROBOTS_LAST_MODIFIED.into()),
             ("etag", ROBOTS_ETAG.into()),
         ];
-        let data = Arc::new(data::DataService::new(
-            &config,
-            clock.clone(),
-            catalog.clone(),
-        )?);
+        let loads = Arc::new(telemetry::loads::LoadRegistry::default());
+        let data = Arc::new(
+            data::DataService::new(&config, clock.clone(), catalog.clone())?
+                .with_load_observer(loads.clone()),
+        );
         Ok(Self {
             data,
             catalog,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
             query_rate: Mutex::new(RateLimiter::new(config.query_rate, clock)?),
+            heartbeat: telemetry::heartbeat::Heartbeat::new(
+                Arc::new(telemetry::heartbeat::ProcessResources),
+                loads,
+            ),
             config,
             sink,
             started: Instant::now(),
@@ -193,6 +196,7 @@ impl App {
                 .insert("x-request-id", id.parse().unwrap());
             return Ok(response);
         }
+        let _admission = self.heartbeat.admit();
         let authenticated = self.config.origin_secret.as_ref().is_some_and(|secret| {
             // compare_digest(str, str) rejects non-ASCII headers as an unhandled error.
             header("x-dynamical-origin-auth")
@@ -258,7 +262,13 @@ impl App {
                 ))
                 .catch_unwind()
                 .await
-                .unwrap_or_else(|_| Ok(server_error()))?
+                .unwrap_or_else(|_| {
+                    let mut result = server_error();
+                    result
+                        .extensions_mut()
+                        .insert(telemetry::ErrorKind::HandlerPanic);
+                    Ok(result)
+                })?
             }
         };
         let mut response = response;
@@ -280,6 +290,15 @@ impl App {
                 }),
             );
         }
+        {
+            let mut usage = usage.lock().unwrap();
+            if let Some(kind) = response.extensions().get::<telemetry::ErrorKind>().copied() {
+                usage.error_kind = Some(kind);
+            } else if let Some(kind) = usage.error_kind {
+                response.extensions_mut().insert(kind);
+            }
+        }
+        self.record_error(&response, &headers, authenticated, non_ascii_auth);
         if status == 500 {
             // Hyper flushes this response and closes before dispatching a pipeline.
             response
@@ -312,6 +331,56 @@ impl App {
             .headers_mut()
             .insert("x-request-id", id.parse().unwrap());
         Ok(response)
+    }
+    fn record_error(
+        &self,
+        response: &HttpResponse,
+        headers: &hyper::HeaderMap,
+        authenticated: bool,
+        non_ascii_auth: bool,
+    ) {
+        if self.config.error_reporting_enabled {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let status = response.status().as_u16();
+                let kind = if non_ascii_auth {
+                    Some(telemetry::ErrorKind::OriginAuthentication)
+                } else if status == 500 {
+                    Some(
+                        response
+                            .extensions()
+                            .get::<telemetry::ErrorKind>()
+                            .copied()
+                            .unwrap_or(telemetry::ErrorKind::InternalServerError),
+                    )
+                } else if status == 503 {
+                    Some(
+                        response
+                            .extensions()
+                            .get::<telemetry::ErrorKind>()
+                            .copied()
+                            .unwrap_or(telemetry::ErrorKind::HttpServerError),
+                    )
+                } else {
+                    None
+                };
+                if let Some(kind) = kind {
+                    let tags = if non_ascii_auth {
+                        json!({})
+                    } else {
+                        telemetry::request_tags(
+                            headers,
+                            self.config
+                                .origin_secret
+                                .as_deref()
+                                .filter(|_| authenticated),
+                        )
+                    };
+                    if let Some(record) = telemetry::error_record(kind, tags) {
+                        self.emit(Stream::Error, record);
+                    }
+                }
+            }));
+        }
     }
     async fn route(
         &self,
@@ -479,6 +548,9 @@ impl App {
             result
                 .headers_mut()
                 .insert("retry-after", retry.to_string().parse().unwrap());
+            result
+                .extensions_mut()
+                .insert(telemetry::ErrorKind::ServerBusy);
             return result;
         };
         // Never consumed as a public result by the differential harness.
@@ -489,6 +561,12 @@ impl App {
         )
     }
     fn emit(&self, stream: Stream, record: serde_json::Value) {
+        if stream == Stream::Terminal
+            && record["event"] == "api_request"
+            && !telemetry::should_sample(self.config.timing_sample_rate)
+        {
+            return;
+        }
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.sink.emit(stream, record)
         }));
@@ -510,29 +588,26 @@ impl App {
     ) {
         let header = |name: &str| headers.get(name).map(|v| latin1(v.as_bytes()));
         let ua = header("user-agent").unwrap_or_default();
-        let lowered = ua.to_lowercase();
-        let kind = if lowered.starts_with("dynamical-") {
-            "internal"
-        } else if lowered.contains("uptime bot") || lowered.contains("sentry uptime") {
-            "uptime_probe"
-        } else {
-            "unlabeled"
-        };
-        let caller = if authenticated {
-            self.config.origin_secret.as_ref().and_then(|secret| {
-                header("cf-connecting-ip")
-                    .filter(|ip| !ip.is_empty())
-                    .map(|ip| {
-                        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-                        mac.update(ip.as_bytes());
-                        format!("{:x}", mac.finalize().into_bytes())[..16].to_owned()
-                    })
-            })
-        } else {
-            None
-        };
+        let kind = telemetry::client_kind(&ua);
+        let caller = telemetry::caller_id(
+            self.config
+                .origin_secret
+                .as_deref()
+                .filter(|_| authenticated),
+            header("cf-connecting-ip").as_deref(),
+        );
         let route = find_route(path);
         let matched = route.as_ref().filter(|r| {
+            // Documentation routes rejected by method have no matched scope route.
+            if status == Some(405)
+                && matches!(
+                    r.template,
+                    "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc"
+                )
+                && !r.methods.contains(&method)
+            {
+                return false;
+            }
             if !matches!(status, Some(403 | 429)) {
                 return true;
             }
@@ -551,24 +626,44 @@ impl App {
             ) || (method == "OPTIONS" && r.cors);
             direct && (r.methods.contains(&method) || (method == "OPTIONS" && r.cors))
         });
+        let timings = usage
+            .timings
+            .iter()
+            .map(|(name, ms)| (name.clone(), telemetry::round_decimal(*ms, 3)))
+            .collect::<std::collections::BTreeMap<_, _>>();
         if status == Some(200) && usage.work_units.is_some() {
+            let mut products = usage.products.clone();
+            products.sort();
+            products.dedup();
+            products.truncate(10);
             self.emit(Stream::Terminal, json!({
                 "event": "api_request", "route": if route.as_ref().is_some_and(|r| r.template == "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}") { "/v1/data/:canonical" } else { matched.map(|r| r.template).unwrap_or("unrouted") },
                 "containerAgeS": self.started.elapsed().as_secs(),
-                "dataProductIds": usage.products, "queryCount": usage.query_count,
+                "dataProductIds": products, "queryCount": usage.query_count,
                 "workUnits": usage.work_units, "responseBytes": usage.response_bytes,
-                "datasetCache": usage.dataset_cache, "timingsMs": usage.timings
+                "datasetCache": usage.dataset_cache, "timingsMs": timings,
+                "readValues":usage.read_values, "counters":usage.counters
             }));
         }
         if cancelled || status.is_some_and(|s| s >= 400) {
+            let products = usage.query_count.map(|_| {
+                usage
+                    .products
+                    .iter()
+                    .map(|product| product.chars().take(100).collect::<String>())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .take(10)
+                    .collect::<Vec<_>>()
+            });
             self.emit(Stream::Terminal, json!({
                 "event": "api_failure", "route": matched.map(|r| r.template).unwrap_or("unrouted"),
                 "method": method, "status": status, "cancelled": cancelled,
-                "durationMs": (duration_ms * 1000.0).round_ties_even() / 1000.0,
+                "durationMs": telemetry::round_decimal(duration_ms, 3),
                 "requestId": id, "container": self.config.container,
                 "containerAgeS": self.started.elapsed().as_secs(), "caller": caller,
                 "clientKind": kind, "cfWorker": cf_worker(header("cf-worker").as_deref()),
-                "dataProductIds": null, "queryCount": null, "readValues": null, "timingsMs": {}, "counters": {}
+                "dataProductIds": products, "queryCount": usage.query_count, "readValues": usage.read_values, "timingsMs": timings, "counters": usage.counters
             }));
         }
         let path_product = route
@@ -610,7 +705,7 @@ impl App {
         {
             self.emit(Stream::Analytics, json!({"event": "api_request", "distinct_id": caller.as_deref().unwrap_or("anonymous"), "properties": {
                 "$process_person_profile": false, "route": if status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
-                "method": method, "status": status, "duration_ms": (duration_ms * 10.0).round_ties_even() / 10.0,
+                "method": method, "status": status, "duration_ms": telemetry::round_decimal(duration_ms, 1),
                 "client_kind": kind, "user_agent": ua.chars().take(120).collect::<String>(),
                 "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": usage.query_count,
                 "work_units": usage.work_units, "dataset_cache": usage.dataset_cache

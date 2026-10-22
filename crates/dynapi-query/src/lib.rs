@@ -188,6 +188,6 @@ pub use response::{
 };
 pub use selection::{
     format_datetime, list_forecast_init_times, point_from_indices, select_forecast_init_times,
-    select_nearest_point, select_query, select_query_bounded, InitTimeSelection, PreparedQuery,
-    QueryBudget,
+    select_nearest_point, select_query, select_query_bounded, select_query_bounded_observed,
+    select_query_observed, InitTimeSelection, PreparedQuery, QueryBudget,
 };

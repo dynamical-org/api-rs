@@ -1,0 +1,12 @@
+[
+  {"name":"handled validation", "method":"POST", "path":"/v1/forecasts", "headers":"Content-Type: application/json\r\n", "body":"{}", "status":422, "terminal_route":"/v1/forecasts", "analytics_route":"/v1/forecasts", "error":null},
+  {"name":"unmatched path", "method":"GET", "path":"/v1/example-missing", "headers":"", "body":"", "status":404, "terminal_route":"unrouted", "analytics_route":"unmatched", "error":null},
+  {"name":"method mismatch", "method":"GET", "path":"/v1/forecasts", "headers":"", "body":"", "status":405, "terminal_route":"/v1/forecasts", "analytics_route":"/v1/forecasts", "error":null},
+  {"name":"redirect", "method":"GET", "path":"/v1/forecasts/", "headers":"", "body":"", "status":307, "terminal_route":null, "analytics_route":"unmatched", "error":null},
+  {"name":"static success", "method":"GET", "path":"/healthz", "headers":"", "body":"", "status":200, "terminal_route":null, "analytics_route":null, "error":null},
+  {"name":"bare options", "method":"OPTIONS", "path":"/v1/forecasts", "headers":"", "body":"", "status":204, "terminal_route":null, "analytics_route":"/v1/forecasts", "error":null},
+  {"name":"cors preflight", "method":"OPTIONS", "path":"/v1/forecasts", "headers":"Origin: https://example.test\r\nAccess-Control-Request-Method: POST\r\n", "body":"", "status":200, "terminal_route":null, "analytics_route":null, "error":null},
+  {"name":"rejected preflight", "method":"OPTIONS", "path":"/v1/forecasts", "headers":"Origin: https://example.test\r\nAccess-Control-Request-Method: DELETE\r\n", "body":"", "status":400, "terminal_route":null, "analytics_route":null, "error":null},
+  {"name":"origin rejection", "secret":"fake-origin-key", "method":"POST", "path":"/v1/forecasts", "headers":"X-Dynamical-Origin-Auth: wrong\r\n", "body":"", "status":403, "terminal_route":"unrouted", "analytics_route":null, "error":null},
+  {"name":"nonfinite validation encoding", "method":"POST", "path":"/v1/forecasts", "headers":"Content-Type: application/json\r\n", "body":"{\"x\":NaN}", "status":500, "terminal_route":"/v1/forecasts", "analytics_route":"/v1/forecasts", "error":"InternalServerError"}
+]

@@ -571,7 +571,35 @@ pub fn select_query<'a>(
     snapshot_id: &str,
     budget: Option<&mut QueryBudget>,
 ) -> Result<PreparedQuery<'a>, QueryError> {
-    select_query_inner(view, collection, point, options, snapshot_id, budget, None)
+    select_query_observed(
+        view,
+        collection,
+        point,
+        options,
+        snapshot_id,
+        budget,
+        &mut crate::batch::NoopObserver,
+    )
+}
+pub fn select_query_observed<'a>(
+    view: &'a DatasetView,
+    collection: &'a Collection,
+    point: SelectedPoint,
+    options: QueryOptions,
+    snapshot_id: &str,
+    budget: Option<&mut QueryBudget>,
+    observer: &mut impl crate::batch::PhaseObserver,
+) -> Result<PreparedQuery<'a>, QueryError> {
+    select_query_inner(
+        view,
+        collection,
+        point,
+        options,
+        snapshot_id,
+        budget,
+        None,
+        observer,
+    )
 }
 /// Reserve option/label copies before cloning, then admit each selected time
 /// before growing its selector, timestamp and lead-hour vectors.
@@ -584,6 +612,28 @@ pub fn select_query_bounded<'a>(
     budget: Option<&mut QueryBudget>,
     bytes: &mut MaterializationBudget,
 ) -> Result<PreparedQuery<'a>, QueryError> {
+    select_query_bounded_observed(
+        view,
+        collection,
+        point,
+        options,
+        snapshot_id,
+        budget,
+        bytes,
+        &mut crate::batch::NoopObserver,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn select_query_bounded_observed<'a>(
+    view: &'a DatasetView,
+    collection: &'a Collection,
+    point: SelectedPoint,
+    options: &QueryOptions,
+    snapshot_id: &str,
+    budget: Option<&mut QueryBudget>,
+    bytes: &mut MaterializationBudget,
+    observer: &mut impl crate::batch::PhaseObserver,
+) -> Result<PreparedQuery<'a>, QueryError> {
     bytes.query(view, collection, &options.variables, snapshot_id)?;
     select_query_inner(
         view,
@@ -593,8 +643,10 @@ pub fn select_query_bounded<'a>(
         snapshot_id,
         budget,
         Some(bytes),
+        observer,
     )
 }
+#[allow(clippy::too_many_arguments)]
 fn select_query_inner<'a>(
     view: &'a DatasetView,
     collection: &'a Collection,
@@ -603,6 +655,7 @@ fn select_query_inner<'a>(
     snapshot_id: &str,
     budget: Option<&mut QueryBudget>,
     mut bytes: Option<&mut MaterializationBudget>,
+    observer: &mut impl crate::batch::PhaseObserver,
 ) -> Result<PreparedQuery<'a>, QueryError> {
     let unknown: Vec<_> = options
         .variables
@@ -851,6 +904,7 @@ fn select_query_inner<'a>(
         .collect::<Result<Vec<_>, _>>()?;
     let value_count = checked_sum(sizes.into_iter())?;
     let read_values = read_values(view, &options.variables, &positions)?;
+    observer.read_values(read_values);
     if let Some(budget) = budget {
         budget.consume(value_count)?;
     }
@@ -874,6 +928,133 @@ fn select_query_inner<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_values_observation_precedes_response_budget_and_skips_earlier_errors() {
+        #[derive(Default)]
+        struct Observer(Vec<u64>);
+        impl crate::batch::PhaseObserver for Observer {
+            fn read_values(&mut self, values: u64) {
+                self.0.push(values);
+            }
+        }
+        let dimensions = ["time", "latitude", "longitude"].map(str::to_owned);
+        let view = DatasetView {
+            dimensions: dimensions.iter().cloned().zip([2, 1, 1]).collect(),
+            coordinates: BTreeMap::from([
+                ("time".into(), Coordinate::Time(vec![0, 3_600_000_000_000])),
+                ("latitude".into(), Coordinate::Numeric(vec![0.0])),
+                ("longitude".into(), Coordinate::Numeric(vec![0.0])),
+            ]),
+            variables: BTreeMap::from([(
+                "temperature".into(),
+                Variable {
+                    dimensions: dimensions.to_vec(),
+                    chunks: Some(vec![Some(1); 3]),
+                    ..Variable::default()
+                },
+            )]),
+            ..DatasetView::default()
+        };
+        let collection = Collection {
+            id: "example-analysis".into(),
+            kind: Kind::Analysis,
+            version: None,
+            catalog_url: None,
+            variables: BTreeMap::from([(
+                "temperature".into(),
+                CatalogVariable {
+                    dimensions: dimensions.to_vec(),
+                    unit: None,
+                },
+            )]),
+            point_query_reason: None,
+        };
+        let point = || SelectedPoint {
+            latitude: 0.0,
+            longitude: 0.0,
+            indexers: vec![("latitude".into(), 0), ("longitude".into(), 0)],
+        };
+        let options = || QueryOptions {
+            variables: vec!["temperature".into()],
+            start: Some(RequestDatetime::parse_str("1970-01-01T00:00:00Z").unwrap()),
+            ..QueryOptions::default()
+        };
+        for (max_values, bounded) in [(1, false), (2, false), (1, true), (2, true)] {
+            let mut budget = QueryBudget {
+                max_values,
+                ..QueryBudget::default()
+            };
+            let mut observer = Observer::default();
+            let result = if bounded {
+                select_query_bounded_observed(
+                    &view,
+                    &collection,
+                    point(),
+                    &options(),
+                    "snapshot-test",
+                    Some(&mut budget),
+                    &mut MaterializationBudget::default(),
+                    &mut observer,
+                )
+            } else {
+                select_query_observed(
+                    &view,
+                    &collection,
+                    point(),
+                    options(),
+                    "snapshot-test",
+                    Some(&mut budget),
+                    &mut observer,
+                )
+            };
+            assert_eq!(observer.0, vec![2]);
+            if max_values == 1 {
+                assert_eq!(result.unwrap_err().status, 422);
+            } else {
+                assert_eq!(result.unwrap().read_values(), 2);
+            }
+        }
+        let mut invalid = options();
+        invalid.variables = vec!["missing-variable".into()];
+        let mut observer = Observer::default();
+        assert!(select_query_observed(
+            &view,
+            &collection,
+            point(),
+            invalid,
+            "snapshot-test",
+            None,
+            &mut observer
+        )
+        .is_err());
+        assert!(observer.0.is_empty());
+        assert!(select_query_bounded_observed(
+            &view,
+            &collection,
+            point(),
+            &options(),
+            "snapshot-test",
+            None,
+            &mut MaterializationBudget::new(0),
+            &mut observer,
+        )
+        .is_err());
+        assert!(observer.0.is_empty());
+        assert_eq!(
+            select_query(
+                &view,
+                &collection,
+                point(),
+                options(),
+                "snapshot-test",
+                None
+            )
+            .unwrap()
+            .read_values(),
+            2
+        );
+    }
 
     #[test]
     fn datetime_addition_propagates_existing_nat_but_rejects_finite_sentinel() {

@@ -22,8 +22,10 @@ implements request IDs, CORS, origin authentication and rate limits. It serves
 for materialized rectilinear products, with bounded dataset caching, compute
 admission and response encoding. Analyses POST, run listing, discovery and
 documentation handlers remain internal 501 stubs. See [forecast serving](docs/forecasts.md)
-for configuration, bounds and the fixture test contract. Real telemetry delivery and production connection/drain qualification are
-unfinished; see [DEVIATIONS.md](DEVIATIONS.md).
+for configuration, bounds and the fixture test contract. Optional analytics/error
+delivery and stdout heartbeat behavior are
+described in [docs/telemetry.md](docs/telemetry.md). Production connection/drain
+qualification remains unfinished; see [DEVIATIONS.md](DEVIATIONS.md).
 
 ## Build and checks
 
