@@ -581,3 +581,24 @@ async fn upstream_snapshot_failure_is_not_an_unknown_snapshot() {
     );
     assert_eq!(reply.body, b"Internal Server Error");
 }
+
+#[tokio::test]
+async fn blank_variables_are_rejected_before_any_store_open() {
+    let server = Server::start(&[]).await;
+    server.host.reads.fail_chunks.store(true, Ordering::SeqCst);
+    let mut body = payload();
+    body["queries"][0]["variables"] = json!([" ", "\t"]);
+    let reply = server.request("POST", "/v1/forecasts", &body).await;
+    assert_eq!(reply.status, 422);
+    assert_eq!(reply.json()["detail"], "At least one variable is required");
+    assert!(
+        !server
+            .host
+            .reads
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|path| path.contains("/repository/"))
+    );
+}

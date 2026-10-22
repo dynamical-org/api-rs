@@ -276,6 +276,9 @@ impl DataService {
             for (q, cell) in payload.queries.iter().zip(&resolved) {
                 timings.start("catalog");
                 let product = handle.block_on(service.product(&q.data_product_id, true))?;
+                if dynapi_contract::output::normalize_variables(&q.variables).is_empty() {
+                    return Err(QueryError::invalid("At least one variable is required"));
+                }
                 timings.finish("catalog");
                 timings.start("dataset_open");
                 let (dataset, status) = service.open(&product, None, &handle)?;
