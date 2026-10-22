@@ -367,17 +367,17 @@ async fn analytics_url_path_gate_and_last_query_product_match_starlette() {
         ),
         (
             "/v1/data-products/example-path?dataProductId=example-first&dataProductId=example-last",
-            501,
+            404,
             vec!["example-path"],
         ),
         (
             "/v1/data-products/example-path?dataProductId=example-first&dataProductId=",
-            501,
+            404,
             vec!["example-path"],
         ),
         (
             "/v1/data-products/example-path%0A?dataProductId=example-query",
-            501,
+            404,
             vec!["example-path\n"],
         ),
         (

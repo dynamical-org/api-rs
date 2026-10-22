@@ -4,7 +4,7 @@ use dynapi_catalog::{
     Collection as Product,
     cache::{DatasetCache, DatasetKey, Profile, Resolved},
     native::StacCatalog,
-    refresh::CatalogConfig,
+    refresh::Snapshot,
 };
 use dynapi_contract::{
     ForecastBatch, Value,
@@ -118,15 +118,8 @@ pub(crate) struct DataService {
     #[cfg(feature = "harness")]
     read_failure: Mutex<Option<dynapi_reader::ReaderError>>,
 }
-impl Drop for DataService {
-    fn drop(&mut self) {
-        self.catalog.close();
-    }
-}
 impl DataService {
-    pub fn new(config: &Config, clock: SharedClock) -> Result<Self, String> {
-        let catalog = StacCatalog::new(&config.stac_url, CatalogConfig::default())
-            .map_err(|e| e.to_string())?;
+    pub fn new(config: &Config, clock: SharedClock, catalog: StacCatalog) -> Result<Self, String> {
         let cache = DatasetCache::new(
             clock,
             config.main_dataset_ttl_seconds,
@@ -151,17 +144,21 @@ impl DataService {
     pub fn warm(&self) {
         self.catalog.warm();
     }
+    async fn snapshot(&self) -> Result<Arc<Snapshot>, QueryError> {
+        self.catalog.snapshot().await.map_err(|e| QueryError {
+            status: 503,
+            detail: e.to_string(),
+            retry_after: None,
+            exception_class: None,
+        })
+    }
     async fn product(&self, id: &str, forecast: bool) -> Result<Product, QueryError> {
-        let product = self
-            .catalog
-            .get_collection(id)
-            .await
-            .map_err(|e| QueryError {
-                status: 503,
-                detail: e.to_string(),
-                retry_after: None,
-                exception_class: None,
-            })?
+        Self::product_in(self.snapshot().await?.as_ref(), id, forecast)
+    }
+    fn product_in(snapshot: &Snapshot, id: &str, forecast: bool) -> Result<Product, QueryError> {
+        let product = snapshot
+            .collections
+            .get(id)
             .filter(|p| !forecast || p.kind() != "unknown")
             .ok_or_else(|| QueryError {
                 status: 404,
@@ -182,7 +179,7 @@ impl DataService {
         if let Some(reason) = product.point_query_reason() {
             return Err(QueryError::invalid(reason));
         }
-        Ok(product)
+        Ok(product.clone())
     }
     fn budget(&self) -> QueryBudget {
         QueryBudget {
@@ -273,9 +270,16 @@ impl DataService {
             let mut budget = service.budget();
             let mut builder = query::BatchBuilder::new(Kind::Forecast);
             let mut opened = Vec::new();
+            // One immutable catalog generation for this batch, resolved lazily
+            // at the first product lookup to preserve admission/error order.
+            let mut snapshot = None;
             for (q, cell) in payload.queries.iter().zip(&resolved) {
                 timings.start("catalog");
-                let product = handle.block_on(service.product(&q.data_product_id, true))?;
+                if snapshot.is_none() {
+                    snapshot = Some(handle.block_on(service.snapshot())?);
+                }
+                let product =
+                    Self::product_in(snapshot.as_ref().unwrap(), &q.data_product_id, true)?;
                 if q.variables.iter().all(|v| {
                     v.trim_matches(dynapi_contract::output::python_whitespace)
                         .is_empty()
@@ -639,6 +643,33 @@ fn busy(gate: &ComputeGate<SharedClock>) -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_temporary_data_service_does_not_close_the_shared_catalog() {
+        let catalog = StacCatalog::new(
+            "https://catalog.example.test/catalog.json",
+            dynapi_catalog::refresh::CatalogConfig::default(),
+        )
+        .unwrap();
+        let config = Config::from_values(&BTreeMap::new()).unwrap();
+        drop(
+            DataService::new(
+                &config,
+                Arc::new(crate::Monotonic::default()),
+                catalog.clone(),
+            )
+            .unwrap(),
+        );
+        // Outside a runtime, an open catalog records the expected warm failure.
+        // A prematurely closed catalog cannot begin that flight at all.
+        catalog.warm();
+        assert_eq!(catalog.status().consecutive_failures, 1);
+        assert_eq!(
+            catalog.status().last_error.as_deref(),
+            Some("STAC catalog refresh failed (RuntimeError)")
+        );
+        catalog.close();
+    }
 
     #[test]
     fn non_lookup_snapshot_errors_remain_internal() {

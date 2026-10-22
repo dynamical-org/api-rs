@@ -28,3 +28,48 @@ omitted from ordinary builds. These tests do not qualify remaining handlers,
 projected transforms, routing or real telemetry delivery.
 Maintainers verify migration output against the reference Python service outside
 the repository and record intentional differences in `DEVIATIONS.md`.
+
+`catalog_documentation.rs` drives the native HTTP server with an injected STAC
+fetcher and fictional, Rust-owned source documents in `fixtures/catalog.json`.
+It covers catalog ordering, visibility, capabilities, nullable metadata, numeric
+spelling, load failures/cold waits, method errors, HEAD framing, redirects,
+authentication and CORS. It verifies successful catalog caching and the absence
+of ETags/conditional responses on catalog and documentation routes.
+
+The documentation runtime assets in `../docs/` are source templates adapted from
+FastAPI (MIT); its OAuth redirect comes from Swagger UI (Apache-2.0). Their
+licenses are in the crate root. They are not saved service responses or fixture
+answers. Tests check usable links and OAuth flow invariants. `openapi.rs` owns the
+complete ordered schema in Rust, reuses enforced request bounds and literals
+from `dynapi-contract`, and caches its encoding once. Its unit tests check schema
+references/required properties, validator aliases/defaults/boundaries, response
+unions and retry headers. A two-way route inventory test requires every served
+operation to be documented or explicitly excluded (infrastructure, documentation
+and CORS); the pending execution operations are listed separately in that test.
+Changes to public operations or models must update these definitions and tests.
+Migration maintainers compare OpenAPI and HTML bytes over HTTP outside this repo.
+
+Template provenance: [FastAPI documentation templates](https://github.com/fastapi/fastapi/blob/0.141.1/fastapi/openapi/docs.py)
+and [Swagger UI OAuth redirect](https://github.com/swagger-api/swagger-ui/blob/v4.14.0/dist/oauth2-redirect.html).
+The templates retain their response-significant whitespace; the documentation
+asset directory disables Git's trailing-blank checks for those HTML files.
+Catalog numeric tests distinguish the Pydantic/Ryū layout used by dict responses
+from the Python JSON float layout used by explicit JSONResponse endpoints.
+The fictional catalog also includes non-finite bounding-box strings, whose
+coerced values serialize as null under that dict-response policy.
+
+Catalog response projections borrow a published snapshot and use a bounded
+counting pass before allocating one output buffer. `catalog_routes.rs` unit tests
+exercise exact encoded-byte limits, escaping, aggregate lists and hidden products.
+The current-thread HTTP allocation tests use `support/allocation.rs` to account
+for every allocation on the request/runtime thread after fixture warmup. A 2 MiB
+unused metadata field must not cause a large request allocation; oversized list
+and detail responses must fail through the generic 500 path before materializing
+large metadata, with the fixed operator error category. See D17 for the
+intentional response limit and measured public catalog sizes.
+
+`catalog_lifecycle.rs` injects a fictional fetcher shared by catalog and forecast
+HTTP requests. It checks one startup root/child flight, a common warm snapshot,
+failure backoff, stale serving and refresh publication, request cancellation and
+final application shutdown. App owns catalog close; temporary DataService or
+catalog handles do not. Forecast batches retain one immutable catalog generation.

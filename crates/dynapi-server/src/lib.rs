@@ -1,6 +1,9 @@
-//! Native HTTP shell and bounded materialized point reads.
+//! Native HTTP server with bounded point reads, catalog metadata and documentation.
+mod catalog_routes;
 pub mod config;
 mod data;
+mod documentation;
+mod openapi;
 pub mod telemetry;
 pub mod transport;
 
@@ -99,6 +102,7 @@ async fn collect_body(
 
 pub struct App {
     pub config: Config,
+    catalog: dynapi_catalog::native::StacCatalog,
     pub gate: ComputeGate<SharedClock>,
     rate: Mutex<RateLimiter<SharedClock>>,
     query_rate: Mutex<RateLimiter<SharedClock>>,
@@ -107,20 +111,44 @@ pub struct App {
     data: Arc<data::DataService>,
     robots_headers: Vec<(&'static str, String)>,
 }
+impl Drop for App {
+    fn drop(&mut self) {
+        self.catalog.close();
+    }
+}
 impl App {
     pub fn new(
         config: Config,
         clock: SharedClock,
         sink: Arc<dyn Telemetry>,
     ) -> Result<Self, String> {
+        let catalog = dynapi_catalog::native::StacCatalog::new(
+            config.stac_url.clone(),
+            dynapi_catalog::refresh::CatalogConfig::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        Self::with_catalog(config, clock, sink, catalog)
+    }
+    /// Compose both route families with one catalog; App owns its shutdown.
+    pub fn with_catalog(
+        config: Config,
+        clock: SharedClock,
+        sink: Arc<dyn Telemetry>,
+        catalog: dynapi_catalog::native::StacCatalog,
+    ) -> Result<Self, String> {
         let robots_headers = vec![
             ("accept-ranges", "bytes".into()),
             ("last-modified", ROBOTS_LAST_MODIFIED.into()),
             ("etag", ROBOTS_ETAG.into()),
         ];
-        let data = Arc::new(data::DataService::new(&config, clock.clone())?);
+        let data = Arc::new(data::DataService::new(
+            &config,
+            clock.clone(),
+            catalog.clone(),
+        )?);
         Ok(Self {
             data,
+            catalog,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
             query_rate: Mutex::new(RateLimiter::new(config.query_rate, clock)?),
@@ -239,6 +267,19 @@ impl App {
             .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok()?.parse().ok());
+        if response
+            .extensions()
+            .get::<catalog_routes::ResponseTooLarge>()
+            .is_some()
+        {
+            self.emit(
+                Stream::Terminal,
+                json!({
+                    "event": "api_error", "errorCategory": "catalog_response_too_large",
+                    "requestId": id,
+                }),
+            );
+        }
         if status == 500 {
             // Hyper flushes this response and closes before dispatching a pipeline.
             response
@@ -342,6 +383,13 @@ impl App {
                 let mut result = response(200, ROBOTS.to_vec(), Some("text/plain; charset=utf-8"));
                 add_headers(&mut result, self.robots_headers.clone());
                 result
+            }
+            "/v1/data-products" => catalog_routes::list(&self.catalog).await,
+            "/v1/data-products/{dataProductId}" => {
+                catalog_routes::describe(&self.catalog, path.split('/').nth(3).unwrap()).await
+            }
+            "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc" => {
+                documentation::serve(route.template)
             }
             "/v1/forecasts" => {
                 let content_type = request
@@ -495,6 +543,10 @@ impl App {
                 r.template,
                 "/" | "/robots.txt"
                     | "/healthz"
+                    | "/openapi.json"
+                    | "/docs"
+                    | "/docs/oauth2-redirect"
+                    | "/redoc"
                     | "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}"
             ) || (method == "OPTIONS" && r.cors);
             direct && (r.methods.contains(&method) || (method == "OPTIONS" && r.cors))
@@ -737,51 +789,103 @@ fn quote_location(path: &str) -> String {
     }
     out
 }
+#[derive(Clone, Copy)]
 struct Route {
     template: &'static str,
     methods: &'static [&'static str],
     cors: bool,
 }
+// One inventory drives routing and the two-way OpenAPI coverage test.
+const ROUTES: &[Route] = &[
+    Route {
+        template: "/",
+        methods: &["GET", "HEAD"],
+        cors: false,
+    },
+    Route {
+        template: "/robots.txt",
+        methods: &["GET", "HEAD"],
+        cors: false,
+    },
+    Route {
+        template: "/healthz",
+        methods: &["GET"],
+        cors: false,
+    },
+    Route {
+        template: "/openapi.json",
+        methods: &["GET", "HEAD"],
+        cors: false,
+    },
+    Route {
+        template: "/docs",
+        methods: &["GET", "HEAD"],
+        cors: false,
+    },
+    Route {
+        template: "/docs/oauth2-redirect",
+        methods: &["GET", "HEAD"],
+        cors: false,
+    },
+    Route {
+        template: "/redoc",
+        methods: &["GET", "HEAD"],
+        cors: false,
+    },
+    Route {
+        template: "/v1/forecasts",
+        methods: &["POST"],
+        cors: true,
+    },
+    Route {
+        template: "/v1/analyses",
+        methods: &["POST"],
+        cors: true,
+    },
+    Route {
+        template: "/v1/forecasts/runs",
+        methods: &["GET"],
+        cors: true,
+    },
+    Route {
+        template: "/v1/data-products",
+        methods: &["GET"],
+        cors: true,
+    },
+    Route {
+        template: "/v1/data-products/{dataProductId}",
+        methods: &["GET"],
+        cors: true,
+    },
+    Route {
+        template: "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}",
+        methods: &["GET"],
+        cors: true,
+    },
+];
 fn find_route(path: &str) -> Option<Route> {
-    let route = |template, methods, cors| {
-        Some(Route {
-            template,
-            methods,
-            cors,
-        })
-    };
-    // Starlette's static route regex ends with $, matching before one final LF.
-    // Dynamic parameters below still use the full decoded ASGI path.
-    match path.strip_suffix('\n').unwrap_or(path) {
-        "/" => route("/", &["GET", "HEAD"], false),
-        "/robots.txt" => route("/robots.txt", &["GET", "HEAD"], false),
-        "/healthz" => route("/healthz", &["GET"], false),
-        "/openapi.json" => route("/openapi.json", &["GET", "HEAD"], false),
-        "/docs" => route("/docs", &["GET", "HEAD"], false),
-        "/docs/oauth2-redirect" => route("/docs/oauth2-redirect", &["GET", "HEAD"], false),
-        "/redoc" => route("/redoc", &["GET", "HEAD"], false),
-        "/v1/forecasts" => route("/v1/forecasts", &["POST"], true),
-        "/v1/analyses" => route("/v1/analyses", &["POST"], true),
-        "/v1/forecasts/runs" => route("/v1/forecasts/runs", &["GET"], true),
-        "/v1/data-products" => route("/v1/data-products", &["GET"], true),
-        _ => {
-            let parts = path.split('/').collect::<Vec<_>>();
-            if parts.len() == 4 && parts[..3] == ["", "v1", "data-products"] && !parts[3].is_empty()
-            {
-                route("/v1/data-products/{dataProductId}", &["GET"], true)
-            } else if parts.len() == 7
-                && parts[..3] == ["", "v1", "data"]
-                && parts[5] == "points"
-                && [parts[3], parts[4], parts[6]].iter().all(|p| !p.is_empty())
-            {
-                route(
-                    "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}",
-                    &["GET"],
-                    true,
-                )
-            } else {
-                None
+    ROUTES
+        .iter()
+        .find(|route| {
+            if !route.template.contains('{') {
+                // Starlette's static regex can match before one final LF.
+                return route.template == path.strip_suffix('\n').unwrap_or(path);
             }
-        }
-    }
+            // Dynamic path parameters retain the full decoded path, including LF.
+            let mut parts = path.split('/');
+            for template in route.template.split('/') {
+                let Some(part) = parts.next() else {
+                    return false;
+                };
+                if template.starts_with('{') {
+                    if part.is_empty() {
+                        return false;
+                    }
+                } else if template != part {
+                    return false;
+                }
+            }
+            parts.next().is_none()
+        })
+        .copied()
 }

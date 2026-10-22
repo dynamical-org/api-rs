@@ -1,0 +1,2 @@
+# Template whitespace is part of the documentation response bytes.
+*.html whitespace=-blank-at-eol,-blank-at-eof

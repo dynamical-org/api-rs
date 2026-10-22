@@ -1351,6 +1351,7 @@ dependencies = [
  "hyper-util",
  "md-5 0.10.6",
  "percent-encoding",
+ "ryu",
  "serde_json",
  "sha2 0.10.9",
  "subtle",
