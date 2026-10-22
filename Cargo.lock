@@ -1336,8 +1336,12 @@ name = "dynapi-server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "dynapi-catalog",
  "dynapi-contract",
+ "dynapi-dataset",
  "dynapi-policy",
+ "dynapi-query",
+ "dynapi-reader",
  "futures-util",
  "hmac 0.12.1",
  "http-body-util",

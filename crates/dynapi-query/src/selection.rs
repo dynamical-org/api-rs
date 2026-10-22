@@ -475,6 +475,54 @@ impl<'a> PreparedQuery<'a> {
     pub fn value_count(&self) -> u64 {
         self.value_count
     }
+    /// Conservative charge for selected trees, temporary values and JSON encoding.
+    /// Source coordinate axes remain shared metadata, not per-response copies.
+    pub fn materialization_byte_bound(&self) -> Option<u128> {
+        let text = |s: &str| (s.len() as u128).checked_mul(24)?.checked_add(256);
+        let value = |v: &Value| {
+            (dynapi_contract::output::json_byte_bound(v)? as u128)
+                .checked_mul(8)?
+                .checked_add(256)
+        };
+        let mut bytes = (self.value_count as u128)
+            .checked_mul(512)?
+            .checked_add(4096)?;
+        for s in [&self.collection.id, &self.snapshot_id]
+            .into_iter()
+            .chain(self.collection.version.iter())
+            .chain(self.collection.catalog_url.iter())
+        {
+            bytes = bytes.checked_add(text(s)?)?;
+        }
+        for name in &self.options.variables {
+            bytes = bytes.checked_add(text(name)?)?;
+            if let Some(unit) = &self.collection.variables[name].unit {
+                bytes = bytes.checked_add(text(unit)?)?;
+            } else if let Some(unit) = self.source.variables[name].attributes.get("units") {
+                bytes = bytes.checked_add(value(unit)?)?;
+            }
+        }
+        for time in &self.times {
+            bytes = bytes.checked_add(text(time)?)?;
+        }
+        if self.options.variables.iter().any(|n| {
+            self.source.variables[n]
+                .dimensions
+                .iter()
+                .any(|d| d == "ensemble_member")
+        }) {
+            bytes = bytes.checked_add(
+                (self.source.dimensions["ensemble_member"] as u128)
+                    .checked_mul(512 + self.options.variables.len() as u128 * 256)?,
+            )?;
+            if let Some(Coordinate::Members(ids)) = self.source.coordinates.get("ensemble_member") {
+                for id in ids {
+                    bytes = bytes.checked_add(value(id)?)?;
+                }
+            }
+        }
+        Some(bytes)
+    }
 }
 fn checked_mul(a: u64, b: u64) -> Result<u64, QueryError> {
     a.checked_mul(b)

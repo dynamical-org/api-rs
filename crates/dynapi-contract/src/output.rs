@@ -300,3 +300,24 @@ impl ErrorEnvelope {
         }
     }
 }
+
+/// Conservative JSON byte bound without allocating encoded strings or integers.
+/// Callers can reject materialization before the encoder allocates its buffer.
+pub fn json_byte_bound(value: &Value) -> Option<usize> {
+    match value {
+        Value::Null | Value::Bool(_) => Some(5),
+        Value::Float(_) => Some(32),
+        Value::Int(n) => usize::try_from(n.bits())
+            .ok()?
+            .checked_div(3)?
+            .checked_add(3),
+        Value::String(s) => s.len().checked_mul(6)?.checked_add(2),
+        Value::Array(xs) => xs.iter().try_fold(2usize, |n, v| {
+            n.checked_add(json_byte_bound(v)?)?.checked_add(1)
+        }),
+        Value::Object(xs) => xs.iter().try_fold(2usize, |n, (key, v)| {
+            n.checked_add(key.len().checked_mul(6)?.checked_add(4)?)?
+                .checked_add(json_byte_bound(v)?)
+        }),
+    }
+}

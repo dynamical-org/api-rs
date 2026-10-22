@@ -1,3 +1,4 @@
+mod support;
 use dynapi_policy::Clock;
 use dynapi_server::{
     App, BODY_LIMIT,
@@ -17,6 +18,7 @@ impl Clock for Zero {
     }
 }
 struct Server {
+    _host: support::FixtureHost,
     address: std::net::SocketAddr,
     app: Arc<App>,
     sink: Arc<RecordingSink>,
@@ -32,6 +34,11 @@ impl Server {
         Self::start_on(values, "127.0.0.1:0").await
     }
     async fn start_on(values: &[(&str, &str)], bind: &str) -> Self {
+        let host = support::FixtureHost::start().await;
+        let stac_url = format!("{}/catalog.json", host.url);
+        let mut values = values.to_vec();
+        values.push(("DYNAMICAL_API_STAC_URL", &stac_url));
+        values.push(("DYNAPI_HARNESS_STORE_BASE_URL", &host.url));
         let config = Config::from_values(
             &values
                 .iter()
@@ -48,6 +55,7 @@ impl Server {
             transport::run(listener, serve).await.unwrap();
         });
         Self {
+            _host: host,
             address,
             app,
             sink,
@@ -82,7 +90,7 @@ fn status(response: &[u8]) -> u16 {
         .parse()
         .unwrap()
 }
-const VALID: &[u8] = br#"{"queries":[{"dataProductId":"example-forecast","location":{"latitude":0,"longitude":0},"variables":["temperature_2m"]}]}"#;
+const VALID: &[u8] = br#"{"queries":[{"dataProductId":"fixture-forecast","location":{"latitude":44,"longitude":0},"variables":["temperature_2m"]}]}"#;
 
 #[tokio::test]
 async fn slash_redirect_falls_back_to_accepted_socket_authority() {
@@ -449,7 +457,7 @@ async fn validation_precedes_compute_but_follows_rate_debit() {
     assert_eq!(server.app.gate.snapshot().in_use, 1);
 }
 #[tokio::test]
-async fn admitted_forecast_returns_the_documented_stub() {
+async fn admitted_forecast_returns_data_with_cors_and_request_id() {
     let server = Server::start(&[]).await;
     let response = server
         .request(
@@ -459,15 +467,10 @@ async fn admitted_forecast_returns_the_documented_stub() {
             VALID,
         )
         .await;
-    // D5 and App::stub declare 501, INTERNAL_STUB bytes and this media type.
-    assert_eq!(status(&response), 501);
+    assert_eq!(status(&response), 200);
     let (headers, body) = response_parts(&response);
-    assert_eq!(
-        body,
-        b"Internal stub: data route handlers are not implemented yet"
-    );
-    assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
-    // App middleware assigns UUID4 IDs; simple_cors uses EXPOSE_HEADERS for 501.
+    assert!(serde_json::from_slice::<serde_json::Value>(body).unwrap()["results"].is_array());
+    assert_eq!(headers["content-type"], "application/json");
     let id = uuid::Uuid::parse_str(&headers["x-request-id"]).unwrap();
     assert_eq!(id.get_version_num(), 4);
     assert_eq!(id.get_variant(), uuid::Variant::RFC4122);

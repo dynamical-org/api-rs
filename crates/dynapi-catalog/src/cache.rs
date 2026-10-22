@@ -89,6 +89,7 @@ impl std::error::Error for UnknownSnapshotError {}
 struct Cached<H> {
     opened: OpenedDataset<H>,
     expires_at: f64,
+    bytes: usize,
 }
 
 #[derive(Default)]
@@ -128,6 +129,8 @@ pub struct DatasetCache<C, H> {
     clock: C,
     ttl: f64,
     capacity: usize,
+    max_bytes: usize,
+    weight: fn(&H) -> usize,
     datasets: Mutex<IndexMap<DatasetKey, Cached<H>>>,
     locks: KeyedLocks<DatasetKey>,
 }
@@ -146,11 +149,20 @@ impl<C: Clock, H> DatasetCache<C, H> {
             clock,
             ttl: main_cache_ttl_seconds,
             capacity: dataset_cache_entries,
+            max_bytes: usize::MAX,
+            weight: |_| 0,
             datasets: Mutex::new(IndexMap::new()),
             locks: KeyedLocks {
                 entries: Mutex::new(HashMap::new()),
             },
         })
+    }
+    /// Bound retained handles by entry count, caller-owned handle bytes and key storage.
+    /// Handles larger than the entire cache can be used but are never retained.
+    pub fn with_byte_limit(mut self, max_bytes: usize, weight: fn(&H) -> usize) -> Self {
+        self.max_bytes = max_bytes;
+        self.weight = weight;
+        self
     }
     pub fn with_defaults(clock: C) -> Self {
         Self::new(
@@ -223,8 +235,36 @@ impl<C: Clock, H> DatasetCache<C, H> {
         }
         let mut datasets = self.datasets.lock().unwrap();
         datasets.shift_remove(&key);
-        datasets.insert(key, Cached { opened, expires_at });
-        while datasets.len() > self.capacity {
+        let location_bytes = match &key.location {
+            RepositoryLocation::Http(h) => h.url.capacity(),
+            RepositoryLocation::S3(s) => s
+                .bucket
+                .capacity()
+                .saturating_add(s.prefix.capacity())
+                .saturating_add(s.region.capacity()),
+        };
+        let bytes = (self.weight)(&opened.dataset)
+            .saturating_add(
+                std::mem::size_of::<DatasetKey>() + std::mem::size_of::<Cached<H>>() + 128,
+            )
+            .saturating_add(key.collection_id.capacity())
+            .saturating_add(key.snapshot_id.as_ref().map_or(0, String::capacity))
+            .saturating_add(location_bytes)
+            .saturating_add(opened.snapshot_id.capacity());
+        if bytes > self.max_bytes {
+            return;
+        }
+        datasets.insert(
+            key,
+            Cached {
+                opened,
+                expires_at,
+                bytes,
+            },
+        );
+        while datasets.len() > self.capacity
+            || datasets.values().fold(0u128, |n, c| n + c.bytes as u128) > self.max_bytes as u128
+        {
             datasets.shift_remove_index(0);
         }
     }
@@ -233,6 +273,14 @@ impl<C: Clock, H> DatasetCache<C, H> {
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+    pub fn metadata_bytes(&self) -> usize {
+        self.datasets
+            .lock()
+            .unwrap()
+            .values()
+            .map(|c| c.bytes)
+            .sum()
     }
     pub fn lock_entries(&self) -> usize {
         self.locks.entries.lock().unwrap().len()

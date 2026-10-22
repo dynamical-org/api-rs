@@ -313,3 +313,37 @@ fn opener_failure_never_caches_partial_dataset_and_unknown_pin_error_is_exact() 
         "Unknown snapshot 'missing'"
     );
 }
+
+#[test]
+fn byte_weight_evicts_lru_and_never_retains_oversized_handles() {
+    let cache = DatasetCache::new(Arc::new(FakeClock::default()), 30., 10)
+        .unwrap()
+        .with_byte_limit(8192, |weight: &usize| *weight * 1024);
+    let insert = |id, bytes| {
+        cache
+            .open(
+                key(id, Some("pin")),
+                || {
+                    Ok::<_, ()>(Resolved {
+                        snapshot_id: "pin".into(),
+                        session: bytes,
+                    })
+                },
+                Ok,
+            )
+            .unwrap()
+    };
+    let a = insert("a", 3);
+    insert("b", 4);
+    let initial_bytes = cache.metadata_bytes();
+    assert!((7168..=8192).contains(&initial_bytes));
+    assert_eq!(insert("a", 3).cache_status, CacheStatus::Hit);
+    insert("c", 2);
+    let retained_bytes = cache.metadata_bytes();
+    assert!(retained_bytes < initial_bytes);
+    assert_eq!(cache.len(), 2);
+    insert("huge", 8);
+    assert_eq!(cache.metadata_bytes(), retained_bytes);
+    assert_eq!(insert("huge", 8).cache_status, CacheStatus::Miss);
+    assert_eq!(*a.dataset, 3); // Eviction cannot invalidate an active reader.
+}

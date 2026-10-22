@@ -1,5 +1,6 @@
-//! Native HTTP shell. Data handlers deliberately remain internal milestone stubs.
+//! Native HTTP shell and bounded materialized point reads.
 pub mod config;
+mod data;
 pub mod telemetry;
 pub mod transport;
 
@@ -103,6 +104,7 @@ pub struct App {
     query_rate: Mutex<RateLimiter<SharedClock>>,
     sink: Arc<dyn Telemetry>,
     started: Instant,
+    data: Arc<data::DataService>,
     robots_headers: Vec<(&'static str, String)>,
 }
 impl App {
@@ -116,7 +118,9 @@ impl App {
             ("last-modified", ROBOTS_LAST_MODIFIED.into()),
             ("etag", ROBOTS_ETAG.into()),
         ];
+        let data = Arc::new(data::DataService::new(&config, clock.clone())?);
         Ok(Self {
+            data,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
             query_rate: Mutex::new(RateLimiter::new(config.query_rate, clock)?),
@@ -173,7 +177,9 @@ impl App {
             .is_some_and(|s| !s.is_ascii())
             || self.config.origin_secret.is_some()
                 && header("x-dynamical-origin-auth").is_some_and(|v| !v.is_ascii());
+        let usage = Arc::new(Mutex::new(data::Usage::default()));
         let mut terminal = RequestGuard {
+            usage: usage.clone(),
             app: self.clone(),
             method: method.clone(),
             path: path.clone(),
@@ -215,14 +221,24 @@ impl App {
                     .insert("retry-after", retry.to_string().parse().unwrap());
                 result
             } else {
-                std::panic::AssertUnwindSafe(self.route(request, &method, &path, local))
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| Ok(server_error()))?
+                std::panic::AssertUnwindSafe(self.route(
+                    request,
+                    &method,
+                    &path,
+                    local,
+                    usage.clone(),
+                ))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Ok(server_error()))?
             }
         };
         let mut response = response;
         let status = response.status().as_u16();
+        usage.lock().unwrap().response_bytes = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()?.parse().ok());
         if status == 500 {
             // Hyper flushes this response and closes before dispatching a pipeline.
             response
@@ -242,6 +258,7 @@ impl App {
                 analytics,
                 &id,
                 started.elapsed().as_secs_f64() * 1000.0,
+                &usage.lock().unwrap(),
             );
         }
         if let Some(cache) = cache_control(&method, &policy_path, status) {
@@ -261,6 +278,7 @@ impl App {
         method: &str,
         path: &str,
         local: SocketAddr,
+        usage: data::SharedUsage,
     ) -> Result<HttpResponse, RequestError> {
         // Hyper exposes scheme/authority, but not the original wire target.
         // Reject targets outside origin-form rather than routing their path alone.
@@ -349,11 +367,62 @@ impl App {
                             "application/json"
                         }),
                     ),
-                    ValidationResult::Valid(_) => self.stub(),
+                    ValidationResult::Valid(payload) => {
+                        self.data.forecasts(payload, &self.gate, usage).await
+                    }
+                }
+            }
+            "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}" => {
+                let params: Vec<_> = request
+                    .uri()
+                    .query()
+                    .unwrap_or("")
+                    .split('&')
+                    .filter(|p| !p.is_empty())
+                    .map(|pair| {
+                        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+                        let decode = |v: &str| {
+                            percent_encoding::percent_decode_str(&v.replace('+', " "))
+                                .decode_utf8_lossy()
+                                .into_owned()
+                        };
+                        (decode(key), decode(value))
+                    })
+                    .collect();
+                match dynapi_contract::validation::validate_canonical(&params) {
+                    Err(invalid) => response(
+                        invalid.status,
+                        invalid.body,
+                        Some(if invalid.status == 500 {
+                            "text/plain; charset=utf-8"
+                        } else {
+                            "application/json"
+                        }),
+                    ),
+                    Ok(params) => {
+                        let parts: Vec<_> = path.split('/').collect();
+                        self.data
+                            .canonical(
+                                parts[3],
+                                parts[4].into(),
+                                parts[6],
+                                params,
+                                &self.gate,
+                                usage,
+                            )
+                            .await
+                    }
                 }
             }
             _ => self.stub(),
         })
+    }
+    #[cfg(feature = "harness")]
+    pub fn inject_read_failure(&self, error: dynapi_reader::ReaderError) {
+        self.data.inject_read_failure(error);
+    }
+    pub fn warm_catalog(&self) {
+        self.data.warm();
     }
     fn stub(&self) -> HttpResponse {
         let Some(_permit) = self.gate.try_acquire() else {
@@ -389,6 +458,7 @@ impl App {
         analytics: bool,
         id: &str,
         duration_ms: f64,
+        usage: &data::Usage,
     ) {
         let header = |name: &str| headers.get(name).map(|v| latin1(v.as_bytes()));
         let ua = header("user-agent").unwrap_or_default();
@@ -429,6 +499,15 @@ impl App {
             ) || (method == "OPTIONS" && r.cors);
             direct && (r.methods.contains(&method) || (method == "OPTIONS" && r.cors))
         });
+        if status == Some(200) && usage.work_units.is_some() {
+            self.emit(Stream::Terminal, json!({
+                "event": "api_request", "route": if route.as_ref().is_some_and(|r| r.template == "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}") { "/v1/data/:canonical" } else { matched.map(|r| r.template).unwrap_or("unrouted") },
+                "containerAgeS": self.started.elapsed().as_secs(),
+                "dataProductIds": usage.products, "queryCount": usage.query_count,
+                "workUnits": usage.work_units, "responseBytes": usage.response_bytes,
+                "datasetCache": usage.dataset_cache, "timingsMs": usage.timings
+            }));
+        }
         if cancelled || status.is_some_and(|s| s >= 400) {
             self.emit(Stream::Terminal, json!({
                 "event": "api_failure", "route": matched.map(|r| r.template).unwrap_or("unrouted"),
@@ -465,6 +544,14 @@ impl App {
             .filter(|p| !p.is_empty())
             .into_iter()
             .collect::<Vec<_>>();
+        let mut products = if usage.products.is_empty() {
+            products
+        } else {
+            usage.products.clone()
+        };
+        products.sort();
+        products.dedup();
+        products.truncate(10);
         if self.config.analytics_enabled
             && analytics
             && middleware_url_path(path).starts_with("/v1/")
@@ -473,8 +560,8 @@ impl App {
                 "$process_person_profile": false, "route": if status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
                 "method": method, "status": status, "duration_ms": (duration_ms * 10.0).round_ties_even() / 10.0,
                 "client_kind": kind, "user_agent": ua.chars().take(120).collect::<String>(),
-                "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": null,
-                "work_units": null, "dataset_cache": null
+                "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": usage.query_count,
+                "work_units": usage.work_units, "dataset_cache": usage.dataset_cache, "response_bytes": usage.response_bytes, "timings_ms": usage.timings
             }}));
         }
     }
@@ -560,6 +647,7 @@ fn middleware_url_path(path: &str) -> String {
 // A cancelled async request claims its terminal event immediately. A future
 // data worker must own its compute Permit independently of this request guard.
 struct RequestGuard {
+    usage: data::SharedUsage,
     app: Arc<App>,
     method: String,
     path: String,
@@ -584,6 +672,7 @@ impl Drop for RequestGuard {
                 false,
                 &self.id,
                 self.started.elapsed().as_secs_f64() * 1000.0,
+                &self.usage.lock().unwrap(),
             );
         }
     }

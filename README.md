@@ -17,9 +17,12 @@ to serve the API while the Rust implementation is verified during migration.
 - `dynapi-server`: native Hyper HTTP/1.1 server, middleware, admission and telemetry sink boundaries.
 
 The server currently serves the root redirect, robots and health check, and
-implements request IDs, CORS, origin authentication, rate limits and forecast
-body validation. Data, discovery and documentation handlers remain internal 501
-stubs. Real telemetry delivery and production connection/drain qualification are
+implements request IDs, CORS, origin authentication and rate limits. It serves
+`POST /v1/forecasts` and canonical `GET /v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}`
+for materialized rectilinear products, with bounded dataset caching, compute
+admission and response encoding. Analyses POST, run listing, discovery and
+documentation handlers remain internal 501 stubs. See [forecast serving](docs/forecasts.md)
+for configuration, bounds and the fixture test contract. Real telemetry delivery and production connection/drain qualification are
 unfinished; see [DEVIATIONS.md](DEVIATIONS.md).
 
 ## Build and checks

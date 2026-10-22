@@ -776,3 +776,77 @@ fn model_error(query: &ForecastQuery) -> Option<String> {
     }
     None
 }
+
+/// Canonical query parameters use the same scalar validation as the body model.
+#[derive(Clone, Debug)]
+pub struct CanonicalQuery {
+    pub variables: String,
+    pub init_time: Option<DateTime>,
+    pub max_lead_time_hours: Option<BigInt>,
+    pub valid_time_start: Option<DateTime>,
+    pub valid_time_end: Option<DateTime>,
+    pub start_time: Option<DateTime>,
+    pub end_time: Option<DateTime>,
+}
+pub fn validate_canonical(params: &[(String, String)]) -> Result<CanonicalQuery, Response> {
+    let mut validator = Validator { errors: vec![] };
+    let get = |name: &str| {
+        params
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| Value::from(v.clone()))
+    };
+    let loc = |name: &str| vec![Value::from("query"), Value::from(name)];
+    let variables = match get("variables") {
+        None => {
+            validator.push(
+                "missing",
+                &loc("variables"),
+                "Field required",
+                &Value::Null,
+                None,
+            );
+            String::new()
+        }
+        Some(Value::String(value)) => {
+            if value.is_empty() {
+                validator.push(
+                    "string_too_short",
+                    &loc("variables"),
+                    "String should have at least 1 character",
+                    &Value::from(value.clone()),
+                    Some(Value::object([("min_length", Value::from(1i64))])),
+                );
+            }
+            value
+        }
+        _ => unreachable!(),
+    };
+    let init_time = get("initTime").and_then(|v| validator.datetime(&v, &loc("initTime")));
+    let max_lead_time_hours =
+        get("maxLeadTimeHours").and_then(|v| validator.integer(&v, &loc("maxLeadTimeHours")));
+    let valid_time_start =
+        get("validTimeStart").and_then(|v| validator.datetime(&v, &loc("validTimeStart")));
+    let valid_time_end =
+        get("validTimeEnd").and_then(|v| validator.datetime(&v, &loc("validTimeEnd")));
+    let start_time = get("startTime").and_then(|v| validator.datetime(&v, &loc("startTime")));
+    let end_time = get("endTime").and_then(|v| validator.datetime(&v, &loc("endTime")));
+    if !validator.errors.is_empty() {
+        return Err(Response::errors(validator.errors));
+    }
+    Ok(CanonicalQuery {
+        variables,
+        init_time,
+        max_lead_time_hours,
+        valid_time_start,
+        valid_time_end,
+        start_time,
+        end_time,
+    })
+}
+
+/// Python-compatible integer grammar, including Unicode decimal digits.
+pub fn parse_grid_integer(value: &str) -> Option<BigInt> {
+    parse_integer(value).ok()
+}

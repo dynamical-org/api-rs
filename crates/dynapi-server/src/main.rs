@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sink
         };
     let app = Arc::new(App::new(config, clock, sink)?);
+    app.warm_catalog();
     let listener = tokio::net::TcpListener::bind((bind, port)).await?;
     #[cfg(feature = "harness")]
     let listener = if let Some(fd) = inherited_fd {
