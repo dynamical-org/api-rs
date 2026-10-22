@@ -1,9 +1,12 @@
 #![cfg(feature = "native")]
 use dynapi_catalog::{native::StacCatalog, refresh::CatalogConfig};
+#[path = "../../../tests/support/time.rs"]
+mod time;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use time::guard;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -40,11 +43,11 @@ async fn server(mode: &'static str) -> (String, JoinHandle<()>, Arc<AtomicUsize>
                     "status404" => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_bytes().to_vec(),
                     "trickle" => {
                         if stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.is_err() {return;}
-                        for _ in 0..100 {
+                        loop {
                             if stream.write_all(b"1\r\n \r\n").await.is_err() {return;}
+                            calls.fetch_add(1, Ordering::SeqCst);
                             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                         }
-                        return;
                     }
                     "oversized" => {
                         if stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.is_err() {return;}
@@ -125,27 +128,49 @@ async fn native_http_rejects_compression_oversize_and_permanent_status_without_r
         task.abort();
     }
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn native_http_trickling_peer_is_bounded_by_whole_refresh_deadline() {
-    let (url, task, _) = server("trickle").await;
-    let catalog = StacCatalog::new(
+    struct Clock(tokio::time::Instant);
+    impl dynapi_catalog::Clock for Clock {
+        fn now(&self) -> f64 {
+            self.0.elapsed().as_secs_f64()
+        }
+    }
+    let (url, task, calls) = server("trickle").await;
+    let catalog = StacCatalog::with_dependencies(
         url,
         CatalogConfig {
             load_deadline_seconds: 0.06,
             ..CatalogConfig::default()
         },
+        Arc::new(Clock(tokio::time::Instant::now())),
+        Arc::new(dynapi_catalog::native::NativeFetcher::new().unwrap()),
+        Arc::new(dynapi_catalog::native::NativeHooks),
     )
     .unwrap();
-    let started = std::time::Instant::now();
-    assert!(catalog.list_collections().await.is_err());
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+    let request = catalog.list_collections();
+    tokio::pin!(request);
+    assert!(futures::poll!(&mut request).is_pending());
+    for chunk in 1..=12 {
+        guard(async {
+            // The first call records the request, the rest record body chunks.
+            while calls.load(Ordering::SeqCst) < chunk + 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(futures::poll!(&mut request).is_pending());
+        tokio::time::advance(std::time::Duration::from_millis(5)).await;
+    }
+    // A live peer trickles indefinitely; only advancing the whole-load deadline
+    // may retire the refresh. Wall time is solely the helper's deadlock guard.
+    assert!(guard(request).await.is_err());
+    guard(async {
         while catalog.status().outstanding_workers > 0 {
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert!(catalog.status().loaded_at.is_none());
     catalog.close();
     task.abort();
