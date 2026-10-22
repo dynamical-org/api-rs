@@ -391,6 +391,52 @@ async fn cancelled_request_releases_admission_and_emits_no_analytics_or_error() 
 
 #[cfg(feature = "telemetry-delivery")]
 #[tokio::test]
+async fn stalled_resolver_cannot_keep_the_server_process_alive_after_shutdown() {
+    let process = tokio::task::spawn_blocking(|| {
+        let started = std::time::Instant::now();
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_dynapi-server"))
+            .env_clear()
+            .env("SENTRY_DSN", "http://public@errors.example.invalid/1")
+            .env("DYNAMICAL_API_ORIGIN_SECRET", "")
+            .env("DYNAPI_HARNESS_TELEMETRY_STALLED_DNS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() > std::time::Duration::from_secs(16) {
+                child.kill().unwrap();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        (output, started.elapsed())
+    });
+    let (output, elapsed) = tokio::time::timeout(std::time::Duration::from_secs(17), process)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        elapsed <= std::time::Duration::from_secs(15),
+        "process exit took {elapsed:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Telemetry test resolver stalled"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Telemetry shutdown deadline exceeded; pending SDK events may be lost"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("errors.example.invalid"));
+    assert!(output.stdout.is_empty());
+}
+
+#[cfg(feature = "telemetry-delivery")]
+#[tokio::test]
 async fn startup_failure_is_reported_and_drained_before_process_exit() {
     use http_body_util::BodyExt;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

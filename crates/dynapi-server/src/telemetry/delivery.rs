@@ -131,11 +131,22 @@ impl DeliverySink {
                 backend: None,
             });
         }
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(REQUEST_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
-            .no_proxy()
+            .no_proxy();
+        #[cfg(feature = "harness")]
+        let builder = if values
+            .get("DYNAPI_HARNESS_TELEMETRY_STALLED_DNS")
+            .map(String::as_str)
+            == Some("1")
+        {
+            builder.dns_resolver(Arc::new(StalledResolver))
+        } else {
+            builder
+        };
+        let client = builder
             .build()
             .map_err(|_| "Cannot initialize telemetry HTTP client")?;
         let sentry = settings.sentry.map(|dsn| {
@@ -186,18 +197,28 @@ impl DeliverySink {
     }
     /// Stop accepting records, drain within `budget`, then close the SDK using
     /// the same deadline plus a four-second reserve for its blocking enqueue/join.
-    /// This lifecycle method must run outside request processing.
-    pub async fn shutdown(&self, budget: Duration) {
+    /// Returns false if SDK cleanup outlives the deadline. The executable must
+    /// then exit without waiting for blocking runtime/SDK threads.
+    pub async fn shutdown(&self, budget: Duration) -> bool {
+        self.shutdown_started_at(tokio::time::Instant::now(), budget)
+            .await
+    }
+    /// Include earlier shutdown work, such as startup error capture, in the
+    /// same deadline rather than granting it an additional drain/flush budget.
+    pub async fn shutdown_started_at(
+        &self,
+        started: tokio::time::Instant,
+        budget: Duration,
+    ) -> bool {
         let mut worker_guard = self.worker.lock().await;
         let Some(mut worker) = worker_guard.take() else {
-            return;
+            return true;
         };
         let reserve = if self.errors {
             SDK_SHUTDOWN_RESERVE
         } else {
             Duration::ZERO
         };
-        let started = tokio::time::Instant::now();
         let drain_deadline = started.checked_add(budget).unwrap_or(started);
         let deadline = drain_deadline
             .checked_add(reserve)
@@ -221,12 +242,16 @@ impl DeliverySink {
             let flush_budget = deadline
                 .saturating_duration_since(tokio::time::Instant::now())
                 .saturating_sub(reserve);
-            // Await cleanup rather than detaching spawn_blocking: no SDK thread
-            // or flush job may survive this lifecycle call.
-            if backend.flush(flush_budget).await.is_err() {
-                increment(&self.counters.failed);
+            match tokio::time::timeout_at(deadline, backend.flush(flush_budget)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(())) => increment(&self.counters.failed),
+                Err(_) => {
+                    increment(&self.counters.failed);
+                    return false;
+                }
             }
         }
+        true
     }
 }
 impl Drop for DeliverySink {
@@ -273,6 +298,23 @@ struct HttpDelivery {
     client: reqwest::Client,
     posthog: Option<(String, reqwest::Url)>,
     sentry: Option<Arc<sentry::Client>>,
+}
+#[cfg(feature = "harness")]
+struct StalledResolver;
+#[cfg(feature = "harness")]
+impl reqwest::dns::Resolve for StalledResolver {
+    fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async {
+            tokio::task::spawn_blocking(|| {
+                eprintln!("Telemetry test resolver stalled");
+                loop {
+                    std::thread::park();
+                }
+            })
+            .await?;
+            Err(std::io::Error::other("stalled resolver returned").into())
+        })
+    }
 }
 struct HttpTransportFactory(reqwest::Client);
 impl sentry::TransportFactory for HttpTransportFactory {

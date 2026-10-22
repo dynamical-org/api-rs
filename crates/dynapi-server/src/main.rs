@@ -1,8 +1,26 @@
 use dynapi_server::{App, Monotonic, config::Config, telemetry::StdoutSink, transport};
 use std::{net::IpAddr, sync::Arc};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Cannot initialize server runtime");
+    let result = runtime.block_on(run());
+    // Blocking DNS and compute work cannot be cancelled by dropping their
+    // futures. Process exit ends any such work after bounded async cleanup.
+    runtime.shutdown_timeout(std::time::Duration::ZERO);
+    let code = match result {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            1
+        }
+    };
+    std::process::exit(code);
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut bind: IpAddr = "127.0.0.1".parse()?;
     let mut port: u16 = 8000;
     #[cfg(feature = "harness")]
@@ -40,6 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .map(|delivery| delivery.clone() as Arc<dyn dynapi_server::telemetry::Telemetry>)
         .unwrap_or(sink);
+    #[cfg(feature = "telemetry-delivery")]
+    let mut shutdown_started = None;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let config = Config::from_env()?;
         let clock: Arc<dyn dynapi_policy::Clock> = Arc::new(Monotonic::default());
@@ -73,11 +93,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::downgrade(&app),
             app.config.heartbeat_seconds,
         );
-        let served = tokio::select! {
-            result = transport::run(listener, app) => result,
-            _ = tokio::signal::ctrl_c() => Ok(()),
-            _ = terminate() => Ok(()),
+        let (served, _stopped) = tokio::select! {
+            result = transport::run(listener, app) => (result, tokio::time::Instant::now()),
+            _ = tokio::signal::ctrl_c() => (Ok(()), tokio::time::Instant::now()),
+            _ = terminate() => (Ok(()), tokio::time::Instant::now()),
         };
+        #[cfg(feature = "telemetry-delivery")]
+        {
+            shutdown_started = Some(_stopped);
+        }
         heartbeat.stop().await;
         served?;
         Ok(())
@@ -85,6 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     #[cfg(feature = "telemetry-delivery")]
     if let Some(delivery) = delivery {
+        let shutdown_started = shutdown_started.unwrap_or_else(tokio::time::Instant::now);
         if result.is_err() {
             use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
             delivery.emit(
@@ -92,9 +117,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 error_record(ErrorKind::Startup, serde_json::json!({})).unwrap(),
             );
         }
-        delivery
-            .shutdown(dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT)
-            .await;
+        if !delivery
+            .shutdown_started_at(
+                shutdown_started,
+                dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT,
+            )
+            .await
+        {
+            eprintln!("Telemetry shutdown deadline exceeded; pending SDK events may be lost");
+        }
     }
     result
 }

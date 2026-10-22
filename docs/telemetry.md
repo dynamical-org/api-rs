@@ -33,11 +33,16 @@ delivery is dropped without retry. The Sentry SDK also maintains its own bounded
 30-envelope transport queue and respects server rate limits. Errors are never
 sampled by the application. Shutdown uses one ten-second drain/flush budget plus
 a four-second Sentry reserve for its bounded blocking enqueue and HTTP-thread
-join: the nominal total bound with Sentry is fourteen seconds, subject to OS
-scheduling. Without Sentry the bound is ten seconds. Application draining stops
-before consuming the reserve; the remaining budget is passed to SDK close, and
-cleanup is awaited rather than detached. Drain expiry drops remaining application
-records and counts them; SDK close may also discard pending envelopes. Queue
+join: the total process shutdown bound with Sentry is fourteen seconds. Without
+Sentry the bound is ten seconds. Application draining stops before consuming the
+reserve; the remaining budget is passed to SDK close. Cleanup is awaited until
+the total deadline. If DNS/NSS or another blocking operation stalls SDK close,
+the server stops waiting, increments its failure counter, logs a static loss
+diagnostic to stderr, shuts down the main runtime without waiting for blocking
+tasks, and exits. Process exit terminates remaining SDK/resolver threads; pending
+SDK events may be lost and their exact number is unavailable. Drain expiry drops
+remaining application records and counts them; SDK close may also discard pending
+envelopes. Queue
 overflow, transport failures or drain expiry cannot change an HTTP response.
 
 Configured delivery adds `telemetryDropped` and `telemetryFailed` to stdout
