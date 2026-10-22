@@ -1,6 +1,10 @@
 use dynapi_policy::RateProfile;
 use std::{collections::BTreeMap, env, time::Duration};
 
+pub const MAX_HEADER_FIELDS: usize = 100;
+/// Includes the request line and header delimiters.
+pub const MAX_HEADER_BYTES: usize = 417_792;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub origin_secret: Option<String>,
