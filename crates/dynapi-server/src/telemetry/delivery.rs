@@ -375,6 +375,7 @@ fn sentry_event(record: &Value) -> Option<sentry::protocol::Event<'static>> {
         "HandlerPanic",
         "InternalServerError",
         "HttpServerError",
+        "CatalogUnavailable",
         "OriginAuthenticationError",
         "StartupError",
     ]
@@ -589,19 +590,21 @@ mod tests {
     }
     #[test]
     fn wire_payloads_exclude_unapproved_context_and_busy_errors() {
-        let record = json!({"event":"api_request", "distinct_id":"anonymous", "properties":{"route":"/v1/forecasts", "status":500, "$process_person_profile":false, "body":"fake-payload", "ip":"192.0.2.1"}, "secret":"fake-secret"});
+        let record = json!({"event":"api_request", "distinct_id":"anonymous", "properties":{"route":"/v1/forecasts", "status":500, "$process_person_profile":false, "body":"fake-payload", "ip":"192.0.2.1", "x-dynamical-viewer-auth":"fake-viewer-secret"}, "secret":"fake-secret"});
         assert_eq!(
             posthog_payload("fake-project-token", &record).unwrap(),
             json!({"api_key":"fake-project-token","event":"api_request","distinct_id":"anonymous", "properties":{"route":"/v1/forecasts","status":500,"$process_person_profile":false}})
         );
         assert!(sentry_event(&json!({"exception":{"type":"ServerBusy"}})).is_none());
-        let event = sentry_event(&json!({"exception":{"type":"HandlerPanic","value":"fake-sensitive-message"},"request":{"body":"fake-payload"},"tags":{"caller":"192.0.2.1","client_kind":"unlabeled","cf_worker":"example.test","secret":"fake-secret"}})).unwrap();
+        let event = sentry_event(&json!({"exception":{"type":"HandlerPanic","value":"fake-sensitive-message"},"request":{"body":"fake-payload","headers":{"x-dynamical-viewer-auth":"fake-viewer-secret"}},"tags":{"caller":"192.0.2.1","client_kind":"unlabeled","cf_worker":"example.test","secret":"fake-secret","x-dynamical-viewer-auth":"fake-viewer-secret"}})).unwrap();
         let encoded = serde_json::to_string(&event).unwrap();
         for forbidden in [
             "fake-sensitive-message",
             "fake-payload",
             "192.0.2.1",
             "fake-secret",
+            "fake-viewer-secret",
+            "x-dynamical-viewer-auth",
             "\"request\"",
             "\"vars\"",
             "/home/",

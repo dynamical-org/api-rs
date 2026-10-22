@@ -51,6 +51,8 @@ and rate rejections. Origin-authentication 403s and CORS preflights emit no
 analytics. Distinct IDs are the first 16 hex characters of HMAC-SHA256 over the
 Cloudflare client address with the authenticated origin key; without that key or
 address they are `anonymous`. The address and key are never included in a record.
+Both `x-dynamical-origin-auth` and `x-dynamical-viewer-auth` headers are excluded
+from stdout, analytics and error records.
 
 Errors capture unhandled handler failures, validation-encoding failures,
 non-admission server errors, and startup failures. Expected client errors and

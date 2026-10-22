@@ -26,6 +26,7 @@ pub enum ErrorKind {
     HandlerPanic,
     InternalServerError,
     HttpServerError,
+    CatalogUnavailable,
     OriginAuthentication,
     Startup,
     ServerBusy,
@@ -36,11 +37,16 @@ impl ErrorKind {
             Self::HandlerPanic => "HandlerPanic",
             Self::InternalServerError => "InternalServerError",
             Self::HttpServerError => "HttpServerError",
+            Self::CatalogUnavailable => "CatalogUnavailable",
             Self::OriginAuthentication => "OriginAuthenticationError",
             Self::Startup => "StartupError",
             Self::ServerBusy => "ServerBusy",
         }
     }
+}
+
+pub(crate) fn best_effort<T>(operation: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).ok()
 }
 
 pub fn client_kind(user_agent: &str) -> &'static str {
@@ -219,6 +225,7 @@ mod tests {
         for (name, value) in [
             ("cf-connecting-ip", "192.0.2.1"),
             ("x-dynamical-origin-auth", "fake-secret"),
+            ("x-dynamical-viewer-auth", "fake-viewer-secret"),
             ("authorization", "Bearer fake-token"),
             ("cookie", "session=fake"),
             ("cf-worker", " example.test "),
@@ -238,6 +245,8 @@ mod tests {
         for forbidden in [
             "192.0.2.1",
             "fake-secret",
+            "fake-viewer-secret",
+            "x-dynamical-viewer-auth",
             "fake-token",
             "session",
             "request",

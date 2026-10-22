@@ -140,18 +140,21 @@ impl App {
             ("last-modified", ROBOTS_LAST_MODIFIED.into()),
             ("etag", ROBOTS_ETAG.into()),
         ];
-        let data = Arc::new(data::DataService::new(
-            &config,
-            clock.clone(),
-            catalog.clone(),
-        )?);
+        let loads = Arc::new(telemetry::loads::LoadRegistry::default());
+        let data = Arc::new(
+            data::DataService::new(&config, clock.clone(), catalog.clone())?
+                .with_load_observer(loads.clone()),
+        );
         Ok(Self {
             data,
             catalog,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
             query_rate: Mutex::new(RateLimiter::new(config.query_rate, clock)?),
-            heartbeat: telemetry::heartbeat::Heartbeat::default(),
+            heartbeat: telemetry::heartbeat::Heartbeat::new(
+                Arc::new(telemetry::heartbeat::ProcessResources),
+                loads,
+            ),
             config,
             sink,
             started: Instant::now(),
@@ -260,11 +263,11 @@ impl App {
                 .catch_unwind()
                 .await
                 .unwrap_or_else(|_| {
-                        let mut result = server_error();
-                        result
-                            .extensions_mut()
-                            .insert(telemetry::ErrorKind::HandlerPanic);
-                        Ok(result)
+                    let mut result = server_error();
+                    result
+                        .extensions_mut()
+                        .insert(telemetry::ErrorKind::HandlerPanic);
+                    Ok(result)
                 })?
             }
         };
@@ -286,6 +289,14 @@ impl App {
                     "requestId": id,
                 }),
             );
+        }
+        if response
+            .extensions()
+            .get::<telemetry::ErrorKind>()
+            .is_none()
+            && let Some(kind) = usage.lock().unwrap().error_kind
+        {
+            response.extensions_mut().insert(kind);
         }
         self.record_error(&response, &headers, authenticated, non_ascii_auth);
         if status == 500 {
@@ -605,16 +616,36 @@ impl App {
             ) || (method == "OPTIONS" && r.cors);
             direct && (r.methods.contains(&method) || (method == "OPTIONS" && r.cors))
         });
+        let timings = usage
+            .timings
+            .iter()
+            .map(|(name, ms)| (name.clone(), telemetry::round_decimal(*ms, 3)))
+            .collect::<std::collections::BTreeMap<_, _>>();
         if status == Some(200) && usage.work_units.is_some() {
+            let mut products = usage.products.clone();
+            products.sort();
+            products.dedup();
+            products.truncate(10);
             self.emit(Stream::Terminal, json!({
                 "event": "api_request", "route": if route.as_ref().is_some_and(|r| r.template == "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}") { "/v1/data/:canonical" } else { matched.map(|r| r.template).unwrap_or("unrouted") },
                 "containerAgeS": self.started.elapsed().as_secs(),
-                "dataProductIds": usage.products, "queryCount": usage.query_count,
+                "dataProductIds": products, "queryCount": usage.query_count,
                 "workUnits": usage.work_units, "responseBytes": usage.response_bytes,
-                "datasetCache": usage.dataset_cache, "timingsMs": usage.timings
+                "datasetCache": usage.dataset_cache, "timingsMs": timings,
+                "readValues":usage.read_values, "counters":usage.counters
             }));
         }
         if cancelled || status.is_some_and(|s| s >= 400) {
+            let products = usage.query_count.map(|_| {
+                usage
+                    .products
+                    .iter()
+                    .map(|product| product.chars().take(100).collect::<String>())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .take(10)
+                    .collect::<Vec<_>>()
+            });
             self.emit(Stream::Terminal, json!({
                 "event": "api_failure", "route": matched.map(|r| r.template).unwrap_or("unrouted"),
                 "method": method, "status": status, "cancelled": cancelled,
@@ -622,7 +653,7 @@ impl App {
                 "requestId": id, "container": self.config.container,
                 "containerAgeS": self.started.elapsed().as_secs(), "caller": caller,
                 "clientKind": kind, "cfWorker": cf_worker(header("cf-worker").as_deref()),
-                "dataProductIds": null, "queryCount": null, "readValues": null, "timingsMs": {}, "counters": {}
+                "dataProductIds": products, "queryCount": usage.query_count, "readValues": usage.read_values, "timingsMs": timings, "counters": usage.counters
             }));
         }
         let path_product = route

@@ -1,4 +1,8 @@
 //! Materialized point reads with admitted workers and bounded cache/presentation.
+use crate::telemetry::{
+    self, ErrorKind,
+    loads::{LoadClass, LoadIdentity, LoadObserver, NoopLoadObserver, OpenStatus},
+};
 use crate::{HttpResponse, SharedClock, config::Config, detail, response, server_error};
 use dynapi_catalog::{
     Collection as Product,
@@ -18,8 +22,11 @@ use dynapi_query::{
 };
 use dynapi_reader::{DatasetVersion, ReadSession};
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, VecDeque},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -36,6 +43,9 @@ pub(crate) struct Usage {
     pub response_bytes: Option<usize>,
     pub dataset_cache: Option<String>,
     pub timings: BTreeMap<String, f64>,
+    pub read_values: Option<u128>,
+    pub counters: BTreeMap<String, u64>,
+    pub error_kind: Option<ErrorKind>,
 }
 pub(crate) type SharedUsage = Arc<Mutex<Usage>>;
 #[derive(Default)]
@@ -44,12 +54,37 @@ struct Timings {
     starts: BTreeMap<&'static str, Instant>,
     caches: Vec<String>,
     usage: Option<SharedUsage>,
+    observer: Option<Arc<dyn LoadObserver>>,
+    pending_loads: VecDeque<LoadWork>,
+    active_load: Option<(LoadWork, LoadClass, Instant)>,
+}
+struct LoadWork {
+    identity: LoadIdentity,
+    read_values: u64,
+    group: bool,
 }
 impl PhaseObserver for Timings {
     fn start(&mut self, name: &'static str) {
         self.starts.insert(name, Instant::now());
+        if name == "zarr_load"
+            && let Some(work) = self.pending_loads.pop_front()
+        {
+            let class = self
+                .observer
+                .as_ref()
+                .and_then(|observer| telemetry::best_effort(|| observer.classify(&work.identity)))
+                .unwrap_or(LoadClass::Warm);
+            if work.group {
+                self.count("readGroups", 1);
+                self.count("groupedReadValues", work.read_values);
+            }
+            self.active_load = Some((work, class, Instant::now()));
+        }
     }
     fn finish(&mut self, name: &'static str) {
+        if name == "zarr_load" {
+            self.finish_load(false);
+        }
         if let Some(started) = self.starts.remove(name) {
             let ms = started.elapsed().as_secs_f64() * 1000.;
             if let Some((_, total)) = self.durations.iter_mut().find(|(key, _)| *key == name) {
@@ -66,9 +101,15 @@ impl PhaseObserver for Timings {
             }
         }
     }
+    fn read_values(&mut self, values: u64) {
+        if let Some(usage) = &self.usage {
+            *usage.lock().unwrap().read_values.get_or_insert(0) += u128::from(values);
+        }
+    }
 }
 impl Drop for Timings {
     fn drop(&mut self) {
+        self.finish_load(true);
         let pending: Vec<_> = self.starts.keys().copied().collect();
         for name in pending {
             self.finish(name);
@@ -76,12 +117,37 @@ impl Drop for Timings {
     }
 }
 impl Timings {
-    fn new(usage: SharedUsage) -> Self {
+    fn new(usage: SharedUsage, observer: Arc<dyn LoadObserver>) -> Self {
+        usage.lock().unwrap().read_values = Some(0);
         Self {
             usage: Some(usage),
+            observer: Some(observer),
             durations: Vec::new(),
             starts: BTreeMap::new(),
             caches: Vec::new(),
+            pending_loads: VecDeque::new(),
+            active_load: None,
+        }
+    }
+    fn count(&mut self, key: &str, amount: u64) {
+        if let Some(usage) = &self.usage {
+            let mut usage = usage.lock().unwrap();
+            let count = usage.counters.entry(key.to_owned()).or_default();
+            *count = count.saturating_add(amount);
+        }
+    }
+    fn finish_load(&mut self, failed: bool) {
+        let Some((work, class, started)) = self.active_load.take() else {
+            return;
+        };
+        let elapsed = elapsed_ms(started);
+        if let Some(observer) = &self.observer {
+            telemetry::best_effort(|| observer.loaded(&work.identity, class, elapsed, failed));
+        }
+        self.count(&format!("load:{}", class.name()), 1);
+        self.count(&format!("loadMs:{}", class.name()), elapsed);
+        if failed {
+            self.count(&format!("loadFail:{}", class.name()), 1);
         }
     }
     fn cache(&mut self, value: dynapi_catalog::cache::CacheStatus) {
@@ -115,6 +181,9 @@ pub(crate) struct DataService {
     catalog: StacCatalog,
     cache: DatasetCache<SharedClock, Arc<OpenedDataset>>,
     config: Config,
+    observer: Arc<dyn LoadObserver>,
+    sessions: Mutex<BTreeMap<usize, (Weak<OpenedDataset>, u64)>>,
+    next_session: AtomicU64,
     #[cfg(feature = "harness")]
     read_failure: Mutex<Option<dynapi_reader::ReaderError>>,
 }
@@ -133,9 +202,44 @@ impl DataService {
             catalog,
             cache,
             config: config.clone(),
+            observer: Arc::new(NoopLoadObserver),
+            sessions: Mutex::new(BTreeMap::new()),
+            next_session: AtomicU64::new(1),
             #[cfg(feature = "harness")]
             read_failure: Mutex::new(None),
         })
+    }
+    pub fn with_load_observer(mut self, observer: Arc<dyn LoadObserver>) -> Self {
+        self.observer = observer;
+        self
+    }
+    fn load_work(
+        &self,
+        dataset: &Arc<OpenedDataset>,
+        product: &str,
+        selected: &query::PreparedQuery<'_>,
+        group: bool,
+    ) -> LoadWork {
+        let mut sessions = self.sessions.lock().unwrap();
+        sessions.retain(|_, (weak, _)| weak.strong_count() > 0);
+        let (_, session) = sessions
+            .entry(Arc::as_ptr(dataset) as usize)
+            .or_insert_with(|| {
+                (
+                    Arc::downgrade(dataset),
+                    self.next_session.fetch_add(1, Ordering::Relaxed),
+                )
+            });
+        LoadWork {
+            identity: LoadIdentity {
+                product: product.to_owned(),
+                snapshot: dataset.snapshot_id().to_owned(),
+                session: *session,
+                variables: selected.options().variables.clone(),
+            },
+            read_values: selected.read_values(),
+            group,
+        }
     }
     #[cfg(feature = "harness")]
     pub fn inject_read_failure(&self, error: dynapi_reader::ReaderError) {
@@ -144,16 +248,19 @@ impl DataService {
     pub fn warm(&self) {
         self.catalog.warm();
     }
-    async fn snapshot(&self) -> Result<Arc<Snapshot>, QueryError> {
-        self.catalog.snapshot().await.map_err(|e| QueryError {
+    async fn snapshot(&self, usage: &SharedUsage) -> Result<Arc<Snapshot>, QueryError> {
+        self.catalog.snapshot().await.map_err(|e| {
+            usage.lock().unwrap().error_kind = Some(ErrorKind::CatalogUnavailable);
+            QueryError {
             status: 503,
             detail: e.to_string(),
             retry_after: None,
             exception_class: None,
+            }
         })
     }
-    async fn product(&self, id: &str, forecast: bool) -> Result<Product, QueryError> {
-        Self::product_in(self.snapshot().await?.as_ref(), id, forecast)
+    async fn product(&self, id: &str, forecast: bool, usage: &SharedUsage) -> Result<Product, QueryError> {
+        Self::product_in(self.snapshot(usage).await?.as_ref(), id, forecast)
     }
     fn product_in(snapshot: &Snapshot, id: &str, forecast: bool) -> Result<Product, QueryError> {
         let product = snapshot
@@ -189,6 +296,41 @@ impl DataService {
         }
     }
     fn open(
+        &self,
+        product: &Product,
+        snapshot: Option<&str>,
+        handle: &tokio::runtime::Handle,
+        timings: &mut Timings,
+    ) -> Result<(Arc<OpenedDataset>, dynapi_catalog::cache::CacheStatus), QueryError> {
+        let started = Instant::now();
+        let result = self.open_unobserved(product, snapshot, handle);
+        let elapsed = elapsed_ms(started);
+        let status = match &result {
+            Ok((_, status)) => match status {
+                dynapi_catalog::cache::CacheStatus::Hit => OpenStatus::Hit,
+                dynapi_catalog::cache::CacheStatus::Miss => OpenStatus::Miss,
+                dynapi_catalog::cache::CacheStatus::Revalidated => OpenStatus::Revalidated,
+                dynapi_catalog::cache::CacheStatus::Unknown => OpenStatus::Unknown,
+            },
+            Err(_) => OpenStatus::Failed,
+        };
+        telemetry::best_effort(|| self.observer.opened(&product.id, status, elapsed));
+        match status {
+            OpenStatus::Failed => timings.count("openFail", 1),
+            status => {
+                let name = match status {
+                    OpenStatus::Hit => "hit",
+                    OpenStatus::Miss => "miss",
+                    OpenStatus::Revalidated => "revalidated",
+                    _ => "unknown",
+                };
+                timings.count(&format!("open:{name}"), 1);
+                timings.count(&format!("openMs:{name}"), elapsed);
+            }
+        }
+        result
+    }
+    fn open_unobserved(
         &self,
         product: &Product,
         snapshot: Option<&str>,
@@ -256,7 +398,7 @@ impl DataService {
                 .collect();
             u.query_count = Some(payload.queries.len());
         }
-        let mut timings = Timings::new(usage.clone());
+        let mut timings = Timings::new(usage.clone(), self.observer.clone());
         // A per-product caller policy can run here before admission or store I/O.
         let Some(permit) = gate.try_acquire() else {
             return busy(gate);
@@ -276,7 +418,7 @@ impl DataService {
             for (q, cell) in payload.queries.iter().zip(&resolved) {
                 timings.start("catalog");
                 if snapshot.is_none() {
-                    snapshot = Some(handle.block_on(service.snapshot())?);
+                    snapshot = Some(handle.block_on(service.snapshot(&usage))?);
                 }
                 let product =
                     Self::product_in(snapshot.as_ref().unwrap(), &q.data_product_id, true)?;
@@ -288,7 +430,7 @@ impl DataService {
                 }
                 timings.finish("catalog");
                 timings.start("dataset_open");
-                let (dataset, status) = service.open(&product, None, &handle)?;
+                let (dataset, status) = service.open(&product, None, &handle, &mut timings)?;
                 timings.finish("dataset_open");
                 timings.cache(status);
                 let (dataset, c) = cell.get_or_init(|| (dataset, collection(&product)));
@@ -305,6 +447,30 @@ impl DataService {
             }
             let batch = builder.finish(&mut budget, false, 1)?;
             bound_selections(batch.selections(), &opened)?;
+            let plan = batch.load_plan();
+            timings.count("selections", plan.selections as u64);
+            timings.count("ungroupableSelections", plan.ungroupable_selections as u64);
+            timings.count("coTiledQueries", plan.co_tiled_queries as u64);
+            timings.pending_loads = plan
+                .groups
+                .iter()
+                .flatten()
+                .filter_map(|index| {
+                    let selected = &batch.selections()[*index];
+                    opened
+                        .iter()
+                        .enumerate()
+                        .find(|(_, dataset)| std::ptr::eq(dataset.view(), selected.source()))
+                        .map(|(position, dataset)| {
+                            service.load_work(
+                                dataset,
+                                &payload.queries[position].data_product_id,
+                                selected,
+                                true,
+                            )
+                        })
+                })
+                .collect();
             let mut reader = BatchReader {
                 opened: &opened,
                 handle,
@@ -340,12 +506,12 @@ impl DataService {
             u.query_count = Some(1);
         }
         // A per-product caller policy can run here before admission or store I/O.
+        let mut timings = Timings::new(usage.clone(), self.observer.clone());
         let Some(permit) = gate.try_acquire() else {
             return busy(gate);
         };
-        let mut timings = Timings::new(usage.clone());
         timings.start("catalog");
-        let product = match self.product(id, false).await {
+        let product = match self.product(id, false, &usage).await {
             Ok(p) => p,
             Err(e) => return query_error(e),
         };
@@ -377,7 +543,7 @@ impl DataService {
         let service = self.clone();
         let result = run_with_permit(permit, move |handle| {
             timings.start("dataset_open");
-            let (ds, status) = service.open(&product, Some(&snapshot), &handle).map_err(|mut e| { if e.status == 404 { e.detail = format!("Unknown snapshot {} for data product {}; use the snapshotId from a forecasts or analyses response", dynapi_contract::output::python_repr(&snapshot), dynapi_contract::output::python_repr(&product.id)); } e })?;
+            let (ds, status) = service.open(&product, Some(&snapshot), &handle, &mut timings).map_err(|mut e| { if e.status == 404 { e.detail = format!("Unknown snapshot {} for data product {}; use the snapshotId from a forecasts or analyses response", dynapi_contract::output::python_repr(&snapshot), dynapi_contract::output::python_repr(&product.id)); } e })?;
             timings.finish("dataset_open");
             timings.cache(status);
             timings.start("point_select");
@@ -387,7 +553,7 @@ impl DataService {
             timings.finish("point_select");
             timings.start("query_select");
             let mut budget = service.budget();
-            let selected = query::select_query_bounded(
+            let selected = query::select_query_bounded_observed(
                 ds.view(),
                 &c,
                 point,
@@ -395,10 +561,12 @@ impl DataService {
                 ds.snapshot_id(),
                 Some(&mut budget),
                 &mut query::MaterializationBudget::default(),
+                &mut timings,
             )?;
             budget.consume_read(selected.read_values())?;
             timings.finish("query_select");
             bound_selections(std::slice::from_ref(&selected), std::slice::from_ref(&ds))?;
+            timings.pending_loads.push_back(service.load_work(&ds,&product.id,&selected,false));
             let datasets = [ds.clone()];
             let mut reader = BatchReader { opened: &datasets, handle, #[cfg(feature = "harness")] failure: service.read_failure.lock().unwrap().take() };
             let raw = query::load_query_observed(&selected, &mut reader, &mut timings)?;
@@ -637,7 +805,12 @@ fn busy(gate: &ComputeGate<SharedClock>) -> HttpResponse {
     result
         .headers_mut()
         .insert("retry-after", retry.to_string().parse().unwrap());
+    result.extensions_mut().insert(ErrorKind::ServerBusy);
     result
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    (started.elapsed().as_secs_f64() * 1000.0).round_ties_even() as u64
 }
 
 #[cfg(test)]
@@ -669,6 +842,37 @@ mod tests {
             Some("STAC catalog refresh failed (RuntimeError)")
         );
         catalog.close();
+    }
+    #[test]
+    fn observer_failures_do_not_interrupt_a_load_or_lose_request_counters() {
+        struct Broken;
+        impl LoadObserver for Broken {
+            fn classify(&self, _: &LoadIdentity) -> LoadClass {
+                panic!("synthetic observer failure");
+            }
+            fn loaded(&self, _: &LoadIdentity, _: LoadClass, _: u64, _: bool) {
+                panic!("synthetic observer failure");
+            }
+        }
+        let usage = SharedUsage::default();
+        let mut timings = Timings::new(usage.clone(), Arc::new(Broken));
+        timings.pending_loads.push_back(LoadWork {
+            identity: LoadIdentity {
+                product: "example-forecast".into(),
+                snapshot: "snapshot-test".into(),
+                session: 1,
+                variables: vec!["temperature".into()],
+            },
+            read_values: 2,
+            group: true,
+        });
+        timings.start("zarr_load");
+        timings.finish("zarr_load");
+        assert!(timings.active_load.is_none());
+        let usage = usage.lock().unwrap();
+        assert_eq!(usage.counters["load:warm"], 1);
+        assert_eq!(usage.counters["readGroups"], 1);
+        assert_eq!(usage.counters["groupedReadValues"], 2);
     }
 
     #[test]

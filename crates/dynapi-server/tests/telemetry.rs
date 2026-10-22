@@ -171,7 +171,7 @@ async fn authenticated_identity_and_metadata_are_shared_and_payloads_stay_privat
     .await;
     let ua = "A".repeat(140);
     let headers = format!(
-        "X-Dynamical-Origin-Auth: Jefe\r\nCF-Connecting-IP: what do ya want for nothing?\r\nCF-Worker: example.test\r\nCF-IPCountry: ZZ\r\nUser-Agent: {ua}\r\nContent-Type: application/json\r\nAuthorization: Bearer fake-auth-token\r\nCookie: fake-cookie\r\n"
+        "X-Dynamical-Origin-Auth: Jefe\r\nX-Dynamical-Viewer-Auth: fake-viewer-secret\r\nCF-Connecting-IP: what do ya want for nothing?\r\nCF-Worker: example.test\r\nCF-IPCountry: ZZ\r\nUser-Agent: {ua}\r\nContent-Type: application/json\r\nAuthorization: Bearer fake-auth-token\r\nCookie: fake-cookie\r\n"
     );
     let body =
         br#"{"latitude":12.3456789,"longitude":23.4567891,"private":"fake-private-body","x":NaN}"#;
@@ -195,6 +195,7 @@ async fn authenticated_identity_and_metadata_are_shared_and_payloads_stay_privat
             "what do ya want",
             "Jefe",
             "fake-auth-token",
+            "fake-viewer-secret",
             "fake-cookie",
             "fake-private-body",
             "12.3456789",
@@ -202,6 +203,7 @@ async fn authenticated_identity_and_metadata_are_shared_and_payloads_stay_privat
             "cf-connecting-ip",
             "authorization",
             "x-dynamical-origin-auth",
+            "x-dynamical-viewer-auth",
         ] {
             assert!(!encoded.contains(forbidden), "{forbidden}: {encoded}");
         }

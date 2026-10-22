@@ -12,6 +12,7 @@ pub enum OpenStatus {
     Miss,
     Revalidated,
     Failed,
+    Unknown,
 }
 impl OpenStatus {
     fn name(self) -> &'static str {
@@ -20,6 +21,7 @@ impl OpenStatus {
             Self::Miss => "miss",
             Self::Revalidated => "revalidated",
             Self::Failed => "failed",
+            Self::Unknown => "unknown",
         }
     }
 }
