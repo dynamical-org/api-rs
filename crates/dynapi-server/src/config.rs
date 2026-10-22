@@ -17,11 +17,14 @@ pub struct Config {
     pub timing_sample_rate: f64,
     pub heartbeat_seconds: Option<f64>,
     pub dataset_cache_entries: usize,
+    pub main_dataset_ttl_seconds: f64,
     pub stac_url: String,
     pub analytics_enabled: bool,
     pub container: String,
     #[cfg(feature = "harness")]
     pub fixed_clock: bool,
+    #[cfg(feature = "harness")]
+    pub fixture_store_base: Option<String>,
 }
 impl Config {
     pub fn from_env() -> Result<Self, String> {
@@ -70,7 +73,16 @@ impl Config {
             .ok()
             .filter(|n| *n <= tokio::sync::Semaphore::MAX_PERMITS)
             .ok_or("DYNAMICAL_API_MAX_CONNECTIONS exceeds semaphore capacity")?;
+        let main_dataset_ttl_seconds = get("DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS", "30")
+            .parse::<f64>()
+            .map_err(|_| "Invalid DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS")?;
+        if !main_dataset_ttl_seconds.is_finite() || main_dataset_ttl_seconds < 0. {
+            return Err(
+                "DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS must be finite and nonnegative".into(),
+            );
+        }
         Ok(Self {
+            main_dataset_ttl_seconds,
             origin_secret,
             max_connections,
             header_read_timeout: timeout("DYNAMICAL_API_HEADER_READ_TIMEOUT_SECONDS", "10")?,
@@ -109,6 +121,8 @@ impl Config {
                 .get("POSTHOG_PROJECT_TOKEN")
                 .is_some_and(|v| !v.is_empty()),
             container: get("MODAL_TASK_ID", "local"),
+            #[cfg(feature = "harness")]
+            fixture_store_base: values.get("DYNAPI_HARNESS_STORE_BASE_URL").cloned(),
             #[cfg(feature = "harness")]
             fixed_clock: values
                 .get("DYNAPI_HARNESS_FIXED_CLOCK")

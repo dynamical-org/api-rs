@@ -173,16 +173,21 @@ impl std::fmt::Display for QueryError {
 }
 impl std::error::Error for QueryError {}
 mod batch;
+mod materialization;
 mod plan;
 mod response;
 mod selection;
-pub use batch::{prepare_batch, PreparedBatch, QueryInput};
+pub use batch::{
+    prepare_batch, prepare_batch_observed, BatchBuilder, PhaseObserver, PreparedBatch, QueryInput,
+};
+pub use materialization::{MaterializationBudget, DEFAULT_MATERIALIZATION_BYTES};
 pub use plan::{co_tile_key, plan_load_groups, CoTileKey, LoadPlan};
 pub use response::{
-    canonical_path, canonical_result, encode_response, load_query, CachePolicy, QueryResponse,
-    ResponseMetadata, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+    canonical_path, canonical_result, encode_response, load_query, load_query_observed,
+    CachePolicy, QueryResponse, ResponseMetadata, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
 };
 pub use selection::{
     format_datetime, list_forecast_init_times, point_from_indices, select_forecast_init_times,
-    select_nearest_point, select_query, InitTimeSelection, PreparedQuery, QueryBudget,
+    select_nearest_point, select_query, select_query_bounded, InitTimeSelection, PreparedQuery,
+    QueryBudget,
 };

@@ -11,6 +11,10 @@ harness = []
 [dependencies]
 dynapi-contract = { path = "../dynapi-contract" }
 dynapi-policy = { path = "../dynapi-policy" }
+dynapi-catalog = { path = "../dynapi-catalog" }
+dynapi-dataset = { path = "../dynapi-dataset" }
+dynapi-query = { path = "../dynapi-query" }
+dynapi-reader = { path = "../dynapi-reader" }
 bytes = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

@@ -241,3 +241,74 @@ fn nonzero_subminute_offsets_are_preserved() {
         assert_eq!(output::datetime(&date), expected);
     }
 }
+
+#[test]
+fn response_json_byte_bound_covers_escaped_text_and_numeric_extremes() {
+    use dynapi_contract::{output, Value};
+    let value = Value::object([
+        ("\"\n\t", Value::from("a\u{0}\u{1f600}雪")),
+        (
+            "values",
+            Value::Array(vec![
+                Value::from(-9_223_372_036_854_775_808i64),
+                Value::from(0i64),
+                Value::Float(f64::MAX),
+                Value::Float(f64::MIN_POSITIVE),
+                Value::Bool(false),
+                Value::Null,
+            ]),
+        ),
+    ]);
+    let bound = output::json_byte_bound(&value).unwrap();
+    for ascii in [false, true] {
+        assert!(output::json(&value, ascii).unwrap().len() <= bound);
+    }
+}
+
+#[test]
+fn representation_defaults_and_literal_errors_have_owned_ordered_shapes() {
+    use dynapi_contract::{validate_forecast, ValidationResult, Value};
+    let base = r#"{"dataProductId":"synthetic","location":{"latitude":0,"longitude":0},"variables":["temperature"]"#;
+    for (suffix, expected) in [
+        ("", "auto"),
+        (r#", "representation":"auto""#, "auto"),
+        (r#", "representation":"requested""#, "requested"),
+    ] {
+        let body = format!("{{\"queries\":[{base}{suffix}}}]}}");
+        let ValidationResult::Valid(batch) =
+            validate_forecast(body.as_bytes(), Some("application/json"))
+        else {
+            panic!("valid representation rejected")
+        };
+        let Value::Array(queries) = batch.normalized().get("queries").unwrap().clone() else {
+            panic!("normalized queries missing")
+        };
+        assert_eq!(
+            queries[0].get("representation"),
+            Some(&Value::from(expected))
+        );
+    }
+    for input in [r#""bad""#, "null"] {
+        let body=format!("{{\"queries\":[{base},\"maxLeadTimeHours\":-1,\"representation\":{input},\"unknown\":true}}]}}");
+        let ValidationResult::Invalid(invalid) =
+            validate_forecast(body.as_bytes(), Some("application/json"))
+        else {
+            panic!("invalid literal accepted")
+        };
+        let parsed = dynapi_contract::json::parse(&invalid.body).unwrap();
+        let Value::Array(errors) = parsed.get("detail").unwrap() else {
+            panic!("missing detail")
+        };
+        assert_eq!(
+            errors
+                .iter()
+                .map(|e| e.get("type").unwrap().clone())
+                .collect::<Vec<_>>(),
+            ["greater_than_equal", "literal_error", "extra_forbidden"].map(Value::from)
+        );
+        assert_eq!(
+            errors[1].get("ctx").unwrap().get("expected"),
+            Some(&Value::from("'auto' or 'requested'"))
+        );
+    }
+}

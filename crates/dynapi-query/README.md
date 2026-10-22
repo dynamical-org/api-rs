@@ -94,3 +94,11 @@ small dataset/request inputs and own explicit values, links, errors and ordering
 invariants; see [fixture policy](tests/fixtures/README.md) for current coverage.
 They never execute Python or access a store/network. Maintainers verify migration
 output against the reference Python service outside this repository.
+
+
+The native server can interleave catalog/open work with incremental selection via
+`BatchBuilder::push`, then call `finish` once to admit the aggregate read budget.
+`PhaseObserver` boundaries report point/run/query selection, load and presentation
+phases without putting a native clock or runtime in this portable crate.
+`PreparedQuery::materialization_byte_bound` charges selected response work and
+copied labels; shared source coordinate axes remain dataset metadata.

@@ -109,6 +109,14 @@ pub fn load_query(
     query: &PreparedQuery<'_>,
     reader: &mut impl DataReader,
 ) -> Result<Value, QueryError> {
+    load_query_observed(query, reader, &mut crate::batch::NoopObserver)
+}
+pub fn load_query_observed(
+    query: &PreparedQuery<'_>,
+    reader: &mut impl DataReader,
+    observer: &mut impl crate::batch::PhaseObserver,
+) -> Result<Value, QueryError> {
+    observer.start("zarr_load");
     let mut loaded = Vec::new();
     for name in &query.options.variables {
         let values = reader.read(query.source, name, &query.positions)?;
@@ -125,6 +133,8 @@ pub fn load_query(
         }
         loaded.push((name.clone(), values));
     }
+    observer.finish("zarr_load");
+    observer.start("response_build");
     let units = Value::Object(
         query
             .options
@@ -250,6 +260,7 @@ pub fn load_query(
     } else {
         pairs.push(("data".into(), data(query, &loaded, None)?));
     }
+    observer.finish("response_build");
     Ok(Value::Object(pairs))
 }
 pub(crate) fn field(raw: &Value, key: &str) -> Value {
