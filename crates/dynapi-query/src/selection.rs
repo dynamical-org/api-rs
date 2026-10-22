@@ -571,7 +571,15 @@ pub fn select_query<'a>(
     snapshot_id: &str,
     budget: Option<&mut QueryBudget>,
 ) -> Result<PreparedQuery<'a>, QueryError> {
-    select_query_observed(view, collection, point, options, snapshot_id, budget, &mut crate::batch::NoopObserver)
+    select_query_observed(
+        view,
+        collection,
+        point,
+        options,
+        snapshot_id,
+        budget,
+        &mut crate::batch::NoopObserver,
+    )
 }
 pub fn select_query_observed<'a>(
     view: &'a DatasetView,
@@ -582,7 +590,16 @@ pub fn select_query_observed<'a>(
     budget: Option<&mut QueryBudget>,
     observer: &mut impl crate::batch::PhaseObserver,
 ) -> Result<PreparedQuery<'a>, QueryError> {
-    select_query_inner(view, collection, point, options, snapshot_id, budget, None, observer)
+    select_query_inner(
+        view,
+        collection,
+        point,
+        options,
+        snapshot_id,
+        budget,
+        None,
+        observer,
+    )
 }
 /// Reserve option/label copies before cloning, then admit each selected time
 /// before growing its selector, timestamp and lead-hour vectors.
@@ -595,7 +612,16 @@ pub fn select_query_bounded<'a>(
     budget: Option<&mut QueryBudget>,
     bytes: &mut MaterializationBudget,
 ) -> Result<PreparedQuery<'a>, QueryError> {
-    select_query_bounded_observed(view, collection, point, options, snapshot_id, budget, bytes, &mut crate::batch::NoopObserver)
+    select_query_bounded_observed(
+        view,
+        collection,
+        point,
+        options,
+        snapshot_id,
+        budget,
+        bytes,
+        &mut crate::batch::NoopObserver,
+    )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn select_query_bounded_observed<'a>(
@@ -609,7 +635,16 @@ pub fn select_query_bounded_observed<'a>(
     observer: &mut impl crate::batch::PhaseObserver,
 ) -> Result<PreparedQuery<'a>, QueryError> {
     bytes.query(view, collection, &options.variables, snapshot_id)?;
-    select_query_inner(view, collection, point, options.clone(), snapshot_id, budget, Some(bytes), observer)
+    select_query_inner(
+        view,
+        collection,
+        point,
+        options.clone(),
+        snapshot_id,
+        budget,
+        Some(bytes),
+        observer,
+    )
 }
 #[allow(clippy::too_many_arguments)]
 fn select_query_inner<'a>(
@@ -945,21 +980,34 @@ mod tests {
             start: Some(RequestDatetime::parse_str("1970-01-01T00:00:00Z").unwrap()),
             ..QueryOptions::default()
         };
-        for max_values in [1, 2] {
+        for (max_values, bounded) in [(1, false), (2, false), (1, true), (2, true)] {
             let mut budget = QueryBudget {
                 max_values,
                 ..QueryBudget::default()
             };
             let mut observer = Observer::default();
-            let result = select_query_observed(
-                &view,
-                &collection,
-                point(),
-                options(),
-                "snapshot-test",
-                Some(&mut budget),
-                &mut observer,
-            );
+            let result = if bounded {
+                select_query_bounded_observed(
+                    &view,
+                    &collection,
+                    point(),
+                    &options(),
+                    "snapshot-test",
+                    Some(&mut budget),
+                    &mut MaterializationBudget::default(),
+                    &mut observer,
+                )
+            } else {
+                select_query_observed(
+                    &view,
+                    &collection,
+                    point(),
+                    options(),
+                    "snapshot-test",
+                    Some(&mut budget),
+                    &mut observer,
+                )
+            };
             assert_eq!(observer.0, vec![2]);
             if max_values == 1 {
                 assert_eq!(result.unwrap_err().status, 422);
@@ -978,6 +1026,18 @@ mod tests {
             "snapshot-test",
             None,
             &mut observer
+        )
+        .is_err());
+        assert!(observer.0.is_empty());
+        assert!(select_query_bounded_observed(
+            &view,
+            &collection,
+            point(),
+            &options(),
+            "snapshot-test",
+            None,
+            &mut MaterializationBudget::new(0),
+            &mut observer,
         )
         .is_err());
         assert!(observer.0.is_empty());
