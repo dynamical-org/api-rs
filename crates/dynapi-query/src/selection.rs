@@ -358,24 +358,23 @@ pub fn select_forecast_init_times(
     };
     let after = numpy_datetime(after)?;
     let before = numpy_datetime(before)?;
-    let times: Vec<_> = times
+    let times = times
         .iter()
         .copied()
-        .filter(|t| *t != NAT && after != NAT && before != NAT && *t > after && *t < before)
-        .collect();
-    if times.is_empty() {
+        .filter(|t| *t != NAT && after != NAT && before != NAT && *t > after && *t < before);
+    let count = times.clone().count();
+    if count == 0 {
         return Err(QueryError::invalid(
             "No forecast runs match the requested initialization-time bounds",
         ));
     }
-    if times.len() > selection.max_runs {
+    if count > selection.max_runs {
         return Err(QueryError::invalid(format!(
             "Initialization-time bounds match {} runs; at most {} are allowed",
-            times.len(),
-            selection.max_runs
+            count, selection.max_runs
         )));
     }
-    Ok(times.into_iter().map(python_time).collect())
+    Ok(times.map(python_time).collect())
 }
 pub fn list_forecast_init_times(
     view: &DatasetView,
@@ -478,48 +477,15 @@ impl<'a> PreparedQuery<'a> {
     /// Conservative charge for selected trees, temporary values and JSON encoding.
     /// Source coordinate axes remain shared metadata, not per-response copies.
     pub fn materialization_byte_bound(&self) -> Option<u128> {
-        let text = |s: &str| (s.len() as u128).checked_mul(24)?.checked_add(256);
-        let value = |v: &Value| {
-            (dynapi_contract::output::json_byte_bound(v)? as u128)
-                .checked_mul(8)?
-                .checked_add(256)
-        };
-        let mut bytes = (self.value_count as u128)
-            .checked_mul(512)?
-            .checked_add(4096)?;
-        for s in [&self.collection.id, &self.snapshot_id]
-            .into_iter()
-            .chain(self.collection.version.iter())
-            .chain(self.collection.catalog_url.iter())
-        {
-            bytes = bytes.checked_add(text(s)?)?;
-        }
-        for name in &self.options.variables {
-            bytes = bytes.checked_add(text(name)?)?;
-            if let Some(unit) = &self.collection.variables[name].unit {
-                bytes = bytes.checked_add(text(unit)?)?;
-            } else if let Some(unit) = self.source.variables[name].attributes.get("units") {
-                bytes = bytes.checked_add(value(unit)?)?;
-            }
-        }
+        let mut bytes = crate::materialization::base_bytes(
+            self.source,
+            self.collection,
+            &self.options.variables,
+            &self.snapshot_id,
+        )?
+        .checked_add((self.value_count as u128).checked_mul(512)?)?;
         for time in &self.times {
-            bytes = bytes.checked_add(text(time)?)?;
-        }
-        if self.options.variables.iter().any(|n| {
-            self.source.variables[n]
-                .dimensions
-                .iter()
-                .any(|d| d == "ensemble_member")
-        }) {
-            bytes = bytes.checked_add(
-                (self.source.dimensions["ensemble_member"] as u128)
-                    .checked_mul(512 + self.options.variables.len() as u128 * 256)?,
-            )?;
-            if let Some(Coordinate::Members(ids)) = self.source.coordinates.get("ensemble_member") {
-                for id in ids {
-                    bytes = bytes.checked_add(value(id)?)?;
-                }
-            }
+            bytes = bytes.checked_add(crate::materialization::text(time)?)?;
         }
         Some(bytes)
     }
@@ -604,6 +570,39 @@ pub fn select_query<'a>(
     options: QueryOptions,
     snapshot_id: &str,
     budget: Option<&mut QueryBudget>,
+) -> Result<PreparedQuery<'a>, QueryError> {
+    select_query_inner(view, collection, point, options, snapshot_id, budget, None)
+}
+/// Reserve option/label copies before cloning, then admit each selected time
+/// before growing its selector, timestamp and lead-hour vectors.
+pub fn select_query_bounded<'a>(
+    view: &'a DatasetView,
+    collection: &'a Collection,
+    point: SelectedPoint,
+    options: &QueryOptions,
+    snapshot_id: &str,
+    budget: Option<&mut QueryBudget>,
+    bytes: &mut MaterializationBudget,
+) -> Result<PreparedQuery<'a>, QueryError> {
+    bytes.query(view, collection, &options.variables, snapshot_id)?;
+    select_query_inner(
+        view,
+        collection,
+        point,
+        options.clone(),
+        snapshot_id,
+        budget,
+        Some(bytes),
+    )
+}
+fn select_query_inner<'a>(
+    view: &'a DatasetView,
+    collection: &'a Collection,
+    point: SelectedPoint,
+    options: QueryOptions,
+    snapshot_id: &str,
+    budget: Option<&mut QueryBudget>,
+    mut bytes: Option<&mut MaterializationBudget>,
 ) -> Result<PreparedQuery<'a>, QueryError> {
     let unknown: Vec<_> = options
         .variables
@@ -746,16 +745,18 @@ pub fn select_query<'a>(
                 .transpose()?;
             // NumPy evaluates every sum before converting/comparing bounds or
             // applying the lead mask, even when no values can be admitted.
-            let valid_times = leads
-                .iter()
-                .map(|lead| valid_time(requested_run, *lead))
-                .collect::<Result<Vec<_>, _>>()?;
+            // Validate every sum first to preserve NumPy's error precedence,
+            // without allocating a full-axis temporary before byte admission.
+            for lead in leads {
+                valid_time(requested_run, *lead)?;
+            }
             let start = options.start.map(numpy_datetime).transpose()?;
             let end = options.end.map(numpy_datetime).transpose()?;
             let mut indices = Vec::new();
             let mut times = Vec::new();
             let mut hours = Vec::new();
-            for (i, (lead, time)) in leads.iter().copied().zip(valid_times).enumerate() {
+            for (i, lead) in leads.iter().copied().enumerate() {
+                let time = valid_time(requested_run, lead)?;
                 let hour = if lead == NAT {
                     f64::NAN
                 } else {
@@ -766,6 +767,9 @@ pub fn select_query<'a>(
                     || end.is_some_and(|end| time == NAT || end == NAT || time >= end)
                 {
                     continue;
+                }
+                if let Some(bytes) = bytes.as_deref_mut() {
+                    bytes.time()?;
                 }
                 indices.push(i);
                 times.push(python_timestamp(time));
@@ -784,30 +788,37 @@ pub fn select_query<'a>(
             let times = projected_time("time")?;
             let start = options.start.map(numpy_datetime).transpose()?;
             let end = options.end.map(numpy_datetime).transpose()?;
-            let indices: Vec<_> = if start.is_none() && end.is_none() {
-                vec![times.len().checked_sub(1).ok_or_else(|| {
+            let latest = if start.is_none() && end.is_none() {
+                Some(times.len().checked_sub(1).ok_or_else(|| {
                     QueryError::exception("IndexError", "Analysis time coordinate is empty")
-                })?]
+                })?)
             } else {
-                times
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| {
-                        start.is_none_or(|s| s != NAT && **t != NAT && **t >= s)
-                            && end.is_none_or(|e| e != NAT && **t != NAT && **t < e)
-                    })
-                    .map(|(i, _)| i)
-                    .collect()
+                None
             };
+            let mut indices = Vec::new();
+            let mut selected = Vec::new();
+            let candidates = latest.map_or(0..times.len(), |i| i..i + 1);
+            for i in candidates {
+                let time = times[i];
+                let include = if let Some(latest) = latest {
+                    i == latest
+                } else {
+                    start.is_none_or(|s| s != NAT && time != NAT && time >= s)
+                        && end.is_none_or(|e| e != NAT && time != NAT && time < e)
+                };
+                if include {
+                    if let Some(bytes) = bytes.as_deref_mut() {
+                        bytes.time()?;
+                    }
+                    indices.push(i);
+                    selected.push(python_timestamp(time));
+                }
+            }
             if indices.is_empty() {
                 return Err(QueryError::invalid(
                     "No analysis times match the requested bounds",
                 ));
             }
-            let selected = indices
-                .iter()
-                .map(|i| python_timestamp(times[*i]))
-                .collect();
             positions.insert("time".into(), Selection::Indices(indices));
             (selected, None)
         }
@@ -842,6 +853,9 @@ pub fn select_query<'a>(
     let read_values = read_values(view, &options.variables, &positions)?;
     if let Some(budget) = budget {
         budget.consume(value_count)?;
+    }
+    if let Some(bytes) = bytes {
+        bytes.values(value_count)?;
     }
     Ok(PreparedQuery {
         source: view,

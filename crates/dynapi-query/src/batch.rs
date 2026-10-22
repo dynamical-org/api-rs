@@ -188,6 +188,7 @@ pub struct BatchBuilder<'a> {
     kind: Kind,
     queries: Vec<PreparedQuery<'a>>,
     results: Vec<PreparedResult>,
+    bytes: MaterializationBudget,
 }
 impl<'a> BatchBuilder<'a> {
     pub fn new(kind: Kind) -> Self {
@@ -195,10 +196,29 @@ impl<'a> BatchBuilder<'a> {
             kind,
             queries: vec![],
             results: vec![],
+            bytes: MaterializationBudget::default(),
         }
     }
     pub fn selections(&self) -> &[PreparedQuery<'a>] {
         &self.queries
+    }
+    /// Admit the server's owned contract-to-query copies before making them.
+    pub fn push_forecast(
+        &mut self,
+        dataset: &'a DatasetView,
+        collection: &'a Collection,
+        snapshot_id: &'a str,
+        query: &dynapi_contract::ForecastQuery,
+        budget: &mut QueryBudget,
+        observer: &mut impl PhaseObserver,
+    ) -> Result<(), QueryError> {
+        self.bytes
+            .copy_labels(&query.variables, query.query_id.as_deref())?;
+        self.push(
+            &QueryInput::from_forecast(dataset, collection, snapshot_id, query),
+            budget,
+            observer,
+        )
     }
     pub fn push(
         &mut self,
@@ -210,6 +230,7 @@ impl<'a> BatchBuilder<'a> {
             kind,
             queries,
             results,
+            bytes,
         } = self;
         let kind = *kind;
         let collection = input.collection;
@@ -224,6 +245,7 @@ impl<'a> BatchBuilder<'a> {
         if let Some(reason) = &collection.point_query_reason {
             return Err(QueryError::invalid(reason));
         }
+        bytes.copy_labels(&input.variables, input.query_id.as_deref())?;
         let variables = dynapi_contract::output::normalize_variables(&input.variables);
         if variables.is_empty() {
             return Err(QueryError::invalid("At least one variable is required"));
@@ -247,26 +269,30 @@ impl<'a> BatchBuilder<'a> {
             vec![None]
         };
         observer.finish("run_select");
+        // One normalized option list is shared by the run loop. Each retained
+        // selection admits its own option clone before copying any label.
+        let mut options = QueryOptions {
+            variables,
+            max_lead_time_hours: input.max_lead_time_hours.clone(),
+            ..QueryOptions::default()
+        };
         for run in runs {
             observer.start("query_select");
-            let options = QueryOptions {
-                variables: variables.clone(),
-                run: run.map(crate::selection::datetime_from_label),
-                run_selection: run.map(|_| "explicit".into()),
-                max_lead_time_hours: input.max_lead_time_hours.clone(),
-                start: input
-                    .start
-                    .map(crate::selection::utc_datetime)
-                    .transpose()?,
-                end: input.end.map(crate::selection::utc_datetime).transpose()?,
-            };
-            queries.push(select_query(
+            options.run = run.map(crate::selection::datetime_from_label);
+            options.run_selection = run.map(|_| "explicit".into());
+            options.start = input
+                .start
+                .map(crate::selection::utc_datetime)
+                .transpose()?;
+            options.end = input.end.map(crate::selection::utc_datetime).transpose()?;
+            queries.push(select_query_bounded(
                 input.dataset,
                 collection,
                 point.clone(),
-                options,
+                &options,
                 input.snapshot_id,
                 Some(budget),
+                bytes,
             )?);
             observer.finish("query_select");
         }

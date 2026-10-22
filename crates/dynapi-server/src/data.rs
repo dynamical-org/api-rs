@@ -14,7 +14,7 @@ use dynapi_dataset::{OpenError, OpenedDataset, run_with_permit};
 use dynapi_policy::ComputeGate;
 use dynapi_query::{
     self as query, CachePolicy, Collection, DataReader, DatasetView, Kind, PhaseObserver,
-    Positions, QueryBudget, QueryError, QueryInput, QueryOptions, ResponseMetadata,
+    Positions, QueryBudget, QueryError, QueryOptions, ResponseMetadata,
 };
 use dynapi_reader::{DatasetVersion, ReadSession};
 use std::{
@@ -27,7 +27,7 @@ use std::{
 /// Leaves headroom for compute; request-owned Arcs remain valid on eviction.
 pub const DATASET_CACHE_BYTES: usize = 256 * 1024 * 1024;
 /// Conservative response-tree, selection and encoding materialization charge.
-pub const MATERIALIZATION_BYTES: u128 = 64 * 1024 * 1024;
+pub const MATERIALIZATION_BYTES: u128 = query::DEFAULT_MATERIALIZATION_BYTES;
 #[derive(Clone, Default)]
 pub(crate) struct Usage {
     pub products: Vec<String>,
@@ -276,7 +276,10 @@ impl DataService {
             for (q, cell) in payload.queries.iter().zip(&resolved) {
                 timings.start("catalog");
                 let product = handle.block_on(service.product(&q.data_product_id, true))?;
-                if dynapi_contract::output::normalize_variables(&q.variables).is_empty() {
+                if q.variables.iter().all(|v| {
+                    v.trim_matches(dynapi_contract::output::python_whitespace)
+                        .is_empty()
+                }) {
                     return Err(QueryError::invalid("At least one variable is required"));
                 }
                 timings.finish("catalog");
@@ -285,8 +288,11 @@ impl DataService {
                 timings.finish("dataset_open");
                 timings.cache(status);
                 let (dataset, c) = cell.get_or_init(|| (dataset, collection(&product)));
-                builder.push(
-                    &QueryInput::from_forecast(dataset.view(), c, dataset.snapshot_id(), q),
+                builder.push_forecast(
+                    dataset.view(),
+                    c,
+                    dataset.snapshot_id(),
+                    q,
                     &mut budget,
                     &mut timings,
                 )?;
@@ -377,13 +383,14 @@ impl DataService {
             timings.finish("point_select");
             timings.start("query_select");
             let mut budget = service.budget();
-            let selected = query::select_query(
+            let selected = query::select_query_bounded(
                 ds.view(),
                 &c,
                 point,
-                options,
+                &options,
                 ds.snapshot_id(),
                 Some(&mut budget),
+                &mut query::MaterializationBudget::default(),
             )?;
             budget.consume_read(selected.read_values())?;
             timings.finish("query_select");
