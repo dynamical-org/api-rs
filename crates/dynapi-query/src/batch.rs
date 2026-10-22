@@ -148,6 +148,7 @@ impl<'a> PreparedBatch<'a> {
 pub trait PhaseObserver {
     fn start(&mut self, _name: &'static str) {}
     fn finish(&mut self, _name: &'static str) {}
+    fn read_values(&mut self, _values: u64) {}
 }
 pub struct NoopObserver;
 impl PhaseObserver for NoopObserver {}
@@ -285,7 +286,7 @@ impl<'a> BatchBuilder<'a> {
                 .map(crate::selection::utc_datetime)
                 .transpose()?;
             options.end = input.end.map(crate::selection::utc_datetime).transpose()?;
-            queries.push(select_query_bounded(
+            queries.push(select_query_bounded_observed(
                 input.dataset,
                 collection,
                 point.clone(),
@@ -293,6 +294,7 @@ impl<'a> BatchBuilder<'a> {
                 input.snapshot_id,
                 Some(budget),
                 bytes,
+                observer,
             )?);
             observer.finish("query_select");
         }
