@@ -1,0 +1,509 @@
+{
+  "documents": [
+    {
+      "file": "production-catalog.json.gz",
+      "sha256": "3dbd680a37c76b3f17542e25593aea392eb5269d34591a1ff4923e452e5c6c49",
+      "url": "https://stac.dynamical.org/catalog.json"
+    },
+    {
+      "file": "production-02.json.gz",
+      "sha256": "f9172fa0082478d735de8b3c960e534f4a9416b0e380ab2ae3abfe47ccc1a545",
+      "url": "https://stac.dynamical.org/noaa-gfs-analysis/collection.json"
+    },
+    {
+      "file": "production-03.json.gz",
+      "sha256": "54829bc58c726029429fe897e1131a04b109b357f545c8e15ff967980a3831e2",
+      "url": "https://stac.dynamical.org/noaa-gfs-forecast/collection.json"
+    },
+    {
+      "file": "production-04.json.gz",
+      "sha256": "bb160128dbf299dcd4517da69e4760b3d8d7b0adfc638f6fdb11177b9367416b",
+      "url": "https://stac.dynamical.org/noaa-gfs-analysis-virtual/collection.json"
+    },
+    {
+      "file": "production-05.json.gz",
+      "sha256": "0813f554ca43672cd6b3ac9677ac7531544d4cd827815819b970290f243bea8e",
+      "url": "https://stac.dynamical.org/noaa-gfs-forecast-virtual/collection.json"
+    },
+    {
+      "file": "production-06.json.gz",
+      "sha256": "587ce4d06625eae0fc154c5a6b0eb915c7a085391d9c9abdffec1d05adbc8b06",
+      "url": "https://stac.dynamical.org/noaa-gefs-forecast-35-day/collection.json"
+    },
+    {
+      "file": "production-07.json.gz",
+      "sha256": "1ad79748c16a61ccb9da0f72dd6e12fc4506328ec0573bb291fa02e4bbb2fbba",
+      "url": "https://stac.dynamical.org/noaa-gefs-analysis/collection.json"
+    },
+    {
+      "file": "production-08.json.gz",
+      "sha256": "308bc1983c006818897504af5b61200caafd79e0233c6adaee624f514961915f",
+      "url": "https://stac.dynamical.org/noaa-gefs-analysis-0-25-degree-virtual/collection.json"
+    },
+    {
+      "file": "production-09.json.gz",
+      "sha256": "6ad948f8e90bfdf8357cb9d6372f29748e3a79786452a16c7a7c1bf41b144140",
+      "url": "https://stac.dynamical.org/noaa-gefs-forecast-10-day-0-25-degree-virtual/collection.json"
+    },
+    {
+      "file": "production-10.json.gz",
+      "sha256": "7acdd94514b5661956630b26f169d850b8e24cca451167e1b6b30e4f9bf61fb6",
+      "url": "https://stac.dynamical.org/noaa-gefs-forecast-16-day-0-5-degree-virtual/collection.json"
+    },
+    {
+      "file": "production-11.json.gz",
+      "sha256": "c974fd5fb02533bbfd7c99ed53381c557265687b3991fb994bedf1ce4f3ef19b",
+      "url": "https://stac.dynamical.org/noaa-gefs-forecast-35-day-0-5-degree-virtual/collection.json"
+    },
+    {
+      "file": "production-12.json.gz",
+      "sha256": "ae6b534332706d2681ca0c3a3650e7601f82675717bcbb531c586cc9d7fe5b0d",
+      "url": "https://stac.dynamical.org/noaa-hrrr-forecast-18-hour-virtual/collection.json"
+    },
+    {
+      "file": "production-13.json.gz",
+      "sha256": "6cba1cb4d650c739434149fb98f308e6a758414892ba0dd20f20a94ed600c767",
+      "url": "https://stac.dynamical.org/noaa-hrrr-forecast-48-hour/collection.json"
+    },
+    {
+      "file": "production-14.json.gz",
+      "sha256": "24bb62a8bfd290073a6556c96d53e73d829b2ee79c7db90213003e8fbbc5588a",
+      "url": "https://stac.dynamical.org/noaa-hrrr-forecast-48-hour-virtual/collection.json"
+    },
+    {
+      "file": "production-15.json.gz",
+      "sha256": "861679751c8bf35c3d3f02a688ca7297818760037e64c5212c6743d8a547ce72",
+      "url": "https://stac.dynamical.org/noaa-hrrr-analysis/collection.json"
+    },
+    {
+      "file": "production-16.json.gz",
+      "sha256": "987c81c61f0e1202041c13c15073b32c1c52f07b1e6fb9a128c049f4fe4790f6",
+      "url": "https://stac.dynamical.org/noaa-hrrr-analysis-virtual/collection.json"
+    },
+    {
+      "file": "production-17.json.gz",
+      "sha256": "3b9d468cfe51df89d19fae58fa89f2c55e6441c7c1e11eef7c0da21eaba92b32",
+      "url": "https://stac.dynamical.org/noaa-rrfs-forecast-sub-hourly-virtual/collection.json"
+    },
+    {
+      "file": "production-18.json.gz",
+      "sha256": "51ff27a377a2e164a3cefdeee88732fc0ccc1787dde5b1a01f664e55b09b68bd",
+      "url": "https://stac.dynamical.org/noaa-rrfs-forecast-18-hour-virtual/collection.json"
+    },
+    {
+      "file": "production-19.json.gz",
+      "sha256": "3aeb11c4f1246e1e3c621344cc2250e288aa4adbceb535f5e80918c3994a1252",
+      "url": "https://stac.dynamical.org/noaa-rrfs-forecast-84-hour-virtual/collection.json"
+    },
+    {
+      "file": "production-20.json.gz",
+      "sha256": "178fb7f104d494114ddf5b296062b839f9a03fa1355ca43b28ca23a25e65adfc",
+      "url": "https://stac.dynamical.org/noaa-rrfs-ens-forecast-virtual/collection.json"
+    },
+    {
+      "file": "production-21.json.gz",
+      "sha256": "2d6a20ddb70b17620d0f0de5d65224034f86bda86cd4868c3e57e4fb4a09f609",
+      "url": "https://stac.dynamical.org/noaa-refs-forecast-hourly-virtual/collection.json"
+    },
+    {
+      "file": "production-22.json.gz",
+      "sha256": "8869150225e04a0c88a960c6872830be9ed28826718668a6b7effdf87ad59023",
+      "url": "https://stac.dynamical.org/noaa-refs-forecast-3-hourly-virtual/collection.json"
+    },
+    {
+      "file": "production-23.json.gz",
+      "sha256": "76ae5739ed71cc793908c6a429711402d9dc2a9cab6a7bfd7d349738541d292d",
+      "url": "https://stac.dynamical.org/noaa-mrms-conus-analysis-hourly/collection.json"
+    },
+    {
+      "file": "production-24.json.gz",
+      "sha256": "8f9f0220b84e35231410cd806f05c7ecfa4f418d79f000d691c841b938699b65",
+      "url": "https://stac.dynamical.org/ecmwf-aifs-single-forecast/collection.json"
+    },
+    {
+      "file": "production-25.json.gz",
+      "sha256": "1fc43dcbe5d2c1860ec1b8910e80e609d55b736effade7a809dc2e6f918f4bd4",
+      "url": "https://stac.dynamical.org/ecmwf-aifs-single-forecast-virtual/collection.json"
+    },
+    {
+      "file": "production-26.json.gz",
+      "sha256": "2c9c53c55defcd748966cdc17474bbd15c752abd6413f9481ba2200d2bd51022",
+      "url": "https://stac.dynamical.org/ecmwf-aifs-ens-forecast/collection.json"
+    },
+    {
+      "file": "production-27.json.gz",
+      "sha256": "cca3c25e775ebeba4e046e8c34dc72679856180e1dbdbf09d5754df42d3ac447",
+      "url": "https://stac.dynamical.org/ecmwf-ifs-ens-forecast-15-day-0-25-degree/collection.json"
+    },
+    {
+      "file": "production-28.json.gz",
+      "sha256": "c4e689caaab5279c929576bfda3720c1bf0c2927906869f123b368ba42997f22",
+      "url": "https://stac.dynamical.org/ecmwf-ifs-ens-forecast-46-day-daily-1-5-degree/collection.json"
+    },
+    {
+      "file": "production-29.json.gz",
+      "sha256": "753420e92daf168d533e97509ed875539b09b6acc0889691aabafcc224cfbf18",
+      "url": "https://stac.dynamical.org/ecmwf-ifs-ens-forecast-46-day-6-hourly-1-5-degree/collection.json"
+    },
+    {
+      "file": "production-30.json.gz",
+      "sha256": "483e51be8bc7f7245bc62314c1fbe71394a53460d4db924b31e78408538213d9",
+      "url": "https://stac.dynamical.org/google-weathernext2-forecast-historical-virtual/collection.json"
+    },
+    {
+      "file": "production-31.json.gz",
+      "sha256": "bfb8dc4fe01be63f51e2388c38b39a95dd09f10c11f75098c584a02d889639df",
+      "url": "https://stac.dynamical.org/google-weathernext2-forecast-operational-virtual/collection.json"
+    },
+    {
+      "file": "production-32.json.gz",
+      "sha256": "8444a45dd60fccaa987b20f84e224bab82d7a9a0594100458d522484502c3e2f",
+      "url": "https://stac.dynamical.org/dwd-icon-eu-forecast-5-day/collection.json"
+    },
+    {
+      "file": "production-33.json.gz",
+      "sha256": "1e2861ddb11a8cb7aec760b3f3973d7e1e548d352e61c1450102582785229862",
+      "url": "https://stac.dynamical.org/nasa-imerg-analysis-early/collection.json"
+    },
+    {
+      "file": "production-34.json.gz",
+      "sha256": "7532cf30929e20986b55acc813ddd066f6b116f711ad5fd303e64fc79d26fc36",
+      "url": "https://stac.dynamical.org/nasa-imerg-analysis-late/collection.json"
+    },
+    {
+      "file": "production-35.json.gz",
+      "sha256": "95d7ca141ac4ce375ed52842f57b124b227120eea47b81b3dd6b6669a15d3ccd",
+      "url": "https://stac.dynamical.org/ucsb-chc-chirps-analysis-final/collection.json"
+    },
+    {
+      "file": "production-36.json.gz",
+      "sha256": "1e58f48b09c56db9dc8aa1e8f2c8f4933ce531bd98f1b5f20e6a1882b65c3df6",
+      "url": "https://stac.dynamical.org/ucsb-chc-chirps-analysis-preliminary/collection.json"
+    },
+    {
+      "file": "production-37.json.gz",
+      "sha256": "15db1c2c6d43c973c2c6e21d0756d97f8cb40f89fcdb2dc533397f88a8fc28e9",
+      "url": "https://stac.dynamical.org/eccc-hrdps-forecast/collection.json"
+    },
+    {
+      "file": "staging-catalog.json.gz",
+      "sha256": "2907100d21cfa0919a38bff111b83fa9f74f7b55d6592116f8d8b7cb913de341",
+      "url": "https://stac-staging.dynamical.org/catalog.json"
+    },
+    {
+      "file": "staging-02.json.gz",
+      "sha256": "0b38e65c437d1db8184a9f316b9a9915c8e0f0ee5f624ea1d90e33b583e87794",
+      "url": "https://stac-staging.dynamical.org/noaa-gfs-analysis/collection.json"
+    },
+    {
+      "file": "staging-03.json.gz",
+      "sha256": "fa97a7c94cee7ab4ab05e12f2817779c00587c2261640d9e48758a1059a85592",
+      "url": "https://stac-staging.dynamical.org/noaa-gfs-forecast/collection.json"
+    },
+    {
+      "file": "staging-04.json.gz",
+      "sha256": "db55228b166dc88fa6a72a1a693d845d6f88c2965b18681ca17e60574d5f024c",
+      "url": "https://stac-staging.dynamical.org/noaa-gfs-analysis-virtual/collection.json"
+    },
+    {
+      "file": "staging-05.json.gz",
+      "sha256": "136dbc744b7d89ee0ebbec11de52686c2013d73669ccb8a65385af6c8e59c1f2",
+      "url": "https://stac-staging.dynamical.org/noaa-gfs-forecast-virtual/collection.json"
+    },
+    {
+      "file": "staging-06.json.gz",
+      "sha256": "8750ce1e3092e4c5d3ffa4dbe8a884dc84cf5cadb4694afd7d5a3450077727f2",
+      "url": "https://stac-staging.dynamical.org/noaa-gefs-forecast-35-day/collection.json"
+    },
+    {
+      "file": "staging-07.json.gz",
+      "sha256": "8689a69b6b95b851f31e3f96233e7684428183d13612dda46855fa5c1a50bc7b",
+      "url": "https://stac-staging.dynamical.org/noaa-gefs-analysis/collection.json"
+    },
+    {
+      "file": "staging-08.json.gz",
+      "sha256": "06aba00e7439e012acf433e103db30900ae3992e2cbc9670f8b7c84d711e9908",
+      "url": "https://stac-staging.dynamical.org/noaa-gefs-analysis-0-25-degree-virtual/collection.json"
+    },
+    {
+      "file": "staging-09.json.gz",
+      "sha256": "2b5f2e50c7e70c8b4e091419a227659475921c6dd0e6028a33e77ac997595a2e",
+      "url": "https://stac-staging.dynamical.org/noaa-gefs-forecast-10-day-0-25-degree-virtual/collection.json"
+    },
+    {
+      "file": "staging-10.json.gz",
+      "sha256": "90593a503e0d9e76f8194d69d7865034aec938f5e6c804e8d601acc8ae810110",
+      "url": "https://stac-staging.dynamical.org/noaa-gefs-forecast-16-day-0-5-degree-virtual/collection.json"
+    },
+    {
+      "file": "staging-11.json.gz",
+      "sha256": "300f3d990f6fb937719ada3bc6c84321a992422d1c67cc425828337992af6a5f",
+      "url": "https://stac-staging.dynamical.org/noaa-gefs-forecast-35-day-0-5-degree-virtual/collection.json"
+    },
+    {
+      "file": "staging-12.json.gz",
+      "sha256": "f17a46ca7d09ba62466b37c5c404087a4174c47551da2e71907ddc04a7df9b24",
+      "url": "https://stac-staging.dynamical.org/noaa-hrrr-forecast-18-hour-virtual/collection.json"
+    },
+    {
+      "file": "staging-13.json.gz",
+      "sha256": "5f2c1aca66aed89707a9977270cfd8dc42e4d5df35d3fda62101dc1a17cdc551",
+      "url": "https://stac-staging.dynamical.org/noaa-hrrr-forecast-48-hour/collection.json"
+    },
+    {
+      "file": "staging-14.json.gz",
+      "sha256": "14f4da01221b7b7e370589ac1981765ecd7cb9ba6bd988ce17b1c9f95e53ea53",
+      "url": "https://stac-staging.dynamical.org/noaa-hrrr-forecast-48-hour-virtual/collection.json"
+    },
+    {
+      "file": "staging-15.json.gz",
+      "sha256": "412885ea1df3610429145bab359ae7caa1693635c2a7ba32e0d2084a9da0da92",
+      "url": "https://stac-staging.dynamical.org/noaa-hrrr-analysis/collection.json"
+    },
+    {
+      "file": "staging-16.json.gz",
+      "sha256": "fa40edf729966a3a62ba5957b2fab4faea473f2854cc511cf8145b792299e29b",
+      "url": "https://stac-staging.dynamical.org/noaa-rtma-analysis-virtual/collection.json"
+    },
+    {
+      "file": "staging-17.json.gz",
+      "sha256": "590e62692876b8103a5583587d7ad52ebbe34ab581d71f0f088cac4aaac4c444",
+      "url": "https://stac-staging.dynamical.org/noaa-hrrr-analysis-virtual/collection.json"
+    },
+    {
+      "file": "staging-18.json.gz",
+      "sha256": "2effabea08e7e3de9e970ebad8537ab5e837e9892a97f91dfd3daaa8926121ef",
+      "url": "https://stac-staging.dynamical.org/noaa-rrfs-forecast-sub-hourly-virtual/collection.json"
+    },
+    {
+      "file": "staging-19.json.gz",
+      "sha256": "28054c504f3a97ebe7f016d326975d5c9aa9c809a281a68a7bd9a0f19eb1940b",
+      "url": "https://stac-staging.dynamical.org/noaa-rrfs-forecast-18-hour-virtual/collection.json"
+    },
+    {
+      "file": "staging-20.json.gz",
+      "sha256": "c018aa17fb4769b0136f367e59392534aebff2445ccae76edbb68eae4acd9809",
+      "url": "https://stac-staging.dynamical.org/noaa-rrfs-forecast-84-hour-virtual/collection.json"
+    },
+    {
+      "file": "staging-21.json.gz",
+      "sha256": "17dbb3fb3eb7d774d24a18d342bf6dd7be86e807c6f9796cd5bb2365a5f94efd",
+      "url": "https://stac-staging.dynamical.org/noaa-rrfs-ens-forecast-virtual/collection.json"
+    },
+    {
+      "file": "staging-22.json.gz",
+      "sha256": "a0209f6caf7b1bf9e436c0648a505d6f5010976d30a26ec846ade2a33b229bdb",
+      "url": "https://stac-staging.dynamical.org/noaa-refs-forecast-hourly-virtual/collection.json"
+    },
+    {
+      "file": "staging-23.json.gz",
+      "sha256": "4124a593a94683bb9b835beea6247b0017ee421a443b0e3f1887f7e0d2667209",
+      "url": "https://stac-staging.dynamical.org/noaa-refs-forecast-3-hourly-virtual/collection.json"
+    },
+    {
+      "file": "staging-24.json.gz",
+      "sha256": "c5790a3f1727578ee3b78ad1aa52aca1cff7679f2e34e6d74cb30b500282fc53",
+      "url": "https://stac-staging.dynamical.org/noaa-mrms-conus-analysis-hourly/collection.json"
+    },
+    {
+      "file": "staging-25.json.gz",
+      "sha256": "f20d3fa26b7e7774855ff98385dea5eebd59dd5af3100fbfe318f463b2c4f5bc",
+      "url": "https://stac-staging.dynamical.org/ecmwf-aifs-single-forecast/collection.json"
+    },
+    {
+      "file": "staging-26.json.gz",
+      "sha256": "a099137468ad6b43a5d1f01230ff005ea50fd811003b34ddb625d7a96622016d",
+      "url": "https://stac-staging.dynamical.org/ecmwf-aifs-single-forecast-virtual/collection.json"
+    },
+    {
+      "file": "staging-27.json.gz",
+      "sha256": "7a713f7727d3db91c2d45bd670ae24036f3f306ecea4e43b9696385bc9b49007",
+      "url": "https://stac-staging.dynamical.org/ecmwf-aifs-ens-forecast/collection.json"
+    },
+    {
+      "file": "staging-28.json.gz",
+      "sha256": "8d4e821e37d2c54003f713dc0d03012807ae4bc118c7296639964fbeb026b49d",
+      "url": "https://stac-staging.dynamical.org/ecmwf-ifs-ens-forecast-15-day-0-25-degree/collection.json"
+    },
+    {
+      "file": "staging-29.json.gz",
+      "sha256": "d153ecc00560d64f9346ec92e052b82d9e2ef3b36d866c79d8c3cc6a0eba607a",
+      "url": "https://stac-staging.dynamical.org/ecmwf-ifs-ens-forecast-46-day-daily-1-5-degree/collection.json"
+    },
+    {
+      "file": "staging-30.json.gz",
+      "sha256": "fde540fd578df80f0b7064286dd8670e037ea7cca4727bfc46676aca660b2100",
+      "url": "https://stac-staging.dynamical.org/ecmwf-ifs-ens-forecast-46-day-6-hourly-1-5-degree/collection.json"
+    },
+    {
+      "file": "staging-31.json.gz",
+      "sha256": "bc1f79d4a90548b4e89bd634c17730c9962a3b84fbe8b3ed75f45811971c24f8",
+      "url": "https://stac-staging.dynamical.org/google-weathernext2-forecast-historical-virtual/collection.json"
+    },
+    {
+      "file": "staging-32.json.gz",
+      "sha256": "891b88a9f185e480eb79ff17e7838ecb939fb3375d471f97b457a91817f2617f",
+      "url": "https://stac-staging.dynamical.org/google-weathernext2-forecast-operational-virtual/collection.json"
+    },
+    {
+      "file": "staging-33.json.gz",
+      "sha256": "d73cc0f5e758e40ded9c04cf808211b15924524862b40c3501fed63960062af2",
+      "url": "https://stac-staging.dynamical.org/dwd-icon-eu-forecast-5-day/collection.json"
+    },
+    {
+      "file": "staging-34.json.gz",
+      "sha256": "4ff9557e4f71c150c0bf8573849645607adabc36480ad6b5557c4c6464131b77",
+      "url": "https://stac-staging.dynamical.org/nasa-imerg-analysis-early/collection.json"
+    },
+    {
+      "file": "staging-35.json.gz",
+      "sha256": "212abac60b2cd10f543a2a5f73d0750225c86118919dbfc196d94578e436c04b",
+      "url": "https://stac-staging.dynamical.org/nasa-imerg-analysis-late/collection.json"
+    },
+    {
+      "file": "staging-36.json.gz",
+      "sha256": "85703163c481bdc74d161cfedd0b17f6df80e88b43471534e156a7c7e1516d3d",
+      "url": "https://stac-staging.dynamical.org/ucsb-chc-chirps-analysis-final/collection.json"
+    },
+    {
+      "file": "staging-37.json.gz",
+      "sha256": "894805fbb81b7ad9a39f34516a96c886f0e82927630649aa59803d78d60bd9cb",
+      "url": "https://stac-staging.dynamical.org/ucsb-chc-chirps-analysis-preliminary/collection.json"
+    },
+    {
+      "file": "staging-38.json.gz",
+      "sha256": "798abfa479ceb66b08bc763a6020521348183e0454c8b94b661d3c92ac481903",
+      "url": "https://stac-staging.dynamical.org/eccc-hrdps-forecast/collection.json"
+    }
+  ],
+  "synthetic": [
+    {
+      "file": "synthetic-valid-s3.json.gz",
+      "sha256": "a09b6e4956c373a5b2ba7b07fee9ab5e32b1a2c17a5536b91779ead90081844c"
+    },
+    {
+      "file": "synthetic-missing-asset.json.gz",
+      "sha256": "b94c6e911f443fda6cc23b67ad24d65878b3c86afa61420acf68f478d07d48f7"
+    },
+    {
+      "file": "synthetic-http.json.gz",
+      "sha256": "099f4d073d3d1d0723653c484b678a5ac4fff0004902c69cd9beb3bb49d376ef"
+    },
+    {
+      "file": "synthetic-external.json.gz",
+      "sha256": "c283bf96d422c9a42fdf3594d7d7764dba0d6dcc68acfa13c8c3e382b41d1bd3"
+    },
+    {
+      "file": "synthetic-lookalike.json.gz",
+      "sha256": "5ce9d940018802273ffd9c9d1cb6b1bd02d275d9e6e2104743361d90601f4237"
+    },
+    {
+      "file": "synthetic-userinfo.json.gz",
+      "sha256": "9c4e861c3e6c3f482193e90a5b8f9651dc41fc5892e79c0893ff8f0369902218"
+    },
+    {
+      "file": "synthetic-port.json.gz",
+      "sha256": "238e18e727e5406ca9d5f03fb84146379014cad6a3fd3f8d2b45ccf6996d5770"
+    },
+    {
+      "file": "synthetic-uppercase.json.gz",
+      "sha256": "b789aea57d383509d9678ab4c787e47823ffbec00f9d59f04301cd2a1c19859e"
+    },
+    {
+      "file": "synthetic-backslash.json.gz",
+      "sha256": "e64583bc7d8541eaa15dac3e1bd90b48e1d7069446670604e23cb4b138111206"
+    },
+    {
+      "file": "synthetic-whitespace.json.gz",
+      "sha256": "8af9eb24e0dfeb8fda13ae4242622f8f17e68f2d5b05a66b080d451e54c6ef07"
+    },
+    {
+      "file": "synthetic-missing-prefix.json.gz",
+      "sha256": "abbdcef27c38ac1782f7fbd601688774ae880e3be481e4d25625f89ad71e1eb3"
+    },
+    {
+      "file": "synthetic-bad-scheme.json.gz",
+      "sha256": "fe5b9027c5afbb819eac60f2ed822ef4a0361182af31f9217c512712eb4facc9"
+    },
+    {
+      "file": "synthetic-missing-region.json.gz",
+      "sha256": "2edf16670742f4f2f5fe9f682712689e34f3ef045e2a82ef904d80087012a0ed"
+    },
+    {
+      "file": "synthetic-empty-region.json.gz",
+      "sha256": "cdc873b57518961473af2ff5876adc69dfb38238b786abe150d82fb04809ab6f"
+    },
+    {
+      "file": "synthetic-bad-bbox.json.gz",
+      "sha256": "7708c77ccc63517076aa2025f57e861344f4ae6f319b4a0c598df67e4c6b1535"
+    },
+    {
+      "file": "synthetic-bad-number.json.gz",
+      "sha256": "ec5ac9ea41cc4d99f19cbabbb803201566a0ed3a7015e30f8d1357cbb8b059f0"
+    },
+    {
+      "file": "synthetic-http-container.json.gz",
+      "sha256": "c0bcd068b91ed06b26fe46a102da3b35c5d27409e0930f7e6ae78b2400ffb401"
+    },
+    {
+      "file": "synthetic-external-container.json.gz",
+      "sha256": "97b5e55a6f3d5151de367806f327774341777c73ecac92cc81e7ee5ccdede6f0"
+    },
+    {
+      "file": "synthetic-bad-container-scheme.json.gz",
+      "sha256": "359da55e654bfb89caa4a0feda20f01c5d3d44b12b2272844487f45974e16a83"
+    },
+    {
+      "file": "synthetic-signed-container.json.gz",
+      "sha256": "66851f4341786b0f8699b1ec1cf5d0718eff0e01d16c36ca43b92fde1ae09df9"
+    },
+    {
+      "file": "synthetic-s3-container.json.gz",
+      "sha256": "5aebd01a734a53e392c27e6dcbcab3a64994b8186ac2f2af03f0450625e64929"
+    },
+    {
+      "file": "synthetic-credential-material.json.gz",
+      "sha256": "38eead440c872b6c4bd0eb20332fc1534c10f3fc49bb8c9d4feaf0813da36937"
+    },
+    {
+      "file": "synthetic-false-anonymous.json.gz",
+      "sha256": "ae9742383eb253a1d3df527c9a48d3ab1291d088006a9186a08ec85acc91fb89"
+    },
+    {
+      "file": "synthetic-bad-json.json.gz",
+      "sha256": "021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96"
+    },
+    {
+      "file": "synthetic-array.json.gz",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "file": "synthetic-variables-null.json.gz",
+      "sha256": "217f59c6bd36443ede8f45010557c2af148904e7c46676f4b9493cf145bc1932"
+    },
+    {
+      "file": "synthetic-variables-number.json.gz",
+      "sha256": "8827b0fa00555e9df574498b568bdc8129dfffcdb9fbb052b7bbe75059ae0bd4"
+    },
+    {
+      "file": "synthetic-variable-metadata-number.json.gz",
+      "sha256": "a3bced0c68d74e54290be679efb932b6c33e946d1bbdfd5eb9950210b47d6229"
+    },
+    {
+      "file": "synthetic-extent-null.json.gz",
+      "sha256": "93824ff94ec408ba5cb578b4353f540f6635ad64895ceeec66c333884377d76b"
+    },
+    {
+      "file": "synthetic-spatial-null.json.gz",
+      "sha256": "9e0c0fc2214ccfabf4a7be4bd366a880eeedf35937b2a88c24189556b8ae3ed9"
+    },
+    {
+      "file": "synthetic-bbox-object.json.gz",
+      "sha256": "b265bd03075ae86ae95c244a05bf08f0b9771adacf93e9e0aaa6b79edb9e9668"
+    },
+    {
+      "file": "synthetic-bbox-number.json.gz",
+      "sha256": "a671de7ab8421a12f34b3a113a5347ecc039dd11c5fb7f560194d97d42becf9a"
+    }
+  ]
+}
