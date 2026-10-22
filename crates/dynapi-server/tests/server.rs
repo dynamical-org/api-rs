@@ -984,7 +984,7 @@ async fn completed_fixed_and_chunked_bodies_clear_the_body_deadline() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lf_trailers_cannot_disable_deadlines_or_retain_connection_permits() {
     for authenticated in [false, true] {
         let mut values = vec![
@@ -1009,18 +1009,34 @@ async fn lf_trailers_cannot_disable_deadlines_or_retain_connection_permits() {
                 "0\r\nX-Foo: bar\r\n baz\r\n\r\n",
                 "2\r\n{",
             ] {
-                let mut socket = TcpStream::connect(server.address).await.unwrap();
-                socket.write_all(format!("POST /v1/forecasts HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n{auth}\r\n2\r\n{{}}\r\n{suffix}{pipeline}").as_bytes()).await.unwrap();
-                let mut response = Vec::new();
-                tokio::time::timeout(TEST_GUARD, socket.read_to_end(&mut response))
+                let mut socket = guard(TcpStream::connect(server.address)).await.unwrap();
+                guard(socket.write_all(format!("POST /v1/forecasts HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n{auth}\r\n").as_bytes())).await.unwrap();
+                // The interim response acknowledges that the application is
+                // polling the body and its deadline is armed, before time moves.
+                let mut interim = [0; b"HTTP/1.1 100 Continue\r\n\r\n".len()];
+                guard(socket.read_exact(&mut interim)).await.unwrap();
+                assert_eq!(&interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+                guard(socket.write_all(format!("2\r\n{{}}\r\n{suffix}{pipeline}").as_bytes()))
                     .await
-                    .expect("body lost its deadline")
                     .unwrap();
+                let mut response = Vec::new();
                 if !pipeline.is_empty() && suffix.ends_with("\n\n") {
                     // Hyper can consume the appended CRLF head as trailer bytes,
                     // then accept the earlier LF header terminator. Its response
                     // must finish and remain covered by header/idle expiry.
+                    guard(async {
+                        let mut byte = [0];
+                        while !response.ends_with(b"\"input\":{}}]}") {
+                            assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+                            response.push(byte[0]);
+                        }
+                    })
+                    .await;
                     assert_eq!(status(&response), 422, "{suffix:?}");
+                }
+                tokio::time::advance(std::time::Duration::from_secs(1)).await;
+                guard(socket.read_to_end(&mut response)).await.unwrap();
+                if !pipeline.is_empty() && suffix.ends_with("\n\n") {
                     assert_eq!(
                         String::from_utf8_lossy(&response)
                             .matches("HTTP/1.1 ")
