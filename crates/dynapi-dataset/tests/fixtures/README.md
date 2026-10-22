@@ -70,6 +70,10 @@ successive s/ms/us/ns scaling followed by truncation yields 1,000,000,999 ns.
 The quarter-second input is exact.
 List selectors retain duplicates; selectors for absent dimensions do nothing.
 Static data use `lat * 6 + lon` irrespective of run/lead selectors.
+Ensemble expansion duplicates the base values before transposing: temperature
+and count keep this same flat-index formula, independent of member position.
+Their selected output traversal follows each variable's own dimension order,
+not the base array order or the order in which selectors are supplied.
 
 ## Coordinate membership construction
 
@@ -93,6 +97,13 @@ The following repositories start from an independent two-time analysis grid:
 | `coord_attr_null` | Root coordinates attribute is JSON null; variable references remain. |
 | `coord_attr_list` | Root coordinates attribute is JSON `["spatial_ref"]`; variable references remain. |
 | `ensemble_int16` | Add members int16 `[0, 2, 7]`, chunk `[51]`, fill -1, bytes little endian and Blosc zstd level 3/shuffle/typesize **4**. Stack temperature/count along source axis 1, adding 0/100/200 for successive members. Data chunks are `min(2, size)`. |
+
+Thus `ensemble_int16` temperature has order `(time, ensemble_member, y, x)`
+and count has order `(x, ensemble_member, time, y)`. For member position `m`,
+away from the special temperature cells above, their values are respectively
+`(time * 3 + y) * 2 + x + 100*m` and
+`2^53 + 3 + (x * 2 + time) * 3 + y + 100*m`.
+The offset uses member position, not the stored identity `[0, 2, 7]`.
 
 ## One-byte ensemble construction
 

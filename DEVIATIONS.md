@@ -2,6 +2,8 @@
 
 The reference Python service uses CPython 3.12, FastAPI 0.141.1 and Pydantic 2.13.4. It guides migration verification outside this repository and is not infallible. These entries document intentional differences rather than comparator exclusions. Public tests are Rust-owned and fixture-based, with explicit expectations, arithmetic and invariants; they do not use Python. Broader coverage gaps are listed in the Rust-owned test coverage tracking issue.
 
+Dataset ensemble compatibility is covered in `crates/dynapi-dataset/tests/fixtures.rs`: `ensemble_cartesian_reads_follow_each_variable_source_order` checks reordered and duplicate selections in both forecast variable orders; `physical_ensemble_members_and_offsets_follow_the_recipe` checks decoded padded int16/typesize-4 and int8/uint8 member identities and offset values; `complete_ensemble_query_pairs_members_with_recipe_values` checks a complete two-time analysis response with each member's temperature and exact integer count. Expectations follow the construction recipes in `crates/dynapi-dataset/tests/fixtures/README.md`.
+
 ## D1 — Fixed JSON recursion guard
 
 - Trigger: a JSON value deeper than 256 recursive child values; for example 258 nested arrays around `0`.

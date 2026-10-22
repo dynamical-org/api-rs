@@ -1,7 +1,7 @@
 use dynapi_contract::Value;
 use dynapi_dataset::*;
 use dynapi_query::*;
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Semaphore;
 
@@ -202,6 +202,254 @@ async fn forecast_coordinates_metadata_and_cartesian_values_follow_the_recipe() 
             assert_eq!(
                 reader.read(dataset.view(), "static", &positions)?,
                 vec![Value::Float(11.), Value::Float(6.), Value::Float(11.)]
+            );
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensemble_cartesian_reads_follow_each_variable_source_order() {
+    let dataset = OpenedDataset::open(&descriptor("ensemble"), DatasetVersion::Branch("main"), &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        dataset.view().variables["temperature_2m"].dimensions,
+        [
+            "init_time",
+            "lead_time",
+            "ensemble_member",
+            "latitude",
+            "longitude"
+        ]
+    );
+    assert_eq!(
+        dataset.view().variables["count"].dimensions,
+        [
+            "ensemble_member",
+            "longitude",
+            "init_time",
+            "latitude",
+            "lead_time"
+        ]
+    );
+    run_with_permit(
+        Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap(),
+        move |handle| {
+            let positions = [
+                ("init_time".into(), Selection::Indices(vec![1, 0, 1])),
+                ("lead_time".into(), Selection::Indices(vec![4, 1, 4, 0])),
+                ("ensemble_member".into(), Selection::Indices(vec![2, 0, 2])),
+                ("latitude".into(), Selection::Index(1)),
+                ("longitude".into(), Selection::Indices(vec![5, 0, 5])),
+            ]
+            .into();
+            // The base (2,5,4,6) C-order values are duplicated, then transposed.
+            // Temperature traverses run/lead/member/x; count traverses member/x/run/lead.
+            let mut expected_temperature = Vec::new();
+            for run in [1, 0, 1] {
+                for lead in [4, 1, 4, 0] {
+                    for _member in [2, 0, 2] {
+                        for x in [5, 0, 5] {
+                            let flat = ((run * 5 + lead) * 4 + 1) * 6 + x;
+                            expected_temperature
+                                .push(Value::Float(f64::from(flat as f32 / 10.0 + 10.0)));
+                        }
+                    }
+                }
+            }
+            let mut expected_count = Vec::new();
+            for _member in [2, 0, 2] {
+                for x in [5, 0, 5] {
+                    for run in [1, 0, 1] {
+                        for lead in [4, 1, 4, 0] {
+                            let flat = ((run * 5 + lead) * 4 + 1) * 6 + x;
+                            expected_count.push(Value::from(9_007_199_254_740_993_i64 + flat));
+                        }
+                    }
+                }
+            }
+            let mut reader = dataset.reader(handle);
+            assert_eq!(
+                reader.read(dataset.view(), "temperature_2m", &positions)?,
+                expected_temperature
+            );
+            assert_eq!(
+                reader.read(dataset.view(), "count", &positions)?,
+                expected_count
+            );
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn physical_ensemble_members_and_offsets_follow_the_recipe() {
+    for (name, members) in [
+        ("ensemble_int16", vec![0_i64, 2, 7]),
+        ("members_i1", vec![-128, 1, 127, 7, 3]),
+        ("members_u1", vec![0, 1, 255, 7, 3]),
+    ] {
+        let dataset = OpenedDataset::open(&descriptor(name), DatasetVersion::Branch("main"), &[])
+            .await
+            .unwrap();
+        let expected_members: Vec<_> = members.into_iter().map(Value::from).collect();
+        assert!(
+            matches!(&dataset.view().coordinates["ensemble_member"],
+            Coordinate::Members(values) if values == &expected_members),
+            "{name}"
+        );
+        run_with_permit(
+            Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap(),
+            move |handle| {
+                let mut reader = dataset.reader(handle);
+                let member_positions =
+                    [("ensemble_member".into(), Selection::Indices(vec![2, 0, 2]))].into();
+                assert_eq!(
+                    reader.read(dataset.view(), "ensemble_member", &member_positions)?,
+                    vec![
+                        expected_members[2].clone(),
+                        expected_members[0].clone(),
+                        expected_members[2].clone()
+                    ],
+                    "{name}"
+                );
+                if name == "ensemble_int16" {
+                    let positions = [
+                        ("time".into(), Selection::Indices(vec![1, 0, 1])),
+                        ("ensemble_member".into(), Selection::Indices(vec![2, 0, 2])),
+                        ("y".into(), Selection::Index(2)),
+                        ("x".into(), Selection::Indices(vec![1, 0, 1])),
+                    ]
+                    .into();
+                    let mut temperature = Vec::new();
+                    // Base temperature is C-order (time,y,x)=(2,3,2); member offsets are 100*m.
+                    for time in [1, 0, 1] {
+                        for member in [2, 0, 2] {
+                            for x in [1, 0, 1] {
+                                temperature.push(Value::Float(f64::from(
+                                    (time * 3 + 2) * 2 + x + 100 * member,
+                                )));
+                            }
+                        }
+                    }
+                    let mut count = Vec::new();
+                    // Count's base C-order is (x,time,y)=(2,2,3), with member inserted at axis 1.
+                    for x in [1, 0, 1] {
+                        for member in [2, 0, 2] {
+                            for time in [1, 0, 1] {
+                                count.push(Value::from(
+                                    9_007_199_254_740_995_i64
+                                        + (x * 2 + time) * 3
+                                        + 2
+                                        + 100 * member,
+                                ));
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        reader.read(dataset.view(), "temperature_2m", &positions)?,
+                        temperature
+                    );
+                    assert_eq!(reader.read(dataset.view(), "count", &positions)?, count);
+                } else {
+                    let positions = [
+                        ("time".into(), Selection::Indices(vec![2, 0, 2])),
+                        ("ensemble_member".into(), Selection::Indices(vec![4, 0, 2])),
+                        ("y".into(), Selection::Indices(vec![3, 1, 3])),
+                        ("x".into(), Selection::Index(4)),
+                    ]
+                    .into();
+                    let mut expected = Vec::new();
+                    // C-order (3,4,5) arange + 270.25, stacked at axis 1 with offset m.
+                    for time in [2, 0, 2] {
+                        for member in [4, 0, 2] {
+                            for y in [3, 1, 3] {
+                                expected.push(Value::Float(f64::from(
+                                    ((time * 4 + y) * 5 + 4) as f32 + 270.25 + member as f32,
+                                )));
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        reader.read(dataset.view(), "temperature_2m", &positions)?,
+                        expected,
+                        "{name}"
+                    );
+                }
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn complete_ensemble_query_pairs_members_with_recipe_values() {
+    let dataset = OpenedDataset::open(
+        &descriptor("ensemble_int16"),
+        DatasetVersion::Branch("main"),
+        &[],
+    )
+    .await
+    .unwrap();
+    // At y=2,x=1, base temperatures at t=0,1 are 5,11; base counts are 2^53+3 + 8,11.
+    // Each member position adds 100, independently of its identity [0,2,7].
+    let members: Vec<_> = [0, 2, 7].into_iter().enumerate().map(|(position, id)| {
+        let offset = 100 * position as i64;
+        json!({"member": id, "data": {
+            "temperature_2m": [5.0 + offset as f64, 11.0 + offset as f64],
+            "count": [9_007_199_254_740_995_i64 + 8 + offset, 9_007_199_254_740_995_i64 + 11 + offset]
+        }})
+    }).collect();
+    let expected = json!({"results": [{
+        "queryId": "sample",
+        "dataProduct": {"id": "fixture-ensemble_int16", "version": "1.2.3"},
+        "point": {"requested": {"latitude": 43.25, "longitude": -100.0},
+            "selected": {"latitude": 43.25, "longitude": -100.0, "grid": {"yIndex": 2, "xIndex": 1}}, "method": "nearest"},
+        "analysisTimes": ["2026-07-30T00:00:00Z", "2026-07-30T01:00:00Z"],
+        "variables": {"count": {"unit": null}, "temperature_2m": {"unit": "K"}},
+        "snapshotId": dataset.snapshot_id(),
+        "links": {
+            "canonical": format!("/v1/data/fixture-ensemble_int16/{}/points/2,1?variables=count%2Ctemperature_2m&startTime=2026-07-30T00%3A00%3A00Z&endTime=2026-07-30T02%3A00%3A00Z", dataset.snapshot_id()),
+            "catalog": "https://example.invalid/ensemble_int16/collection.json"
+        },
+        "ensembleMembers": members
+    }]});
+    run_with_permit(
+        Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap(),
+        move |handle| {
+            let c = collection(&input("ensemble_int16"));
+            let request = QueryInput {
+                dataset: dataset.view(),
+                collection: &c,
+                snapshot_id: dataset.snapshot_id(),
+                query_id: Some("sample".into()),
+                latitude: 43.25,
+                longitude: -100.,
+                variables: vec!["count".into(), "temperature_2m".into()],
+                init_times: InitTimeSelection::default(),
+                max_lead_time_hours: None,
+                start: Some(RequestDatetime::parse_str("2026-07-30T00:00:00Z").unwrap()),
+                end: Some(RequestDatetime::parse_str("2026-07-30T02:00:00Z").unwrap()),
+            };
+            let batch = prepare_batch(
+                Kind::Analysis,
+                &[request],
+                &mut QueryBudget::default(),
+                true,
+                64,
+            )?;
+            let response =
+                batch.execute(&mut dataset.reader(handle), &ResponseMetadata::default())?;
+            assert_eq!(
+                serde_json::from_slice::<Json>(&response.body).unwrap(),
+                expected
             );
             Ok(())
         },
