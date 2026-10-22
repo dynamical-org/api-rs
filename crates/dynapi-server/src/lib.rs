@@ -248,6 +248,19 @@ impl App {
             .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok()?.parse().ok());
+        if response
+            .extensions()
+            .get::<catalog_routes::ResponseTooLarge>()
+            .is_some()
+        {
+            self.emit(
+                Stream::Terminal,
+                json!({
+                    "event": "api_error", "errorCategory": "catalog_response_too_large",
+                    "requestId": id,
+                }),
+            );
+        }
         if status == 500 {
             // Hyper flushes this response and closes before dispatching a pipeline.
             response

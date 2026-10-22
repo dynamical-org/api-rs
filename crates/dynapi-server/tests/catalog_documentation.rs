@@ -25,7 +25,13 @@ use tokio::{
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/catalog.json");
+#[path = "support/allocation.rs"]
+mod allocation;
+#[global_allocator]
+static ALLOCATOR: allocation::Allocator = allocation::Allocator;
+
 struct FixtureFetcher {
+    fixture: Arc<[u8]>,
     failure: bool,
     delay: bool,
     calls: Arc<AtomicUsize>,
@@ -44,7 +50,7 @@ impl Fetcher for FixtureFetcher {
             if self.failure {
                 return Err(FetchError::Status(404));
             }
-            let fixture = dynapi_catalog::parse_document(FIXTURE).unwrap();
+            let fixture = dynapi_catalog::parse_document(&self.fixture).unwrap();
             let collections = fixture["collections"].as_array().unwrap();
             let body = if url.ends_with("/catalog.json") {
                 json!({"links": collections.iter().enumerate().map(|(index, _)| json!({"rel":"child", "href":format!("{index}.json")})).collect::<Vec<_>>()})
@@ -78,6 +84,14 @@ impl Drop for Server {
 }
 impl Server {
     async fn start(failure: bool, delay: bool, secret: bool) -> Self {
+        Self::start_with_fixture(failure, delay, secret, Arc::from(FIXTURE)).await
+    }
+    async fn start_with_fixture(
+        failure: bool,
+        delay: bool,
+        secret: bool,
+        fixture: Arc<[u8]>,
+    ) -> Self {
         let calls = Arc::new(AtomicUsize::new(0));
         let catalog = StacCatalog::with_dependencies(
             "https://catalog.example.test/catalog.json",
@@ -87,6 +101,7 @@ impl Server {
             },
             Arc::new(MonotonicClock::default()),
             Arc::new(FixtureFetcher {
+                fixture,
                 failure,
                 delay,
                 calls: calls.clone(),
@@ -479,4 +494,83 @@ async fn origin_guard_and_cors_preflight_cover_every_new_route() {
         );
     }
     assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+}
+
+async fn large_metadata_server(projected_in_summary: bool) -> Server {
+    let mut fixture: Value = serde_json::from_slice(FIXTURE).unwrap();
+    let padding = Value::String("x".repeat(2 * 1024 * 1024));
+    if projected_in_summary {
+        fixture["collections"][0]["description"] = padding;
+    } else {
+        fixture["collections"][0]["cube:dimensions"]["latitude"]["unused"] = padding;
+    }
+    let server = Server::start_with_fixture(
+        false,
+        false,
+        false,
+        Arc::from(serde_json::to_vec(&fixture).unwrap()),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while server.catalog.snapshot().await.is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    server
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn catalog_list_does_not_copy_large_unprojected_metadata() {
+    let server = large_metadata_server(false).await;
+    let _permits: Vec<_> = (0..server.app.config.compute_slots)
+        .map(|_| server.app.gate.try_acquire().unwrap())
+        .collect();
+    for _ in 0..3 {
+        let tracking = allocation::Tracking::start();
+        let response = server.request("GET", "/v1/data-products", "").await;
+        let stats = tracking.finish();
+        assert_eq!(response.status, 200);
+        assert!(response.body.len() < 2048);
+        assert!(stats.largest < 128 * 1024, "request allocation: {stats:?}");
+        assert!(stats.total < 256 * 1024, "request allocations: {stats:?}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn oversized_catalog_projections_fail_before_large_allocations() {
+    for projected_in_summary in [false, true] {
+        let server = large_metadata_server(projected_in_summary).await;
+        let path = if projected_in_summary {
+            "/v1/data-products"
+        } else {
+            "/v1/data-products/z-example-forecast"
+        };
+        let tracking = allocation::Tracking::start();
+        let response = server.request("GET", path, "").await;
+        let stats = tracking.finish();
+        assert_eq!(response.status, 500);
+        assert_eq!(response.body, b"Internal Server Error");
+        response.no_cache();
+        assert_eq!(response.headers["connection"], "close");
+        assert!(stats.largest < 128 * 1024, "request allocation: {stats:?}");
+        assert!(stats.total < 256 * 1024, "request allocations: {stats:?}");
+        let records = server.sink.0.lock().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|(_, record)| record["event"] == "api_failure")
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|(stream, record)| *stream == Stream::Terminal
+                    && record["errorCategory"] == "catalog_response_too_large")
+                .count(),
+            1
+        );
+    }
 }

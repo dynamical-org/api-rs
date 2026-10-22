@@ -192,3 +192,27 @@ Catalog input restrictions remain D11. There are no new intended wire difference
 for the catalog/documentation surface. Rust-owned fixture and loopback tests in
 `catalog_documentation.rs` and schema invariant tests in `openapi.rs` cover this
 surface; they do not qualify the pending execution handlers.
+
+## D17 — Bounded catalog response encoding
+
+- Trigger: a catalog list or detail projection would encode more than
+  `MAX_CATALOG_RESPONSE_BYTES` (1,048,576 bytes, inclusive limit).
+- Reference: materializes the complete response without an aggregate output cap.
+- Rust: borrows one published catalog snapshot and projects response fields into
+  a bounded counting sink before allocating any response tree or body buffer.
+  It then allocates one exactly sized bounded body and encodes the same immutable
+  projection. No collection, unused metadata or intermediate JSON tree is copied.
+- Oversize behavior: the existing generic 500 response, `Internal Server Error`,
+  with connection closure and no Cache-Control, ETag or Retry-After. A separate
+  unsampled `api_error` record carries the fixed error category
+  `catalog_response_too_large` and request ID; no limit or catalog data is exposed
+  in the response. Catalog routes remain independent of compute admission.
+- Live size check, 2026-10-22 17:35 UTC: the public endpoint
+  `https://api.dynamical.org/v1/data-products` returned 36 products in 17,903 body
+  bytes. All 36 detail responses were measured; the largest was 55,172 bytes
+  (`noaa-rrfs-forecast-84-hour-virtual`), under 5.3% of the budget.
+- Tests: exact-limit/one-byte-over, escaped UTF-8/JSON and self-link ID accounting,
+  aggregate list limits and hidden metadata exclusion. Current-thread native HTTP
+  tests use per-thread allocation tracking to prove that 2 MiB unused dimension
+  strings cause no request-sized copy, and oversized list/detail projections fail
+  with total request allocations below 256 KiB and no allocation above 128 KiB.

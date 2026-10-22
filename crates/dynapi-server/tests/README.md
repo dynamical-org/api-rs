@@ -57,3 +57,13 @@ Catalog numeric tests distinguish the Pydantic/Ryū layout used by dict response
 from the Python JSON float layout used by explicit JSONResponse endpoints.
 The fictional catalog also includes non-finite bounding-box strings, whose
 coerced values serialize as null under that dict-response policy.
+
+Catalog response projections borrow a published snapshot and use a bounded
+counting pass before allocating one output buffer. `catalog_routes.rs` unit tests
+exercise exact encoded-byte limits, escaping, aggregate lists and hidden products.
+The current-thread HTTP allocation tests use `support/allocation.rs` to account
+for every allocation on the request/runtime thread after fixture warmup. A 2 MiB
+unused metadata field must not cause a large request allocation; oversized list
+and detail responses must fail through the generic 500 path before materializing
+large metadata, with the fixed operator error category. See D-routes-2 for the
+intentional response limit and measured public catalog sizes.
