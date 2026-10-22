@@ -1,0 +1,18 @@
+[workspace]
+members = ["crates/dynapi-reader", "crates/dynapi-read", "crates/dynapi-contract", "crates/dynapi-policy", "crates/dynapi-server", "crates/dynapi-query"]
+resolver = "2"
+
+[workspace.dependencies]
+icechunk = { version = "=2.2.2", default-features = false, features = ["object-store-fs", "object-store-s3", "object-store-http"] }
+icechunk-types = { version = "=2.2.2", default-features = false }
+icechunk-storage = { version = "=2.2.2", default-features = false }
+icechunk-format = { version = "=2.2.2", default-features = false }
+icechunk-arrow-object-store = { version = "=2.2.2", default-features = false }
+zarrs_icechunk = { version = "=0.5.0", default-features = false }
+zarrs = { version = "=0.23.0", default-features = false, features = ["async", "sharding", "blosc", "crc32c", "ndarray"] }
+zarrs_storage = { version = "0.4", features = ["async"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+icechunk-s3 = { version = "=2.2.2", default-features = false }

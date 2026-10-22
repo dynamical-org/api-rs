@@ -1,0 +1,120 @@
+# Deliberate contract deviations
+
+The reference Python service uses CPython 3.12, FastAPI 0.141.1 and Pydantic 2.13.4. It guides migration verification outside this repository and is not infallible. These entries document intentional differences rather than comparator exclusions. Public tests are Rust-owned and fixture-based, with explicit expectations, arithmetic and invariants; they do not use Python. Broader coverage gaps are listed in the Rust-owned test coverage tracking issue.
+
+## D1 — Fixed JSON recursion guard
+
+- Trigger: a JSON value deeper than 256 recursive child values; for example 258 nested arrays around `0`.
+- Python: parsing/encoding depends on the interpreter recursion limit and the active call stack. The 258-array fixture reaches validation and returns 422 `model_attributes_type` with the nested input. Inputs beyond the interpreter's parsing limit return 400.
+- Rust: stops parsing at value depth >256 and returns 400 `{"detail":"There was an error parsing the body"}`.
+- Consequence: some deeply nested invalid requests return 400 instead of Python's 422 or 500. Documented valid ForecastBatch requests never approach this depth.
+- Rationale: a fixed guard bounds recursive stack usage on native and WASM targets, independently of interpreter and runtime stack configuration.
+- Tests: `excessive_depth_returns_the_explicit_parse_envelope` owns the 400 bytes at depths 258 and 10,000; `decoder_limits_are_recoverable` checks parser error kinds.
+
+## D2 — Reject lone Unicode surrogates during parsing
+
+- Trigger: an escaped lone surrogate (`"\ud800"`, or its UTF-16/32 equivalent), including a value subsequently overwritten by a duplicate key.
+- Python: `json.loads` retains surrogate code points in `str`, decoding bytes with `surrogatepass`. An error response that echoes them normally fails UTF-8 encoding and becomes 500; an overwritten value disappears, so `{"queries":[],"discarded":"\ud800","discarded":0}` returns its ordinary 422. Raw UTF-8 surrogate bytes in `b'"\xed\xa0\x80"'` likewise give Python 500, while `b'{"queries":[],"x":"\xed\xa0\x80","x":0}'` gives Python 422. Surrogates removed by FastAPI's recursive `_sa`-prefix dictionary filtering can also disappear before error encoding. Success serialization with `ensure_ascii=True` can represent surviving surrogates.
+- Rust: Rust strings contain Unicode scalar values. The parser rejects lone surrogates immediately and the validation entrypoint returns 500 `Internal Server Error`, even for overwritten values. Raw UTF-8 encodings of surrogates are invalid UTF-8 and return the standard 400 parse envelope.
+- Consequence: the usual escaped-surrogate error 500 is reproduced, but discarded/filtered surrogate inputs and otherwise valid string fields can differ. The raw UTF-8 fixtures above give Python 500 / Rust 400 and Python 422 / Rust 400, respectively. A schema-valid `variables:["\ud800"]` reaches the Python handler but is rejected by Rust. The typed output/URL/repr interfaces accept Unicode scalar strings only.
+- Rationale: avoids a second, surrogate-preserving string representation throughout request models, Unicode normalization and output APIs. No claim of arbitrary Python `str` parity is made.
+- Tests: `surrogate_rejection_precedes_overwrite_and_handler_entry` owns escaped high/low surrogate rejection, overwritten/hidden fields, a schema-shaped variable and raw invalid UTF-8 envelopes; `decoder_limits_are_recoverable` checks parser rejection. UTF-16/32 surrogate coverage remains pending in the Rust-owned test coverage tracking issue (contract decoding).
+
+## D3 — Preserve nonzero sub-minute datetime offsets
+
+- Trigger: the typed datetime formatter receives a positive UTC offset smaller than one minute, for example `offset_seconds:1` or `16`.
+- Python counterpart: the retained experimental expression `datetime.isoformat().replace("+00:00", "Z")` changes `2026-01-01T00:00:00+00:00:01` to `2026-01-01T00:00:00Z:01`.
+- Rust: emits `2026-01-01T00:00:00+00:00:01`, preserving the nonzero offset. Only an exactly zero offset becomes `Z`; other offsets and naive datetimes match `datetime.isoformat()`.
+- Consequence: the typed helper deliberately differs from the experimental expression on positive sub-minute offsets. Forecast request parsing does not accept offsets with seconds, and production `_format_datetime` converts to UTC before formatting, so this does not change a production response.
+- Rationale: preserve valid ISO datetime offsets instead of replacing the prefix of a nonzero offset.
+- Tests: `nonzero_subminute_offsets_are_preserved` checks zero and positive/negative one- and sixteen-second offsets; `timezone_seconds_and_microseconds_are_preserved` checks year 1, microseconds and a larger offset with seconds. Expected strings are explicit Rust literals.
+
+## D4 — Wider typed integer-output domain
+
+- Trigger: a caller constructs a typed `Value::Int` whose decimal magnitude exceeds 4,300 digits, for either sign; for example `BigInt::from(10u8).pow(4300)` or its negative.
+- Python: CPython 3.12.3 with its default `sys.get_int_max_str_digits() == 4300` raises `ValueError` when `json.dumps` converts that integer to decimal. The minus sign does not count toward the limit. Both 4,299- and 4,300-digit magnitudes serialize successfully.
+- Rust: `output::json` writes the complete arbitrary-precision integer, with no decimal-digit limit, in either JSON escaping mode.
+- Consequence: the public typed formatter accepts a larger integer domain than the default Python writer. Accepted forecast requests cannot produce these values: raw JSON parsing and numeric-string validation already bound integer magnitudes. Forecast data integer dtypes are also below the limit.
+- Rationale: preserve the arbitrary-precision typed writer without introducing a new output failure for caller-constructed integers.
+- Tests: `typed_large_integers_preserve_sign_and_every_digit` constructs signed powers of ten at 4,299, 4,300, 4,301 and 5,000 digits and checks every decimal byte in both escaping modes, independently of parsing those expected strings. Request digit guards remain separate in `decoder_limits_are_recoverable`.
+
+## D5 — Internal HTTP milestone stubs (temporary)
+
+- Trigger: a validated `POST /v1/forecasts`; any `POST /v1/analyses`; `GET /v1/forecasts/runs`, `/v1/data-products`, `/v1/data-products/{dataProductId}`, or `/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}`. The built-in GET/HEAD `/openapi.json`, `/docs`, `/docs/oauth2-redirect` and `/redoc` are also reserved stubs until the remaining-routes milestone.
+- Python: validates and serves the complete API, catalog, data, schema and documentation responses.
+- Rust: returns 501 `text/plain; charset=utf-8` with a temporary internal data-route stub message, after the implemented outer protections. These are internal test milestones, not proposed public API behavior. Analyses/run/canonical model validation and all data-dependent errors remain unfinished. Data stubs exercise compute admission; discovery and docs stubs do not claim handler parity.
+- Consequence: this server is not eligible for public traffic. Data and documentation handlers remain unfinished; their stub responses do not establish handler parity.
+- Rationale: land native HTTP protections independently of data handlers and keep the missing surface unmistakable. Remove these stubs as handlers land.
+- Tests: `validation_precedes_compute_but_follows_rate_debit` checks validation/compute/rate admission order; `admitted_forecast_returns_the_documented_stub` checks an admitted forecast's 501 status, exact stub bytes, content type, UUID4 request ID and simple-response CORS headers. Full reserved-route/method coverage remains pending in the Rust-owned test coverage tracking issue (server response surface).
+
+## D6 — Bounded HTTP request bodies
+
+- Trigger: a forecast body exceeds 16 MiB (16,777,216 bytes), for Content-Length or chunked requests.
+- Python: has no application-level request body cap; it consumes the body before parsing/validation.
+- Rust: counts received data bytes and responds 413 `{"detail":"Request body exceeds 16777216 bytes"}` before allocating/reading beyond the cap. Origin authentication, preflight and rate precedence are unchanged.
+- Consequence: oversized requests can return 413 rather than Python's validation/error/data response. The response has X-Request-Id and the ordinary simple-response CORS policy.
+- Rationale: make ingress memory finite for the native service. This limit requires reconsideration before a public cutover.
+- Tests: `body_cap_is_explicit_and_carries_cors_and_request_id` checks the 16 MiB limit, 413 status, exact error body bytes, JSON content type, request-ID presence and wildcard CORS header for a Content-Length request one byte over the cap.
+
+## D7 — HTTP field ordering and process-dependent method-set order
+
+- Trigger: a response serialized by Hyper rather than uvicorn/h11; a 405 for the two-method root or robots route.
+- Python: uvicorn adds Date and `server: uvicorn` first, then Starlette's headers. Method sets can produce either `GET, HEAD` or `HEAD, GET` in Allow depending on PYTHONHASHSEED.
+- Rust: Hyper emits its header-map order, typically application fields first and Date last. It deliberately sends exactly `server: uvicorn` for HTTP compatibility, despite using Hyper. Parser rejections follow Hyper (D10). Multi-method Allow is `GET, HEAD`.
+- Consequence: wire field order/case differs; meaningful field values remain part of the response contract. Date is validated as an HTTP date rather than fixed across clocks, and multi-method Allow is explicitly ordered as `GET, HEAD`.
+- Rationale: retain the existing Server contract and meaningful header bytes without reimplementing Hyper's response encoder. Header order/case and valid changing dates carry no API meaning.
+- Tests: `robots_get_head_and_packaged_metadata` checks HTTP Date, request IDs and the Server value without promising header order. `unhandled_and_serialization_errors_close_before_queued_requests` checks connection closure. Explicit 405 Allow coverage remains pending in the Rust-owned test coverage tracking issue (server response surface).
+
+## D8 — Compiled robots metadata and limited file-response surface
+
+- Trigger: a robots request after its source file has changed since compilation, or with a Range header.
+- Python: FileResponse uses the installed file's current mtime/size for Last-Modified and an MD5 metadata ETag, and supports byte ranges.
+- Rust: embeds the exact file bytes and the build input's metadata/ETag, so the standalone binary requires no Python checkout. It currently serves the full file for Range requests.
+- Consequence: bytes, cache policy, media type, length and metadata match when built from the same file. Metadata can differ across independently packaged artifacts; range requests are not yet FileResponse-compatible.
+- Rationale: make the native artifact self-contained; file-range compatibility can land before the whole-service cutover.
+- Tests: `robots_get_head_and_packaged_metadata` checks complete GET bytes, empty HEAD body and mtime/size-derived ETag and Last-Modified; `documented_robots_range_difference_is_explicit` checks status 200, the complete packaged asset and no Content-Range. Expected metadata is computed from the build input; no saved answer file is used.
+
+## D9 — Configuration validation and deferred operational emitters
+
+- Trigger: invalid numeric configuration, or enabled heartbeat/PostHog/Sentry settings.
+- Python: reads some budgets and sample rates lazily during requests, and has real container heartbeat, PostHog and Sentry integrations.
+- Rust: parses its supported budgets, slots, rate limits, transport bounds, sample rate, heartbeat interval, dataset-cache entries and STAC URL at startup. Invalid bounds fail startup. The telemetry trait records unsampled api_failure and analytics api_request hooks under the same covered conditions; stdout emits failures. Real operational emitters and data-success records remain telemetry follow-up work. Heartbeat settings are parsed but no heartbeat task starts yet.
+- Consequence: malformed numeric settings can fail earlier. Data-handler settings `DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS`, `DYNAMICAL_API_CHUNK_CACHE_BYTES`, `DYNAMICAL_API_GROUPED_READS` and `DYNAMICAL_API_MAX_GROUP_POINTS` are not implemented by this Config. No operational telemetry delivery or heartbeat parity is claimed; no credentialed PostHog/Sentry network connection is made by this milestone.
+- Rationale: keep integration I/O in the native adapter and land/test the request event contracts before telemetry integration.
+- Tests: `configuration_defaults_and_empty_secret`, `failure_events_are_unsampled_and_analytics_conditions_match`, `task_cancellation_claims_one_terminal_record_without_analytics` and `handler_panic_returns_the_500_envelope_and_one_terminal_record` own configuration and fake-sink conditions. Broader event-envelope coverage remains pending in the Rust-owned test coverage tracking issue (server middleware); real delivery belongs to the telemetry implementation.
+
+## D10 — Hyper HTTP/1 wire parsing and bounded native connections
+
+- Decision: HTTP/1.1 wire parsing follows Hyper's standard parser and defaults, **not uvicorn/h11**. The custom compatibility parser, normalization and parser-error rewrite have been removed. Production requests pass through Cloudflare, Modal's front end and its in-container proxy, which parse and re-emit HTTP. Uvicorn is not in the production path: Python runs as a Modal `asgi_app`. Reproducing exotic h11 acceptance rules is not a client-visible contract.
+- Inputs with potentially different handling: bare LF, obs-fold, duplicate or conflicting Content-Length, Transfer-Encoding variants (including TE with Content-Length), missing or duplicate Host, header-size/count limits, absolute-form targets and malformed chunks. There is no additional h11 validation. With the locked Hyper 1.12.0/http 1.5.0 stack, the tested outcomes are:
+
+  | Input | Native outcome |
+  | --- | --- |
+  | Bare LF request headers | Accepted by Hyper; bytes are not normalized by this server |
+  | Obs-fold header | Hyper 400, empty body |
+  | Identical or numerically equal duplicate Content-Length | Accepted; `2` and `02` are equal |
+  | Comma Content-Length or conflicting lengths | Hyper 400, empty body |
+  | `gzip, chunked`, `identity, chunked`, repeated `chunked` | Accepted if Hyper recognizes final chunked framing |
+  | Transfer-Encoding without final chunked | Hyper 400, empty body |
+  | Transfer-Encoding with Content-Length | Hyper controls precedence and closes after the response; some validation is field-order dependent |
+  | Missing or duplicate Host | Accepted by Hyper |
+  | Headers | Hyper defaults: 100 fields and 417,792-byte read buffer; complete 70,000-byte padding accepted, over-limit head returns 431 |
+  | Absolute/authority/asterisk-form target | Application 400 `Invalid request target`, then close, instead of Python's 404 for absolute-form |
+  | Raw URI fragment | `http::Uri` strips the fragment before dispatch; raw `/healthz#foo` routes as `/healthz` (200), while percent-encoded `%23` remains part of the decoded routing path (404) |
+  | LF-only trailers | Incomplete standalone reproductions time out; appended CRLF pipeline bytes can complete Hyper's trailer parse and yield one 422 before idle/header closure |
+  | Malformed chunk sizes/footers/trailers | Hyper's body-reader error propagates as a service error; the connection closes without an application response |
+
+- Routing choice: Hyper exposes parsed scheme/authority, so the server can reject non-origin forms with 400. It does **not** expose the original wire target or discarded fragment. Fragment normalization above is an explicit parser limitation; no raw-target pre-parser is retained. Accepted as a deviation: RFC 9110 §4.2.4 and RFC 3986 §3.5 keep fragments out of request targets, clients strip them before sending, and the production front ends sit in front of this server. A raw `#` therefore reaches it only from a non-conforming client, and the result is the same resource the client named. Origin-form percent-decoding, replacement of invalid UTF-8 and single-pass decoding remain unchanged and tested against Starlette.
+- Parser responses: Hyper's header-parser 400/431 responses have an empty body, Content-Length and Date, without application Server or X-Request-Id. Body framing failures close without an HTTP response; they never become the application's JSON body-parse 400. Valid HTTP framing with undecodable JSON/body encoding still produces the ordinary application error. Unhandled/serialization/panic 500s retain application status/body/CORS/ID fields and flush once, then close before queued requests dispatch. Hyper receives an explicit `Connection: close`; Python closes after its 500 without that field. Tests assert this transport difference rather than claiming equal wire headers.
+- Deadlines: all settings below are positive integer seconds/counts validated at startup, including clock/semaphore capacity. Hyper's timer enforces an absolute header deadline whenever it begins waiting for a head, including empty initial connections and the next head after a response. Incoming bytes do not restart it. A `tokio::time::timeout` wraps bounded collection of Hyper's `Incoming`, through all body frames and trailers; trickling bytes never extends it and no independent framing state can clear it early. Timeout/body-reader errors escape the handler, close the connection and retain one terminal cancellation record. If middleware/routing responds without consuming a body, Hyper drains immediately available bytes or closes rather than waiting without a body deadline.
+
+  | Environment setting | Default | Meaning |
+  | --- | --- | --- |
+  | `DYNAMICAL_API_HEADER_READ_TIMEOUT_SECONDS` | 10 | Overall wait for each complete header |
+  | `DYNAMICAL_API_BODY_READ_TIMEOUT_SECONDS` | 30 | Overall wait for complete Hyper body collection |
+  | `DYNAMICAL_API_KEEP_ALIVE_TIMEOUT_SECONDS` | 5 | Idle keep-alive expiry |
+  | `DYNAMICAL_API_MAX_CONNECTIONS` | 1024 | Lifetime semaphore permits, including idle time |
+
+- Idle/lifetime: a separate idle timer starts when the buffered application response is ready, slightly before transport completion, and stays armed until the next complete request dispatches. Raw incoming bytes do not cancel it, so a blocked response write or partial next head cannot lose its last active deadline. Partial next heads therefore expire at the earlier of idle expiry and Hyper's header deadline, even if bytes trickle in; this is deliberately stricter than uvicorn's cancellation of idle expiry on any incoming data. No custom I/O wrapper remains. Uvicorn's default idle interval is also five seconds, but it has no overall header/body budget or default connection cap. Above the cap, accepted sockets close immediately without a waiting task, HTTP 503 or rate debit. The OS backlog remains separate. Permits release on disconnect, error, timeout or task cancellation. The accept loop reaps tasks and aborts them when dropped.
+- Proxy/shutdown: socket identity is used unless origin authentication enables CF metadata. X-Forwarded-* is ignored like the local reference Python service (`proxy_headers=False`). Real production proxy/graceful-drain/fault qualification remains later work; this does not qualify a public cutover.
+- Tests: `hyper_owns_header_syntax_and_parser_error_responses`, `malformed_chunks_close_without_application_json_or_pipeline_dispatch`, `unhandled_and_serialization_errors_close_before_queued_requests`, `panic_closes_before_queued_requests`, `origin_form_decoding_is_preserved_and_non_origin_forms_are_rejected`, and the deadline/cap regressions in `crates/dynapi-server/tests/server.rs`. They cover empty connections, slow/trickled and partial next heads, fixed/chunked body waits, LF-only empty/nonempty and folded trailers, completed bodies, early middleware responses, keep-alive resets, pipelined errors and permit release with explicit cases and invariants.

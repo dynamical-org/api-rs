@@ -1,0 +1,28 @@
+[package]
+name = "dynapi-reader"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[dependencies]
+icechunk.workspace = true
+icechunk-types.workspace = true
+icechunk-storage.workspace = true
+icechunk-format.workspace = true
+icechunk-arrow-object-store.workspace = true
+zarrs_icechunk.workspace = true
+zarrs.workspace = true
+zarrs_storage.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+futures = "0.3"
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream"] }
+
+icechunk-s3.workspace = true
+zstd = "=0.14.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "sync"] }

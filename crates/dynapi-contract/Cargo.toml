@@ -1,0 +1,13 @@
+[package]
+name = "dynapi-contract"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+publish = false
+
+[dependencies]
+ryu = "1"
+speedate = "=0.17.0"
+strum = "0.27"
+num-bigint = "0.4"
+num-traits = "0.2"

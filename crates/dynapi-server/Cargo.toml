@@ -1,0 +1,35 @@
+[package]
+name = "dynapi-server"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[features]
+harness = []
+
+[dependencies]
+dynapi-contract = { path = "../dynapi-contract" }
+dynapi-policy = { path = "../dynapi-policy" }
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = "0.3"
+tokio = { workspace = true, features = ["net", "signal", "io-util", "sync"] }
+serde_json.workspace = true
+uuid = { version = "1", features = ["v4"] }
+subtle = "2"
+hmac = "0.12"
+sha2 = "0.10"
+percent-encoding = "2"
+httpdate = "1"
+md-5 = "0.10"
+
+[build-dependencies]
+dynapi-contract = { path = "../dynapi-contract" }
+httpdate = "1"
+md-5 = "0.10"
+
+[dev-dependencies]
+httparse = "1"

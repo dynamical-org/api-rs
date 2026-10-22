@@ -1,0 +1,5 @@
+# The documentation home is meant to be indexed. The data routes are not: a
+# crawler walking canonical snapshot URLs would open archives and burn work
+# units with no reader on the other end.
+User-agent: *
+Disallow: /v1/
