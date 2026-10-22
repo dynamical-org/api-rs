@@ -17,7 +17,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 const QUEUE_CAPACITY: usize = 256;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+pub use super::shutdown::{ProcessDeadline, SHUTDOWN_TIMEOUT};
 const SDK_SHUTDOWN_RESERVE: Duration = Duration::from_secs(4);
 
 type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
@@ -112,38 +112,7 @@ pub struct DeliverySink {
     analytics: bool,
     errors: bool,
     backend: Option<Arc<dyn Delivery>>,
-}
-/// A process-owned deadline also covers synchronous cleanup and runtime drops.
-pub struct ProcessDeadline(Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>);
-impl Drop for ProcessDeadline {
-    fn drop(&mut self) {
-        if let Some((cancel, thread)) = self.0.take() {
-            let _ = cancel.send(());
-            let _ = thread.join();
-        }
-    }
-}
-fn exit_at_deadline(code: i32) -> ! {
-    const MESSAGE: &[u8] =
-        b"Telemetry shutdown deadline exceeded; pending SDK events may be lost\n";
-    #[cfg(unix)]
-    unsafe {
-        // Best effort only: a full stderr pipe must not delay process exit.
-        let flags = libc::fcntl(libc::STDERR_FILENO, libc::F_GETFL);
-        if flags >= 0
-            && libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
-        {
-            libc::write(libc::STDERR_FILENO, MESSAGE.as_ptr().cast(), MESSAGE.len());
-            libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, flags);
-        }
-        // Unlike exit(), _exit cannot wait for a C atexit hook or stdio lock.
-        libc::_exit(code);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = MESSAGE;
-        std::process::exit(code);
-    }
+    stdout: Arc<super::StdoutSink>,
 }
 impl DeliverySink {
     /// Arm this before dropping server tasks or capturing startup errors; keep
@@ -162,25 +131,32 @@ impl DeliverySink {
         } else {
             Duration::ZERO
         };
-        let deadline = (started + budget + reserve).into_std();
-        let (cancel, cancelled) = std::sync::mpsc::channel();
         let counters = self.counters.clone();
-        let thread = std::thread::spawn(move || {
-            if matches!(
-                cancelled
-                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            ) {
-                increment(&counters.failed);
-                exit_at_deadline(code);
+        ProcessDeadline::with_expiry(started, budget + reserve, code, move || {
+            increment(&counters.failed);
+        })
+    }
+    pub fn total_shutdown_budget(&self, budget: Duration) -> Duration {
+        budget
+            + if self.errors {
+                SDK_SHUTDOWN_RESERVE
+            } else {
+                Duration::ZERO
             }
-        });
-        ProcessDeadline(Some((cancel, thread)))
     }
     pub fn from_env() -> Result<Self, &'static str> {
         Self::from_values(&std::env::vars().collect())
     }
+    pub fn from_env_with_stdout(stdout: Arc<super::StdoutSink>) -> Result<Self, &'static str> {
+        Self::from_values_with_stdout(&std::env::vars().collect(), stdout)
+    }
     pub fn from_values(values: &BTreeMap<String, String>) -> Result<Self, &'static str> {
+        Self::from_values_with_stdout(values, Arc::new(super::StdoutSink::default()))
+    }
+    fn from_values_with_stdout(
+        values: &BTreeMap<String, String>,
+        stdout: Arc<super::StdoutSink>,
+    ) -> Result<Self, &'static str> {
         let settings = Settings::from_values(values)?;
         let analytics = settings.posthog.is_some();
         let errors = settings.sentry.is_some();
@@ -192,6 +168,7 @@ impl DeliverySink {
                 analytics,
                 errors,
                 backend: None,
+                stdout,
             });
         }
         let builder = reqwest::Client::builder()
@@ -221,7 +198,7 @@ impl DeliverySink {
             options.transport = Some(Arc::new(HttpTransportFactory(client.clone())));
             Arc::new(sentry::Client::from_config(options))
         });
-        Ok(Self::start(
+        Ok(Self::start_with_stdout(
             Arc::new(HttpDelivery {
                 client,
                 posthog: settings.posthog,
@@ -230,9 +207,26 @@ impl DeliverySink {
             QUEUE_CAPACITY,
             analytics,
             errors,
+            stdout,
         ))
     }
+    #[cfg(test)]
     fn start(backend: Arc<dyn Delivery>, capacity: usize, analytics: bool, errors: bool) -> Self {
+        Self::start_with_stdout(
+            backend,
+            capacity,
+            analytics,
+            errors,
+            Arc::new(super::StdoutSink::default()),
+        )
+    }
+    fn start_with_stdout(
+        backend: Arc<dyn Delivery>,
+        capacity: usize,
+        analytics: bool,
+        errors: bool,
+        stdout: Arc<super::StdoutSink>,
+    ) -> Self {
         let (sender, mut receiver) = mpsc::channel::<(Stream, Value)>(capacity);
         let counters = Arc::new(DeliveryCounters::default());
         let worker_counters = counters.clone();
@@ -256,6 +250,7 @@ impl DeliverySink {
             analytics,
             errors,
             backend: Some(backend),
+            stdout,
         }
     }
     /// Stop accepting records, drain within `budget`, then close the SDK using
@@ -332,7 +327,7 @@ impl Telemetry for DeliverySink {
                 record["telemetryDropped"] = self.counters.dropped().into();
                 record["telemetryFailed"] = self.counters.failed().into();
             }
-            super::StdoutSink.emit(stream, record);
+            self.stdout.emit(stream, record);
             return;
         }
         if (stream == Stream::Analytics && !self.analytics)
@@ -548,6 +543,32 @@ mod tests {
         fn send(&self, _: Stream, _: Value) -> SendFuture<'_> {
             Box::pin(std::future::pending())
         }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn stdout_and_network_shutdown_share_one_drain_deadline() {
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let stdout = Arc::new(super::super::StdoutSink::start(move |_| {
+            let _ = entered.send(());
+            let _ = blocked.recv_timeout(Duration::from_secs(2));
+            Ok(())
+        }));
+        let sink =
+            DeliverySink::start_with_stdout(Arc::new(Stalled), 1, true, false, stdout.clone());
+        sink.emit(Stream::Terminal, json!({"event":"api_failure"}));
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        sink.emit(Stream::Analytics, json!({}));
+        let start = tokio::time::Instant::now();
+        let budget = Duration::from_millis(50);
+        let (drained, _) = tokio::join!(
+            stdout.shutdown_started_at(start, budget),
+            sink.shutdown_started_at(start, budget)
+        );
+        assert!(!drained);
+        assert_eq!(tokio::time::Instant::now() - start, budget);
+        assert_eq!(stdout.counters.dropped(), 1);
+        assert_eq!(sink.counters.dropped(), 1);
+        release.send(()).unwrap();
     }
     #[tokio::test(start_paused = true)]
     async fn bounded_queue_drops_without_waiting_for_a_stalled_backend() {

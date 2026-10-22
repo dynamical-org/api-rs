@@ -4,6 +4,9 @@
 pub mod delivery;
 pub mod heartbeat;
 pub mod loads;
+pub mod shutdown;
+mod stdout;
+pub use stdout::StdoutSink;
 
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -124,17 +127,6 @@ impl Telemetry for RecordingSink {
         self.0.lock().unwrap().push((stream, record));
     }
 }
-pub struct StdoutSink;
-impl Telemetry for StdoutSink {
-    fn emit(&self, stream: Stream, record: Value) {
-        if stream == Stream::Terminal {
-            // Broken stdout must never replace the request's response.
-            use std::io::Write;
-            let _ = writeln!(std::io::stdout().lock(), "{record}");
-        }
-    }
-}
-
 #[cfg(feature = "harness")]
 pub struct HarnessSink;
 #[cfg(feature = "harness")]

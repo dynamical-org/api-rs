@@ -1,4 +1,12 @@
-use dynapi_server::{App, Monotonic, config::Config, telemetry::StdoutSink, transport};
+use dynapi_server::{
+    App, Monotonic,
+    config::Config,
+    telemetry::{
+        StdoutSink,
+        shutdown::{ProcessDeadline, SHUTDOWN_TIMEOUT},
+    },
+    transport,
+};
 use std::{net::IpAddr, sync::Arc};
 
 fn main() {
@@ -6,12 +14,8 @@ fn main() {
         .enable_all()
         .build()
         .expect("Cannot initialize server runtime");
-    #[cfg(feature = "telemetry-delivery")]
     let mut process_deadline = None;
-    #[cfg(feature = "telemetry-delivery")]
     let result = runtime.block_on(run(&mut process_deadline));
-    #[cfg(not(feature = "telemetry-delivery"))]
-    let result = runtime.block_on(run());
     // Blocking DNS and compute work cannot be cancelled by dropping their
     // futures. Process exit ends any such work after bounded async cleanup.
     runtime.shutdown_timeout(std::time::Duration::ZERO);
@@ -22,15 +26,12 @@ fn main() {
             1
         }
     };
-    #[cfg(feature = "telemetry-delivery")]
     drop(process_deadline);
     std::process::exit(code);
 }
 
 async fn run(
-    #[cfg(feature = "telemetry-delivery")] process_deadline: &mut Option<
-        dynapi_server::telemetry::delivery::ProcessDeadline,
-    >,
+    process_deadline: &mut Option<ProcessDeadline>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut bind: IpAddr = "127.0.0.1".parse()?;
     let mut port: u16 = 8000;
@@ -55,9 +56,12 @@ async fn run(
             _ => return Err(format!("Unknown argument {arg}").into()),
         }
     }
-    let sink: Arc<dyn dynapi_server::telemetry::Telemetry> = Arc::new(StdoutSink);
+    let stdout = Arc::new(StdoutSink::default());
+    let sink: Arc<dyn dynapi_server::telemetry::Telemetry> = stdout.clone();
     #[cfg(feature = "telemetry-delivery")]
-    let delivery = match dynapi_server::telemetry::delivery::DeliverySink::from_env() {
+    let delivery = match dynapi_server::telemetry::delivery::DeliverySink::from_env_with_stdout(
+        stdout.clone(),
+    ) {
         Ok(delivery) => Some(Arc::new(delivery)),
         Err(message) => {
             eprintln!("Telemetry disabled: {message}");
@@ -69,8 +73,18 @@ async fn run(
         .as_ref()
         .map(|delivery| delivery.clone() as Arc<dyn dynapi_server::telemetry::Telemetry>)
         .unwrap_or(sink);
-    #[cfg(feature = "telemetry-delivery")]
     let mut shutdown_started = None;
+    let mut stop = |failed: bool| {
+        let stopped = tokio::time::Instant::now();
+        let budget = SHUTDOWN_TIMEOUT;
+        #[cfg(feature = "telemetry-delivery")]
+        let budget = delivery
+            .as_ref()
+            .map(|sink| sink.total_shutdown_budget(budget))
+            .unwrap_or(budget);
+        *process_deadline = Some(stdout.process_deadline(stopped, budget, i32::from(failed)));
+        stopped
+    };
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let config = Config::from_env()?;
         let clock: Arc<dyn dynapi_policy::Clock> = Arc::new(Monotonic::default());
@@ -104,57 +118,41 @@ async fn run(
             Arc::downgrade(&app),
             app.config.heartbeat_seconds,
         );
-        #[cfg(feature = "telemetry-delivery")]
-        let mut stop = |failed: bool| {
-            let stopped = tokio::time::Instant::now();
-            if let Some(delivery) = &delivery {
-                *process_deadline = Some(delivery.process_deadline(stopped, dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT, i32::from(failed)));
-            }
-            stopped
-        };
-        #[cfg(not(feature = "telemetry-delivery"))]
-        let stop = |_: bool| tokio::time::Instant::now();
         let (served, _stopped) = tokio::select! {
             result = transport::run(listener, app) => { let stopped = stop(result.is_err()); (result, stopped) },
             _ = tokio::signal::ctrl_c() => (Ok(()), stop(false)),
             _ = terminate() => (Ok(()), stop(false)),
         };
-        #[cfg(feature = "telemetry-delivery")]
-        {
-            shutdown_started = Some(_stopped);
-        }
+        shutdown_started = Some(_stopped);
         heartbeat.stop().await;
         served?;
         Ok(())
     }
     .await;
-    #[cfg(feature = "telemetry-delivery")]
-    if let Some(delivery) = delivery {
-        let shutdown_started = shutdown_started.unwrap_or_else(tokio::time::Instant::now);
-        if process_deadline.is_none() {
-            *process_deadline = Some(delivery.process_deadline(
-                shutdown_started,
-                dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT,
-                i32::from(result.is_err()),
-            ));
+    let shutdown_started = shutdown_started.unwrap_or_else(|| stop(result.is_err()));
+    let network_shutdown = async {
+        #[cfg(feature = "telemetry-delivery")]
+        if let Some(delivery) = delivery {
+            if result.is_err() {
+                use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
+                delivery.emit(
+                    Stream::Error,
+                    error_record(ErrorKind::Startup, serde_json::json!({})).unwrap(),
+                );
+            }
+            if !delivery
+                .shutdown_started_at(shutdown_started, SHUTDOWN_TIMEOUT)
+                .await
+            {
+                eprintln!("Telemetry shutdown deadline exceeded; pending SDK events may be lost");
+            }
         }
-        if result.is_err() {
-            use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
-            delivery.emit(
-                Stream::Error,
-                error_record(ErrorKind::Startup, serde_json::json!({})).unwrap(),
-            );
-        }
-        if !delivery
-            .shutdown_started_at(
-                shutdown_started,
-                dynapi_server::telemetry::delivery::SHUTDOWN_TIMEOUT,
-            )
-            .await
-        {
-            eprintln!("Telemetry shutdown deadline exceeded; pending SDK events may be lost");
-        }
-    }
+    };
+    tokio::join!(
+        stdout.shutdown_started_at(shutdown_started, SHUTDOWN_TIMEOUT),
+        network_shutdown
+    );
+    stdout.report_loss();
     result
 }
 #[cfg(unix)]

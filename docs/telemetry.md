@@ -6,6 +6,22 @@ The native server emits newline-delimited JSON to stdout. Handler success record
 redirect responses have no handler success record. A cancelled request claims a
 single failure record and releases its admitted-request count immediately.
 
+Terminal emission attempts an immediate enqueue into a 256-entry stdout queue,
+with one dedicated native writer. Each serialized record, including its newline,
+is limited to 64 KiB. Overflow and oversized records are dropped and counted;
+write errors are counted as failures. A full pipe never blocks a request task.
+Successful records retain their sampling rule; failures and heartbeats are
+unsampled before enqueue, but all records share these delivery bounds.
+
+The reference Python service uses synchronous `print(..., flush=True)` and can
+block a request on a full pipe. Bounded dropping deliberately improves response
+availability at the cost of output loss under backpressure; see `D-tel-5` in
+[DEVIATIONS.md](../DEVIATIONS.md). With no loss, terminal record fields are
+unchanged. Stdout losses add to the `telemetryDropped` and `telemetryFailed`
+heartbeat counters; an unconfigured network adapter adds these fields only after
+a stdout loss. A best-effort, nonblocking Unix stderr diagnostic reports stdout
+loss totals at shutdown, including records abandoned with a stalled writer.
+
 ## Optional delivery
 
 Build production delivery explicitly:
@@ -16,7 +32,7 @@ cargo build --locked --release -p dynapi-server --features telemetry-delivery
 
 Configure `POSTHOG_PROJECT_TOKEN` for analytics and `SENTRY_DSN` for errors in the
 deployment environment. Empty or absent settings disable their sink. With both
-unset, even a feature-enabled binary creates no delivery worker or HTTP client.
+unset, even a feature-enabled binary creates no network worker or HTTP client.
 An ordinary build omits the feature and sends nothing to either service. Tests
 inject recording sinks; delivery tests use stalled fakes or a local HTTP collector.
 
@@ -26,7 +42,7 @@ Use HTTPS in deployments. Redirects and inherited HTTP proxies are disabled.
 Malformed sink configuration disables delivery with a static diagnostic; the
 diagnostic never includes a configured URL, token or DSN. Stdout remains active.
 
-The request task attempts an immediate enqueue into a 256-entry queue, dropping
+The request task attempts an immediate enqueue into a separate 256-entry network queue, dropping
 on overflow. Events larger than 64 KiB are rejected before enqueue. Counters
 saturate at `u64::MAX`; network calls have a two-second timeout. Failed analytics
 delivery is dropped without retry. The Sentry SDK also maintains its own bounded
@@ -34,7 +50,13 @@ delivery is dropped without retry. The Sentry SDK also maintains its own bounded
 sampled by the application. Shutdown uses one ten-second drain/flush budget plus
 a four-second Sentry reserve for its bounded blocking enqueue and HTTP-thread
 join: the total process shutdown bound with Sentry is fourteen seconds. Without
-Sentry the bound is ten seconds. Application draining stops before consuming the
+Sentry the bound is ten seconds, including builds without network delivery.
+Stdout and network draining run concurrently under that same ten-second deadline;
+the stdout drain receives no additional budget or SDK reserve. A stalled OS write
+is abandoned at the drain deadline and its pending records are counted as dropped.
+The dedicated writer is detached until process exit, which ends it even if the
+consumer never resumes; an in-flight record may have been partially written.
+Application draining stops before consuming the
 reserve; the remaining budget is passed to SDK close. Cleanup is awaited until
 the total deadline. If DNS/NSS or another blocking operation stalls SDK close,
 the server stops waiting, increments its failure counter, logs a static loss
@@ -47,8 +69,9 @@ runtime destruction; its final diagnostic uses a nonblocking stderr write on Uni
 before immediate process termination. Queue
 overflow, transport failures or drain expiry cannot change an HTTP response.
 
-Configured delivery adds `telemetryDropped` and `telemetryFailed` to stdout
-heartbeats so application-queue losses and failed send attempts are visible.
+Configured network delivery adds `telemetryDropped` and `telemetryFailed` to stdout
+heartbeats, including zero values. These counters sum network and stdout
+application-queue losses and failed send/write attempts.
 The Sentry SDK's internal rate-limit and envelope-loss accounting is separate.
 
 ## Error and identity boundaries

@@ -76,14 +76,14 @@ Dataset ensemble compatibility is covered in `crates/dynapi-dataset/tests/fixtur
 - Rationale: make the native artifact self-contained; file-range compatibility can land before the whole-service cutover.
 - Tests: `robots_get_head_and_packaged_metadata` checks complete GET bytes, empty HEAD body and mtime/size-derived ETag and Last-Modified; `documented_robots_range_difference_is_explicit` checks status 200, the complete packaged asset and no Content-Range. Expected metadata is computed from the build input; no saved answer file is used.
 
-## D9 — Configuration validation and deferred operational emitters
+## D9 — Startup configuration validation
 
-- Trigger: invalid numeric configuration, or enabled heartbeat/PostHog/Sentry settings.
-- Python: reads some budgets and sample rates lazily during requests, and has real container heartbeat, PostHog and Sentry integrations.
-- Rust: parses its supported budgets, slots, rate limits, transport bounds, sample rate, heartbeat interval, dataset-cache entries and STAC URL at startup. Invalid bounds fail startup. The telemetry trait records unsampled api_failure and analytics api_request hooks under the same covered conditions; stdout emits failures. Real operational emitters and data-success records remain telemetry follow-up work. Heartbeat settings are parsed but no heartbeat task starts yet.
-- Consequence: malformed numeric settings can fail earlier. Data-handler settings `DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS`, `DYNAMICAL_API_CHUNK_CACHE_BYTES`, `DYNAMICAL_API_GROUPED_READS` and `DYNAMICAL_API_MAX_GROUP_POINTS` are not implemented by this Config. No operational telemetry delivery or heartbeat parity is claimed; no credentialed PostHog/Sentry network connection is made by this milestone.
-- Rationale: keep integration I/O in the native adapter and land/test the request event contracts before telemetry integration.
-- Tests: `configuration_defaults_and_empty_secret`, `failure_events_are_unsampled_and_analytics_conditions_match`, `task_cancellation_claims_one_terminal_record_without_analytics` and `handler_panic_returns_the_500_envelope_and_one_terminal_record` own configuration and fake-sink conditions. Broader event-envelope coverage remains pending in the Rust-owned test coverage tracking issue (server middleware); real delivery belongs to the telemetry implementation.
+- Trigger: invalid numeric configuration at startup.
+- Python: reads some budgets and sample rates lazily during requests.
+- Rust: parses its supported budgets, slots, rate limits, transport bounds, sample rate, heartbeat interval, dataset-cache entries and STAC URL at startup. Invalid bounds fail startup.
+- Consequence: malformed numeric settings can fail earlier. Data-handler settings `DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS`, `DYNAMICAL_API_CHUNK_CACHE_BYTES`, `DYNAMICAL_API_GROUPED_READS` and `DYNAMICAL_API_MAX_GROUP_POINTS` are not implemented by this Config.
+- Rationale: validate native resource bounds before accepting requests. The earlier milestone's deferred-emitter statements are superseded: native heartbeat, handler success/failure records and optional PostHog/Sentry delivery are implemented. D-tel-1 through D-tel-4 describe their error, resource, delivery and canonical analytics differences; D-tel-5 covers stdout backpressure.
+- Tests: `configuration_defaults_and_empty_secret` owns startup validation. Telemetry integration and delivery tests cover the implemented event and shutdown behavior; see [docs/telemetry.md](docs/telemetry.md).
 
 ## D10 — Hyper HTTP/1 wire parsing and bounded native connections
 
@@ -269,3 +269,12 @@ surface; they do not qualify the pending execution handlers.
 - Rust: records one logical query in both streams. Requests rejected by validation before entering the handler retain a null query count.
 - Rationale: preserve the known single-query count instead of copying an accidental omission from the reference analytics state.
 - Tests: `canonical_analytics_counts_one_query_on_success_and_handler_error` covers success, a handler error and rejection before the handler, using synthetic committed fixtures.
+
+## D-tel-5 — Bounded stdout delivery under backpressure
+
+- Trigger: a full or stalled stdout pipe, an oversized terminal record, or shutdown before stdout draining completes.
+- Reference Python service: synchronous flushed printing can block request completion indefinitely when the consumer stops reading.
+- Rust: immediate enqueue into a 256-record queue, with one dedicated native writer and a 64 KiB serialized-record limit including the newline. Overflow and oversize records are dropped; write failures are counted. Stdout drains concurrently with network delivery under the shared ten-second deadline, then pending records are counted as abandoned. Process exit ends a stalled writer; partially written in-flight records are possible.
+- Observable difference: requests complete despite stdout backpressure, with bounded output loss. `telemetryDropped`/`telemetryFailed` heartbeats include stdout losses, even without network configuration once a loss occurs. A best-effort shutdown diagnostic reports stdout loss totals. Healthy terminal record fields and sampling rules are unchanged.
+- Rationale: logging backpressure must not stall HTTP responses or process shutdown. No per-record blocking task or extra shutdown budget is introduced.
+- Tests: `full_undrained_stdout_does_not_block_http_and_counts_loss_at_bounded_shutdown`, `overflow_size_limit_and_abandoned_records_are_counted_without_waiting_for_writer`, `heartbeat_exposes_stdout_losses_added_to_network_counters_and_drains`, and `stdout_and_network_shutdown_share_one_drain_deadline`.
