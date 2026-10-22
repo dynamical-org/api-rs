@@ -212,6 +212,14 @@ async fn sigterm_stops_accepting_then_completes_in_flight_request() {
         "{}",
         String::from_utf8_lossy(&result)
     );
+    let body_start = result
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let body: Value = serde_json::from_slice(&result[body_start..]).unwrap();
+    assert_eq!(body["results"].as_array().unwrap().len(), 1);
+    assert_eq!(body["results"][0]["dataProduct"]["id"], "fixture-forecast");
     assert!(process.exited(Duration::from_secs(3)).await.success());
 }
 
