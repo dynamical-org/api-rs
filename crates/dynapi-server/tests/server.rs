@@ -1115,9 +1115,12 @@ async fn hyper_owns_header_syntax_and_parser_error_responses() {
     )
     .await;
     assert_eq!(status(&response), 200);
-    for fields in [
-        "X-Test: x\r\n".repeat(101),
-        format!("X-Padding: {}\r\n", "x".repeat(430_000)),
+    for (label, fields) in [
+        ("header count", "X-Test: x\r\n".repeat(101)),
+        (
+            "header bytes",
+            format!("X-Padding: {}\r\n", "x".repeat(430_000)),
+        ),
     ] {
         let response = raw_exchange(
             &server,
@@ -1125,7 +1128,7 @@ async fn hyper_owns_header_syntax_and_parser_error_responses() {
                 .as_bytes(),
         )
         .await;
-        assert_eq!(status(&response), 431);
+        assert_eq!(status(&response), 431, "{label}");
         assert!(!String::from_utf8_lossy(&response).contains("x-request-id:"));
     }
 }

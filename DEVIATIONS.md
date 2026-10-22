@@ -100,7 +100,7 @@ Dataset ensemble compatibility is covered in `crates/dynapi-dataset/tests/fixtur
   | Transfer-Encoding without final chunked | Hyper 400, empty body |
   | Transfer-Encoding with Content-Length | Hyper controls precedence and closes after the response; some validation is field-order dependent |
   | Missing or duplicate Host | Accepted by Hyper |
-  | Headers | Hyper defaults: 100 fields and 417,792-byte read buffer; complete 70,000-byte padding accepted, over-limit head returns 431 |
+  | Headers | Explicit limits: 100 fields and 417,792 bytes including the request line; complete 70,000-byte padding accepted, over-limit head returns 431 regardless of read coalescing |
   | Absolute/authority/asterisk-form target | Application 400 `Invalid request target`, then close, instead of Python's 404 for absolute-form |
   | Raw URI fragment | `http::Uri` strips the fragment before dispatch; raw `/healthz#foo` routes as `/healthz` (200), while percent-encoded `%23` remains part of the decoded routing path (404) |
   | LF-only trailers | Incomplete standalone reproductions time out; appended CRLF pipeline bytes can complete Hyper's trailer parse and yield one 422 before idle/header closure |
