@@ -846,7 +846,74 @@ pub fn validate_canonical(params: &[(String, String)]) -> Result<CanonicalQuery,
     })
 }
 
-/// Python-compatible integer grammar, including Unicode decimal digits.
+/// Canonical path grammar follows Python int(str), independently of Pydantic's
+/// query/body integer coercion. Decimal fractions are never path integers.
 pub fn parse_grid_integer(value: &str) -> Option<BigInt> {
-    parse_integer(value).ok()
+    let value = value.trim_matches(char::is_whitespace);
+    let (negative, digits) = if let Some(s) = value.strip_prefix('-') {
+        (true, s)
+    } else {
+        (false, value.strip_prefix('+').unwrap_or(value))
+    };
+    let mut ascii = Vec::new();
+    let mut previous_digit = false;
+    for c in digits.chars() {
+        if c == '_' && previous_digit {
+            previous_digit = false;
+            continue;
+        }
+        let digit = decimal_digit(c)?;
+        // CPython's default decimal conversion limit counts digits, not signs
+        // or separators. Bound staging before constructing an arbitrary integer.
+        if ascii.len() == 4300 {
+            return None;
+        }
+        ascii.push(b'0' + digit);
+        previous_digit = true;
+    }
+    if !previous_digit {
+        return None;
+    }
+    let number = BigInt::parse_bytes(&ascii, 10)?;
+    Some(if negative { -number } else { number })
+}
+
+fn decimal_digit(c: char) -> Option<u8> {
+    // Unicode 15.0 UnicodeData.txt, General_Category=Nd, as used by CPython
+    // 3.12. Each zero begins a consecutive ten-digit block; mathematical styles
+    // have separate zeros. Fixed 68-entry table, no locale or Unicode dependency.
+    // Source: https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt
+    const ZEROS: [u32; 68] = [
+        0x30, 0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66,
+        0xde6, 0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946, 0x19d0, 0x1a80, 0x1a90,
+        0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0, 0xa9f0, 0xaa50, 0xabf0,
+        0xff10, 0x104a0, 0x10d30, 0x11066, 0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450, 0x114d0,
+        0x11650, 0x116c0, 0x11730, 0x118e0, 0x11950, 0x11c50, 0x11d50, 0x11da0, 0x11f50, 0x16a60,
+        0x16ac0, 0x16b50, 0x1d7ce, 0x1d7d8, 0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0,
+        0x1e950, 0x1fbf0,
+    ];
+    let n = c as u32;
+    let i = ZEROS.partition_point(|zero| *zero <= n).checked_sub(1)?;
+    let digit = n - ZEROS[i];
+    (digit < 10).then_some(digit as u8)
+}
+
+#[cfg(test)]
+mod grid_integer_tests {
+    use super::*;
+
+    #[test]
+    fn grid_integer_has_bounded_decimal_grammar_separate_from_schema_coercion() {
+        for (s, expected) in [("  +١_２\u{a0}", 12), ("-００", 0), ("𝟡", 9)] {
+            assert_eq!(parse_grid_integer(s), Some(BigInt::from(expected)));
+        }
+        for s in [
+            "0.0", "0.00", "_0", "0_", "0__0", "+_0", "²", "\u{1c}0", "", "+",
+        ] {
+            assert_eq!(parse_grid_integer(s), None, "{s:?}");
+        }
+        assert!(parse_grid_integer(&"0".repeat(4300)).is_some());
+        assert!(parse_grid_integer(&"0".repeat(4301)).is_none());
+        assert_eq!(parse_integer("0.00").unwrap(), BigInt::from(0));
+    }
 }

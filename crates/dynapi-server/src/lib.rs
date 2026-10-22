@@ -561,7 +561,7 @@ impl App {
                 "method": method, "status": status, "duration_ms": (duration_ms * 10.0).round_ties_even() / 10.0,
                 "client_kind": kind, "user_agent": ua.chars().take(120).collect::<String>(),
                 "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": usage.query_count,
-                "work_units": usage.work_units, "dataset_cache": usage.dataset_cache, "response_bytes": usage.response_bytes, "timings_ms": usage.timings
+                "work_units": usage.work_units, "dataset_cache": usage.dataset_cache
             }}));
         }
     }

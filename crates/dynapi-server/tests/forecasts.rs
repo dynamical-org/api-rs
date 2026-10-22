@@ -12,6 +12,50 @@ fn phases(header: &str) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn canonical_grid_indices_use_decimal_integer_syntax() {
+    let server = Server::start(&[]).await;
+    let snapshot = input("forecast")["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (indices, accepted) in [
+        ("0,0", true),
+        ("+0,-0", true),
+        ("%20%2B0%20,0", true),
+        ("0_0,0", true),
+        ("0.0,0", false),
+        ("0,0.00", false),
+        ("_0,0", false),
+        ("0_,0", false),
+        ("0__0,0", false),
+        ("+_0,0", false),
+        ("0_.0,0", false),
+        ("%D9%A0,%D9%A0", true),
+        ("%EF%BC%90,%EF%BC%90", true),
+        ("%D9%A0_%EF%BC%90,0", true),
+        ("%C2%B2,0", false),
+    ] {
+        let path = format!(
+            "/v1/data/fixture-forecast/{snapshot}/points/{indices}?variables=count&initTime=2026-07-30T00:00:00Z"
+        );
+        let reply = server.request("GET", &path, &Value::Null).await;
+        assert_eq!(reply.status, if accepted { 200 } else { 422 }, "{indices}");
+        if accepted {
+            assert!(reply.headers["cache-control"].ends_with("immutable"));
+            assert_eq!(
+                reply.json()["point"]["selected"]["grid"],
+                json!({"latitudeIndex":0,"longitudeIndex":0})
+            );
+        } else {
+            assert_eq!(
+                reply.json(),
+                json!({"detail":"Grid indices must be two integers"})
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn forecasts_and_canonical_links_own_values_units_headers_and_usage() {
     let server = Server::start(&[("POSTHOG_PROJECT_TOKEN", "synthetic-test-token")]).await;
     let reply = server.request("POST", "/v1/forecasts", &payload()).await;
@@ -117,12 +161,17 @@ async fn forecasts_and_canonical_links_own_values_units_headers_and_usage() {
         .1["properties"];
     assert_eq!(properties["data_product_ids"], json!(["fixture-forecast"]));
     assert_eq!(properties["query_count"], 1);
-    assert_eq!(properties["response_bytes"], reply.body.len());
+    assert!(
+        !properties
+            .as_object()
+            .unwrap()
+            .contains_key("response_bytes")
+    );
+    assert!(!properties.as_object().unwrap().contains_key("timings_ms"));
     assert_eq!(
         properties["work_units"].as_u64().unwrap().to_string(),
         reply.headers["x-dynamical-work-units"]
     );
-    assert!(properties["timings_ms"]["catalog"].is_number());
     let metric = &events
         .iter()
         .find(|(stream, e)| {
@@ -500,8 +549,8 @@ async fn catalog_not_loaded_is_503_and_failure_usage_retains_handler_context() {
         .1["properties"];
     assert_eq!(usage["query_count"], 1);
     assert_eq!(usage["data_product_ids"], json!(["fixture-forecast"]));
-    assert!(usage["timings_ms"]["catalog"].is_number());
-    assert_eq!(usage["response_bytes"], reply.body.len());
+    assert!(!usage.as_object().unwrap().contains_key("response_bytes"));
+    assert!(!usage.as_object().unwrap().contains_key("timings_ms"));
     assert_eq!(server.app.gate.snapshot().in_use, 0);
 }
 
