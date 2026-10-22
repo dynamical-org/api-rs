@@ -1321,6 +1321,10 @@ name = "dynapi-policy"
 version = "0.1.0"
 
 [[package]]
+name = "dynapi-projection"
+version = "0.1.0"
+
+[[package]]
 name = "dynapi-query"
 version = "0.1.0"
 dependencies = [

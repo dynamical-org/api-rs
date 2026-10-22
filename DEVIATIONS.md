@@ -336,3 +336,28 @@ telemetry integration order and the requirement to qualify the budget against
 the deployment's actual shutdown grace. Rust subprocess tests verify completion,
 connection refusal, stuck-handler expiry and a worker retaining its permit
 through stuck synchronous cleanup.
+
+## D-proj-1 — Correct HRDPS rotated geographic selection
+
+- Trigger: geographic request selection or canonical location reconstruction on the catalog-attested HRDPS rotated-pole grid.
+- Previous reference behavior: the geographic-CRS shortcut treated rotated x/y as ordinary longitude/latitude, both for selection and canonical point reconstruction. Geographic classification itself is accurate; an identity coordinate operation is not.
+- Correction: use the HRDPS rotated-pole transform for geographic request selection and returned geographic locations, including canonical GET; preserve stored grid indices/value representation. `dynapi-projection` implements that operation and canonical index reconstruction. Dataset/query adapter and server wiring remain separate work; this library alone enables no route. The reference Python service is being corrected to the same behavior.
+- Measured differences: the previous shortcut rejected all 20,000 sampled actual-domain geographic requests and all 121 sampled corners/centers; across 28,229 requests including global and boundary cases, 23,483 admission decisions differed. The center's returned location was about 10,770 km from its geographic position. Correcting the operation can change admission, selected cells and returned locations, not merely coordinate precision.
+- Admission policy: only the exact attested rotated WKT chooses this operation. The later adapter must select it before D12's identity shortcut without changing the five identity CRS cases. Retain coordinate membership, attribute precedence, missing-versus-unsupported handling, and fail-closed unknown/reformatted WKT behavior.
+- Tests: `rotation_origin_and_geographic_pole_follow_the_grib_convention`, `rotation_preserves_spherical_distances`, and `rotated_grid_returns_geographic_locations_and_preserves_indices` use published spherical formulas, analytic invariants and explicit axes. Reference comparisons stay outside the repository.
+
+## D-proj-2 — Projected selection is unsupported on WASM
+
+- Trigger: construction of a projected selector on a WASM target.
+- Rust: `ProjectedGrid::new` returns `UnsupportedTarget`. Compilable pure projection math is available for experiments, but neither projected family is qualified for WASM selection or serving.
+- Evidence: exploratory WASM execution selected different cells at 272/1000 HRRR midpoint requests and 64/1000 HRDPS midpoint requests, and changed one HRRR edge admission. Tiny transform differences can select adjacent kilometre-scale grid cells and different weather values. This is an unsupported capability, not an accepted coordinate-accuracy relaxation. Node execution is not deployment-runtime qualification.
+- Future gate: qualify the actual release selector and canonical reconstruction on the intended WASM deployment runtime, including adjacent-representable geographic boundary inputs, domain admission, indices, returned location bits/serialization and dataset metadata dispatch. Any change in cell/value/admission behavior needs an explicit contract decision before enablement; no epsilon may hide it.
+- Native scope: release compiler and math runtime must be recorded for numerical comparisons. Results from one runtime do not establish universal bit-identical output, and signed zero must be checked explicitly.
+
+## D-proj-3 — Validate projected axes before selecting
+
+- Trigger: construction of the standalone projected-grid library with empty, nonfinite, nonmonotonic, overflowing, or out-of-range rotated axes.
+- Reference: the previous selector sorts unique finite values for its bounds but scans the original arrays for argmin, potentially admitting nonmonotonic axes or selecting a NaN. It does not separately validate axis extents.
+- Rust library: requires nonempty finite monotonic axes in either direction, with finite span and half-cell bounds. Rotated axes must be within longitude/latitude ranges. Duplicates are allowed and choose the first original array index on ties; singleton/constant axes have zero tolerance. Bounds use half the median spacing between unique coordinates and include their endpoints. No rounding epsilon changes admission or indices.
+- Consequence: malformed axes can be rejected before selection. WKT attests only the operation; the adapter must still validate coordinate membership, dtype and units. All attested HRRR/HRDPS axes satisfy this contract. This library contract does not change existing service routes until adapter integration.
+- Tests: `ascending_descending_and_duplicate_ties_choose_first_array_index`, `bounds_use_median_unique_spacing_and_are_inclusive`, `singleton_and_constant_axes_have_zero_tolerance`, and `invalid_axes_and_points_fail_before_selection` own explicit axis arrays and adjacent representable boundary values.
