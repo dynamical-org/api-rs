@@ -78,7 +78,6 @@ struct Server {
 }
 impl Drop for Server {
     fn drop(&mut self) {
-        self.catalog.close();
         self.task.abort();
     }
 }
@@ -114,13 +113,13 @@ impl Server {
             values.insert("DYNAMICAL_API_ORIGIN_SECRET".into(), "fake-secret".into());
         }
         let sink = Arc::new(RecordingSink::default());
-        let mut app = App::new(
+        let app = App::with_catalog(
             Config::from_values(&values).unwrap(),
             Arc::new(dynapi_server::Monotonic::default()),
             sink.clone(),
+            catalog.clone(),
         )
         .unwrap();
-        app.catalog = catalog.clone();
         let app = Arc::new(app);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

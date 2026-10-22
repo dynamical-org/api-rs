@@ -102,7 +102,7 @@ async fn collect_body(
 
 pub struct App {
     pub config: Config,
-    pub catalog: dynapi_catalog::native::StacCatalog,
+    catalog: dynapi_catalog::native::StacCatalog,
     pub gate: ComputeGate<SharedClock>,
     rate: Mutex<RateLimiter<SharedClock>>,
     query_rate: Mutex<RateLimiter<SharedClock>>,
@@ -111,25 +111,44 @@ pub struct App {
     data: Arc<data::DataService>,
     robots_headers: Vec<(&'static str, String)>,
 }
+impl Drop for App {
+    fn drop(&mut self) {
+        self.catalog.close();
+    }
+}
 impl App {
     pub fn new(
         config: Config,
         clock: SharedClock,
         sink: Arc<dyn Telemetry>,
     ) -> Result<Self, String> {
+        let catalog = dynapi_catalog::native::StacCatalog::new(
+            config.stac_url.clone(),
+            dynapi_catalog::refresh::CatalogConfig::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        Self::with_catalog(config, clock, sink, catalog)
+    }
+    /// Compose both route families with one catalog; App owns its shutdown.
+    pub fn with_catalog(
+        config: Config,
+        clock: SharedClock,
+        sink: Arc<dyn Telemetry>,
+        catalog: dynapi_catalog::native::StacCatalog,
+    ) -> Result<Self, String> {
         let robots_headers = vec![
             ("accept-ranges", "bytes".into()),
             ("last-modified", ROBOTS_LAST_MODIFIED.into()),
             ("etag", ROBOTS_ETAG.into()),
         ];
-        let data = Arc::new(data::DataService::new(&config, clock.clone())?);
+        let data = Arc::new(data::DataService::new(
+            &config,
+            clock.clone(),
+            catalog.clone(),
+        )?);
         Ok(Self {
             data,
-            catalog: dynapi_catalog::native::StacCatalog::new(
-                config.stac_url.clone(),
-                dynapi_catalog::refresh::CatalogConfig::default(),
-            )
-            .map_err(|error| error.to_string())?,
+            catalog,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
             query_rate: Mutex::new(RateLimiter::new(config.query_rate, clock)?),
@@ -449,6 +468,9 @@ impl App {
     #[cfg(feature = "harness")]
     pub fn inject_read_failure(&self, error: dynapi_reader::ReaderError) {
         self.data.inject_read_failure(error);
+    }
+    pub fn catalog(&self) -> &dynapi_catalog::native::StacCatalog {
+        &self.catalog
     }
     pub fn warm_catalog(&self) {
         self.data.warm();

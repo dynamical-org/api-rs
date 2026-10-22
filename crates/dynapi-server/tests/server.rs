@@ -50,7 +50,7 @@ impl Server {
         let app = Arc::new(App::new(config, Arc::new(Zero), sink.clone()).unwrap());
         // These shell tests never load an external catalog. Metadata handlers
         // and refresh failures have their own injected fixtures.
-        app.catalog.close();
+        app.catalog().close();
         let listener = TcpListener::bind(bind).await.unwrap();
         let address = listener.local_addr().unwrap();
         let serve = app.clone();

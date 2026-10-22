@@ -39,6 +39,8 @@ pub struct Reads {
     pub fail_chunks: AtomicBool,
     pub fail_catalog: AtomicBool,
     pub fail_snapshots: AtomicBool,
+    pub hold_snapshots: AtomicBool,
+    pub snapshot_started: Notify,
     pub version_bytes: AtomicUsize,
 }
 impl Default for Reads {
@@ -51,6 +53,8 @@ impl Default for Reads {
             fail_chunks: AtomicBool::new(false),
             fail_catalog: AtomicBool::new(false),
             fail_snapshots: AtomicBool::new(false),
+            hold_snapshots: AtomicBool::new(false),
+            snapshot_started: Notify::new(),
             version_bytes: AtomicUsize::new(0),
         }
     }
@@ -117,6 +121,10 @@ async fn serve_fixture(
             )
             .await?;
         return Ok(());
+    }
+    if path.contains("/snapshots/") && reads.hold_snapshots.load(Ordering::SeqCst) {
+        reads.snapshot_started.notify_one();
+        reads.release.acquire().await.unwrap().forget();
     }
     if path.contains("/snapshots/") && reads.fail_snapshots.load(Ordering::SeqCst) {
         socket
@@ -216,6 +224,12 @@ impl Drop for Server {
 }
 impl Server {
     pub async fn start(values: &[(&str, &str)]) -> Self {
+        Self::start_with_catalog(values, None).await
+    }
+    pub async fn start_with_catalog(
+        values: &[(&str, &str)],
+        catalog: Option<dynapi_catalog::native::StacCatalog>,
+    ) -> Self {
         let host = FixtureHost::start().await;
         let mut env: BTreeMap<String, String> = values
             .iter()
@@ -229,7 +243,13 @@ impl Server {
         let config = Config::from_values(&env).unwrap();
         let sink = Arc::new(RecordingSink::default());
         let clock = Arc::new(TestClock::default());
-        let app = Arc::new(App::new(config, clock.clone(), sink.clone()).unwrap());
+        let app = Arc::new(
+            match catalog {
+                Some(catalog) => App::with_catalog(config, clock.clone(), sink.clone(), catalog),
+                None => App::new(config, clock.clone(), sink.clone()),
+            }
+            .unwrap(),
+        );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let serve = app.clone();

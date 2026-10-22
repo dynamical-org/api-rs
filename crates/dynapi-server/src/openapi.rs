@@ -829,18 +829,33 @@ mod tests {
         }
         assert!(documented.is_disjoint(&excluded));
         assert_eq!(served, documented.union(&excluded).cloned().collect());
-        // These operations are documented now and implemented by the execution
-        // streams. Keep the pending surface explicit until their handlers land.
-        for operation in [
-            ("/v1/forecasts", "POST"),
-            ("/v1/analyses", "POST"),
-            ("/v1/forecasts/runs", "GET"),
-            (
-                "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}",
-                "GET",
-            ),
-        ] {
+        // Only these documented execution operations still await handlers.
+        for operation in [("/v1/analyses", "POST"), ("/v1/forecasts/runs", "GET")] {
             assert!(documented.contains(&(operation.0.to_owned(), operation.1.to_owned())));
+        }
+    }
+
+    #[test]
+    fn canonical_path_keeps_string_schema_and_uses_the_path_integer_grammar() {
+        let document = spec();
+        let path = "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}";
+        let parameter = document["paths"][path]["get"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "gridIndices")
+            .unwrap();
+        // The complete comma-separated segment is a string, independent of
+        // body/query integer coercion rules for its individual components.
+        assert_eq!(
+            parameter["schema"],
+            json!({"type":"string","title":"Gridindices"})
+        );
+        for value in ["0", "+0", " 0 ", "0_0", "٠", "０"] {
+            assert!(contract::parse_grid_integer(value).is_some(), "{value}");
+        }
+        for value in ["0.0", "_0", "0_", "0__0", "²"] {
+            assert!(contract::parse_grid_integer(value).is_none(), "{value}");
         }
     }
 

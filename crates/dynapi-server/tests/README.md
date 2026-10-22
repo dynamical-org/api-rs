@@ -65,5 +65,11 @@ The current-thread HTTP allocation tests use `support/allocation.rs` to account
 for every allocation on the request/runtime thread after fixture warmup. A 2 MiB
 unused metadata field must not cause a large request allocation; oversized list
 and detail responses must fail through the generic 500 path before materializing
-large metadata, with the fixed operator error category. See D-routes-2 for the
+large metadata, with the fixed operator error category. See D17 for the
 intentional response limit and measured public catalog sizes.
+
+`catalog_lifecycle.rs` injects a fictional fetcher shared by catalog and forecast
+HTTP requests. It checks one startup root/child flight, a common warm snapshot,
+failure backoff, stale serving and refresh publication, request cancellation and
+final application shutdown. App owns catalog close; temporary DataService or
+catalog handles do not. Forecast batches retain one immutable catalog generation.
