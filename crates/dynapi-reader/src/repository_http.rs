@@ -91,6 +91,11 @@ impl BoundedRepositoryStorage {
             .get_or_try_init(|| async {
                 reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
+                    // Keep wire byte limits even if another dependency enables codecs.
+                    .no_gzip()
+                    .no_brotli()
+                    .no_deflate()
+                    .no_zstd()
                     .user_agent(icechunk_types::user_agent())
                     .connect_timeout(Duration::from_secs(5))
                     .read_timeout(Duration::from_secs(20))
