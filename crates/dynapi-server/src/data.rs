@@ -252,14 +252,19 @@ impl DataService {
         self.catalog.snapshot().await.map_err(|e| {
             usage.lock().unwrap().error_kind = Some(ErrorKind::CatalogUnavailable);
             QueryError {
-            status: 503,
-            detail: e.to_string(),
-            retry_after: None,
-            exception_class: None,
+                status: 503,
+                detail: e.to_string(),
+                retry_after: None,
+                exception_class: None,
             }
         })
     }
-    async fn product(&self, id: &str, forecast: bool, usage: &SharedUsage) -> Result<Product, QueryError> {
+    async fn product(
+        &self,
+        id: &str,
+        forecast: bool,
+        usage: &SharedUsage,
+    ) -> Result<Product, QueryError> {
         Self::product_in(self.snapshot(usage).await?.as_ref(), id, forecast)
     }
     fn product_in(snapshot: &Snapshot, id: &str, forecast: bool) -> Result<Product, QueryError> {

@@ -85,6 +85,7 @@ async fn run(
         *process_deadline = Some(stdout.process_deadline(stopped, budget, i32::from(failed)));
         stopped
     };
+    let mut app_owner = None;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let config = Config::from_env()?;
         let clock: Arc<dyn dynapi_policy::Clock> = Arc::new(Monotonic::default());
@@ -102,6 +103,7 @@ async fn run(
                 sink
             };
         let app = Arc::new(App::new(config, clock, sink.clone())?);
+        app_owner = Some(app.clone());
         app.warm_catalog();
         let listener = tokio::net::TcpListener::bind((bind, port)).await?;
         #[cfg(feature = "harness")]
@@ -130,30 +132,52 @@ async fn run(
     }
     .await;
     let shutdown_started = shutdown_started.unwrap_or_else(|| stop(result.is_err()));
+    #[cfg(feature = "telemetry-delivery")]
+    if result.is_err()
+        && let Some(delivery) = &delivery
+    {
+        use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
+        delivery.emit(
+            Stream::Error,
+            error_record(ErrorKind::Startup, serde_json::json!({})).unwrap(),
+        );
+    }
+    flush_telemetry(
+        &stdout,
+        #[cfg(feature = "telemetry-delivery")]
+        delivery.as_deref(),
+        shutdown_started,
+    )
+    .await;
+    // Keep the shared catalog alive through telemetry flushing. Dropping the
+    // final application owner closes it after the flush phase.
+    drop(app_owner);
+    result
+}
+/// Call after request draining and before closing the application/catalog.
+/// Reuse the original shutdown start; neither drain gets a fresh time budget.
+async fn flush_telemetry(
+    stdout: &StdoutSink,
+    #[cfg(feature = "telemetry-delivery")] delivery: Option<
+        &dynapi_server::telemetry::delivery::DeliverySink,
+    >,
+    started: tokio::time::Instant,
+) {
     let network_shutdown = async {
         #[cfg(feature = "telemetry-delivery")]
-        if let Some(delivery) = delivery {
-            if result.is_err() {
-                use dynapi_server::telemetry::{ErrorKind, Stream, Telemetry, error_record};
-                delivery.emit(
-                    Stream::Error,
-                    error_record(ErrorKind::Startup, serde_json::json!({})).unwrap(),
-                );
-            }
-            if !delivery
-                .shutdown_started_at(shutdown_started, SHUTDOWN_TIMEOUT)
+        if let Some(delivery) = delivery
+            && !delivery
+                .shutdown_started_at(started, SHUTDOWN_TIMEOUT)
                 .await
-            {
-                eprintln!("Telemetry shutdown deadline exceeded; pending SDK events may be lost");
-            }
+        {
+            eprintln!("Telemetry shutdown deadline exceeded; pending SDK events may be lost");
         }
     };
     tokio::join!(
-        stdout.shutdown_started_at(shutdown_started, SHUTDOWN_TIMEOUT),
+        stdout.shutdown_started_at(started, SHUTDOWN_TIMEOUT),
         network_shutdown
     );
     stdout.report_loss();
-    result
 }
 #[cfg(unix)]
 async fn terminate() {

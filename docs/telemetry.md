@@ -15,7 +15,7 @@ unsampled before enqueue, but all records share these delivery bounds.
 
 The reference Python service uses synchronous `print(..., flush=True)` and can
 block a request on a full pipe. Bounded dropping deliberately improves response
-availability at the cost of output loss under backpressure; see `D-tel-5` in
+availability at the cost of output loss under backpressure; see `D23` in
 [DEVIATIONS.md](../DEVIATIONS.md). With no loss, terminal record fields are
 unchanged. Stdout losses add to the `telemetryDropped` and `telemetryFailed`
 heartbeat counters; an unconfigured network adapter adds these fields only after
@@ -96,7 +96,7 @@ No request context, body, raw path/query, headers, error message, panic payload,
 frame locals, source text or absolute source path is attached. Automatic SDK
 request, panic, logging, tracing, context and profiling integrations are disabled.
 Python and native SDK envelope metadata and stack frames differ deliberately;
-see `D-tel-1` in [DEVIATIONS.md](../DEVIATIONS.md).
+see `D19` in [DEVIATIONS.md](../DEVIATIONS.md).
 
 ## Heartbeat
 
