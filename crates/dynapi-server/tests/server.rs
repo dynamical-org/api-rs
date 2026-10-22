@@ -868,10 +868,11 @@ async fn idle_keep_alive_uses_five_seconds_and_resets_after_response() {
     health_on_connection(&mut socket).await;
     tokio::time::advance(std::time::Duration::from_secs(3)).await;
     health_on_connection(&mut socket).await;
-    let mut byte = [0];
-    tokio::time::advance(std::time::Duration::from_secs(3)).await;
-    assert!(futures_util::poll!(std::pin::pin!(socket.read(&mut byte))).is_pending());
-    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::advance(std::time::Duration::from_secs(4)).await;
+    // A complete response proves the connection survived beyond its original
+    // deadline; a single pending read could just precede the timer task's poll.
+    health_on_connection(&mut socket).await;
+    tokio::time::advance(std::time::Duration::from_secs(5)).await;
     assert_disconnected(&mut socket).await;
 }
 
