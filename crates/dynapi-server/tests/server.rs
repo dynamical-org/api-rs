@@ -456,6 +456,7 @@ async fn validation_precedes_compute_but_follows_rate_debit() {
     assert_eq!(status(&response), 429);
     assert_eq!(server.app.gate.snapshot().in_use, 1);
 }
+#[cfg(feature = "harness")]
 #[tokio::test]
 async fn admitted_forecast_returns_data_with_cors_and_request_id() {
     let server = Server::start(&[]).await;

@@ -1,4 +1,4 @@
-//! Materialized point reads. Product policy runs before admission and store I/O.
+//! Materialized point reads with admitted workers and bounded cache/presentation.
 use crate::{HttpResponse, SharedClock, config::Config, detail, response, server_error};
 use dynapi_catalog::{
     Collection as Product,
@@ -24,7 +24,7 @@ use std::{
 };
 
 /// Retained metadata is capped at 256 MiB, independently of the entry count.
-/// Four maximum-size datasets fit; request-owned Arcs remain valid on eviction.
+/// Leaves headroom for compute; request-owned Arcs remain valid on eviction.
 pub const DATASET_CACHE_BYTES: usize = 256 * 1024 * 1024;
 /// Conservative response-tree, selection and encoding materialization charge.
 pub const MATERIALIZATION_BYTES: u128 = 64 * 1024 * 1024;
@@ -436,12 +436,6 @@ fn map_open(error: OpenError) -> QueryError {
             retry_after: None,
             exception_class: None,
         },
-        OpenError::Reader(e) if e.kind == dynapi_reader::ErrorKind::Snapshot => QueryError {
-            status: 404,
-            detail: e.message,
-            retry_after: None,
-            exception_class: None,
-        },
         OpenError::Reader(e) => dynapi_dataset::map_reader_error(e),
         _ => QueryError::internal(error.to_string()),
     }
@@ -630,4 +624,20 @@ fn busy(gate: &ComputeGate<SharedClock>) -> HttpResponse {
         .headers_mut()
         .insert("retry-after", retry.to_string().parse().unwrap());
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_lookup_snapshot_errors_remain_internal() {
+        let error = map_open(OpenError::Reader(dynapi_reader::ReaderError {
+            kind: dynapi_reader::ErrorKind::Snapshot,
+            message: "synthetic snapshot transport failure".into(),
+            virtual_chunk_fetch: false,
+            exception_class: None,
+        }));
+        assert_eq!(error.status, 500);
+    }
 }

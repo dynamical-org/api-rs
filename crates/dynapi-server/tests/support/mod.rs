@@ -38,6 +38,7 @@ pub struct Reads {
     pub release: Semaphore,
     pub fail_chunks: AtomicBool,
     pub fail_catalog: AtomicBool,
+    pub fail_snapshots: AtomicBool,
     pub version_bytes: AtomicUsize,
 }
 impl Default for Reads {
@@ -49,6 +50,7 @@ impl Default for Reads {
             release: Semaphore::new(0),
             fail_chunks: AtomicBool::new(false),
             fail_catalog: AtomicBool::new(false),
+            fail_snapshots: AtomicBool::new(false),
             version_bytes: AtomicUsize::new(0),
         }
     }
@@ -113,6 +115,12 @@ async fn serve_fixture(
             .write_all(
                 b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             )
+            .await?;
+        return Ok(());
+    }
+    if path.contains("/snapshots/") && reads.fail_snapshots.load(Ordering::SeqCst) {
+        socket
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await?;
         return Ok(());
     }

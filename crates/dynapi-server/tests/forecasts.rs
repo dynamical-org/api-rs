@@ -1,3 +1,4 @@
+#![cfg(feature = "harness")]
 mod support;
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
@@ -557,4 +558,26 @@ async fn main_and_pinned_snapshots_share_the_configured_lru_capacity() {
         assert_eq!(main.body, first.body);
         assert_eq!(main.headers["x-dynamical-dataset-cache"], "miss");
     }
+}
+
+#[tokio::test]
+async fn upstream_snapshot_failure_is_not_an_unknown_snapshot() {
+    let server = Server::start(&[]).await;
+    server
+        .host
+        .reads
+        .fail_snapshots
+        .store(true, Ordering::SeqCst);
+    let path = format!(
+        "/v1/data/fixture-forecast/{}/points/0,0?variables=count&initTime=2026-07-30T00:00:00Z",
+        input("forecast")["snapshot_id"].as_str().unwrap()
+    );
+    let reply = server.request("GET", &path, &Value::Null).await;
+    assert_eq!(
+        reply.status,
+        500,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    assert_eq!(reply.body, b"Internal Server Error");
 }
