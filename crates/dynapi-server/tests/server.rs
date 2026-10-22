@@ -48,9 +48,6 @@ impl Server {
         .unwrap();
         let sink = Arc::new(RecordingSink::default());
         let app = Arc::new(App::new(config, Arc::new(Zero), sink.clone()).unwrap());
-        // These shell tests never load an external catalog. Metadata handlers
-        // and refresh failures have their own injected fixtures.
-        app.catalog().close();
         let listener = TcpListener::bind(bind).await.unwrap();
         let address = listener.local_addr().unwrap();
         let serve = app.clone();
@@ -370,17 +367,17 @@ async fn analytics_url_path_gate_and_last_query_product_match_starlette() {
         ),
         (
             "/v1/data-products/example-path?dataProductId=example-first&dataProductId=example-last",
-            503,
+            404,
             vec!["example-path"],
         ),
         (
             "/v1/data-products/example-path?dataProductId=example-first&dataProductId=",
-            503,
+            404,
             vec!["example-path"],
         ),
         (
             "/v1/data-products/example-path%0A?dataProductId=example-query",
-            503,
+            404,
             vec!["example-path\n"],
         ),
         (

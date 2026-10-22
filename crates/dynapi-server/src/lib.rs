@@ -469,9 +469,6 @@ impl App {
     pub fn inject_read_failure(&self, error: dynapi_reader::ReaderError) {
         self.data.inject_read_failure(error);
     }
-    pub fn catalog(&self) -> &dynapi_catalog::native::StacCatalog {
-        &self.catalog
-    }
     pub fn warm_catalog(&self) {
         self.data.warm();
     }
