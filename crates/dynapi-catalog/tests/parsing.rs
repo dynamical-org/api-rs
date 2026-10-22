@@ -72,7 +72,7 @@ fn unsupported_field_types_are_explicit_errors() {
     value["cube:dimensions"] = json!("x");
     assert_eq!(
         Collection::from_stac(&value).unwrap_err().message,
-        "dictionary update sequence element at index 0 has length 1; 2 is required"
+        "dictionary update sequence element #0 has length 1; 2 is required"
     );
 }
 

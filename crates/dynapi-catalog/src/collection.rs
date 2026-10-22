@@ -209,7 +209,7 @@ fn cube_dimensions(value: &Value) -> Result<IndexMap<String, Value>, CatalogErro
         Some(Value::String(s)) if s.is_empty() => Ok(IndexMap::new()),
         Some(Value::Array(a)) if a.is_empty() => Ok(IndexMap::new()),
         Some(Value::String(_)) => Err(CatalogError::typed(
-            "dictionary update sequence element at index 0 has length 1; 2 is required",
+            "dictionary update sequence element #0 has length 1; 2 is required",
             "ValueError",
         )),
         Some(v @ Value::Array(_)) => Err(unsupported("cube:dimensions", v)),
