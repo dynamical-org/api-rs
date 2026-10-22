@@ -1,0 +1,85 @@
+{
+  "name": "deployed_coordinates",
+  "snapshot_id": "2SGNME5GPFPG2PXTSSP0",
+  "kind": "forecast",
+  "collection": {
+    "id": "fixture-deployed_coordinates",
+    "title": "Synthetic fixture",
+    "description": "Synthetic only",
+    "version": "1.2.3",
+    "license": "CC-BY-4.0",
+    "extent": {
+      "spatial": {
+        "bbox": [
+          [
+            -180,
+            -90,
+            180,
+            90
+          ]
+        ]
+      }
+    },
+    "cube:dimensions": {
+      "init_time": {
+        "type": "temporal"
+      },
+      "lead_time": {
+        "type": "other"
+      },
+      "longitude": {
+        "type": "other"
+      },
+      "latitude": {
+        "type": "other"
+      }
+    },
+    "cube:variables": {
+      "ingested_forecast_length": {
+        "type": "data",
+        "dimensions": [
+          "init_time"
+        ],
+        "unit": null
+      },
+      "expected_forecast_length": {
+        "type": "data",
+        "dimensions": [
+          "init_time"
+        ],
+        "unit": null
+      },
+      "valid_time": {
+        "type": "data",
+        "dimensions": [
+          "init_time",
+          "lead_time"
+        ],
+        "unit": null
+      },
+      "spatial_ref": {
+        "type": "data",
+        "dimensions": [],
+        "unit": null
+      }
+    },
+    "assets": {
+      "icechunk": {
+        "href": "s3://synthetic-fixture/deployed_coordinates/v1.2.3.icechunk/",
+        "xarray:storage_options": {
+          "client_kwargs": {
+            "region_name": "us-west-2"
+          }
+        }
+      }
+    },
+    "links": [
+      {
+        "rel": "self",
+        "href": "https://example.invalid/deployed_coordinates/collection.json"
+      }
+    ]
+  },
+  "cases": [],
+  "reads": []
+}

@@ -15,7 +15,7 @@ use icechunk::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use zarrs::array::{Array, ArraySubset, CodecOptions};
+use zarrs::array::{Array, ArrayBytes, ArraySubset, CodecOptions};
 use zarrs_icechunk::AsyncIcechunkStore;
 use zarrs_storage::{
     AsyncListableStorageTraits, AsyncMaybeBytesIterator, AsyncReadableStorageTraits, MaybeBytes,
@@ -30,7 +30,8 @@ pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INTEGER_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;
-const MAX_SELECTORS: usize = 1_048_576;
+/// Bound checked before adapters allocate positional selector copies.
+pub const MAX_SELECTORS: usize = 1_048_576;
 const MAX_CHUNKS: usize = 65_536;
 const MAX_RANK: usize = 16;
 
@@ -170,6 +171,12 @@ pub enum ErrorKind {
 pub struct ReaderError {
     pub kind: ErrorKind,
     pub message: String,
+    /// Set from Icechunk's typed FetchError before zarrs erases its source.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub virtual_chunk_fetch: bool,
+    /// Python's corresponding Icechunk exception class, when the native source is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exception_class: Option<&'static str>,
 }
 impl fmt::Display for ReaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -181,6 +188,8 @@ fn err(kind: ErrorKind, message: impl ToString) -> ReaderError {
     ReaderError {
         kind,
         message: message.to_string(),
+        virtual_chunk_fetch: false,
+        exception_class: None,
     }
 }
 fn unsupported(message: impl ToString) -> ReaderError {
@@ -333,7 +342,7 @@ impl PayloadPolicy {
                     Some("lz4") => 1,
                     _ => return Err(unsupported("Unrecognized Blosc compressor policy")),
                 },
-                typesize: cap.width as u8,
+                typesize: config["typesize"].as_u64().expect("attested typesize") as u8,
                 shuffle_flags: match config["shuffle"].as_str() {
                     Some("noshuffle") => 0,
                     Some("shuffle") => 0x01,
@@ -519,14 +528,72 @@ impl ShardPolicy {
     }
 }
 
+struct StorageFailure {
+    virtual_fetch: bool,
+    message: String,
+    exception_class: &'static str,
+}
+
+fn storage_exception_class(kind: &icechunk::store::StoreErrorKind) -> &'static str {
+    use icechunk::format::manifest::VirtualReferenceErrorKind;
+    use icechunk::{session::SessionErrorKind, store::StoreErrorKind};
+    match kind {
+        StoreErrorKind::SessionError(SessionErrorKind::VirtualReferenceError(error)) => match error
+        {
+            VirtualReferenceErrorKind::FetchError(_)
+            | VirtualReferenceErrorKind::ObjectModified(_)
+            | VirtualReferenceErrorKind::InvalidObjectSize { .. } => "StorageError",
+            VirtualReferenceErrorKind::OtherError(_) => "InternalError",
+            _ => "InvalidInputError",
+        },
+        StoreErrorKind::InvalidVirtualChunkContainer { .. } => "InvalidInputError",
+        StoreErrorKind::NotFound(_) => "NodeNotFoundError",
+        StoreErrorKind::SessionError(SessionErrorKind::FormatError(_)) => "FormatError",
+        _ => "StorageError",
+    }
+}
+
+fn storage_failure(error: &icechunk::store::StoreError) -> StorageFailure {
+    let virtual_fetch = matches!(
+        error.kind(),
+        icechunk::store::StoreErrorKind::SessionError(
+            icechunk::session::SessionErrorKind::VirtualReferenceError(
+                icechunk::format::manifest::VirtualReferenceErrorKind::FetchError(_)
+            )
+        )
+    );
+    // ICError Display omits the source chain. Preserve both renderings of
+    // each source, as Python does, so upstream diagnostics survive zarrs.
+    let mut message = format!("{error}\n{:?}", error.kind());
+    let mut source = std::error::Error::source(error);
+    for _ in 0..32 {
+        let Some(cause) = source else {
+            break;
+        };
+        message.push_str(&format!("\n{cause}\n{cause:?}"));
+        source = cause.source();
+    }
+    StorageFailure {
+        virtual_fetch,
+        message,
+        exception_class: storage_exception_class(error.kind()),
+    }
+}
+
 struct ObservedStore {
     inner: AsyncIcechunkStore,
+    failure: Arc<Mutex<Option<StorageFailure>>>,
     trace: Arc<Mutex<ReadTrace>>,
     payload: std::sync::OnceLock<PayloadPolicy>,
     // Only one decoder runs at a time; retain at most one bounded shard index.
     index: Mutex<Option<ValidatedIndex>>,
 }
 impl ObservedStore {
+    fn storage_error(&self, error: icechunk::store::StoreError) -> StorageError {
+        *self.failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(storage_failure(&error));
+        invalid_payload(error.to_string())
+    }
+
     fn record(&self, key: &StoreKey, ranges: Vec<Range>) {
         self.trace
             .lock()
@@ -622,7 +689,7 @@ impl ObservedStore {
         let size = store
             .getsize(key.as_str())
             .await
-            .map_err(|e| invalid_payload(e.to_string()))?;
+            .map_err(|e| self.storage_error(e))?;
         if size == 0 {
             return match store
                 .get(key.as_str(), &icechunk::format::ByteRange::ALL)
@@ -633,7 +700,7 @@ impl ObservedStore {
                 {
                     Ok(None)
                 }
-                Err(error) => Err(invalid_payload(error.to_string())),
+                Err(error) => Err(self.storage_error(error)),
                 Ok(_) => Err(invalid_payload("Empty encoded chunk")),
             };
         }
@@ -646,7 +713,7 @@ impl ObservedStore {
         let bytes = store
             .get(key.as_str(), &range)
             .await
-            .map_err(|e| invalid_payload(e.to_string()))?;
+            .map_err(|e| self.storage_error(e))?;
         if bytes.len() as u64 != span.end - span.start {
             return Err(invalid_payload("Fetched range length mismatch"));
         }
@@ -789,14 +856,18 @@ fn exact_keys(value: &Value, keys: &[&str]) -> bool {
         .as_object()
         .is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
 }
-fn bytes_codec(value: &Value) -> bool {
+fn bytes_codec(value: &Value, width: usize) -> bool {
     *value == json!({"name":"bytes","configuration":{"endian":"little"}})
+        || (width == 1
+            && (*value == json!({"name":"bytes"})
+                || *value == json!({"name":"bytes","configuration":{}})
+                || *value == json!({"name":"bytes","configuration":{"endian":null}})))
 }
-fn numeric_codecs(value: &Value, width: usize) -> Result<(), ReaderError> {
+fn numeric_codecs(value: &Value, width: usize, integer: bool) -> Result<(), ReaderError> {
     let codecs = value
         .as_array()
         .ok_or_else(|| unsupported("Missing codecs"))?;
-    if !(1..=2).contains(&codecs.len()) || !bytes_codec(&codecs[0]) {
+    if !(1..=2).contains(&codecs.len()) || !bytes_codec(&codecs[0], width) {
         return Err(unsupported(
             "Expected little-endian bytes, optionally followed by blosc",
         ));
@@ -807,7 +878,11 @@ fn numeric_codecs(value: &Value, width: usize) -> Result<(), ReaderError> {
         if !exact_keys(codec, &["name", "configuration"])
             || codec["name"] != "blosc"
             || !exact_keys(c, &["typesize", "cname", "clevel", "shuffle", "blocksize"])
-            || c["typesize"].as_u64() != Some(width as u64)
+            || !(c["typesize"].as_u64() == Some(width as u64)
+                || (integer
+                    && c["typesize"]
+                        .as_u64()
+                        .is_some_and(|n| (1..=255).contains(&n))))
             || !(c["cname"] == "zstd"
                 || (width == 4
                     && c["cname"] == "lz4"
@@ -821,7 +896,7 @@ fn numeric_codecs(value: &Value, width: usize) -> Result<(), ReaderError> {
             || c["blocksize"] != 0
         {
             return Err(unsupported(
-                "Unrecognized blosc configuration (requires zstd or float32 lz4/clevel 5/shuffle, matching typesize, clevel 0..9, known shuffle, blocksize 0)",
+                "Unrecognized blosc configuration (requires zstd or float32 lz4/clevel 5/shuffle, admitted typesize, clevel 0..9, known shuffle, blocksize 0)",
             ));
         }
     }
@@ -899,6 +974,13 @@ fn coordinate_profile(meta: &Value, array_path: &str) -> Result<Option<Value>, R
 }
 
 fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
+    attest_with_mode(meta, array_path, false)
+}
+fn attest_with_mode(
+    meta: &Value,
+    array_path: &str,
+    dataset: bool,
+) -> Result<Capability, ReaderError> {
     // Parse the complete schema even when no chunk will pass through zarrs.
     // Keep scalar payload decoding in our fixed-size decompressor.
     let metadata: zarrs::metadata::v3::ArrayMetadataV3 =
@@ -924,6 +1006,9 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
         Some("float32") => ("float32", 4),
         Some("float64") => ("float64", 8),
         Some("int64") => ("int64", 8),
+        Some(dtype @ ("int8" | "uint8")) if dataset => (dtype, 1),
+        Some(dtype @ ("int16" | "uint16")) if dataset => (dtype, 2),
+        Some(dtype @ ("int32" | "uint32")) if dataset => (dtype, 4),
         _ => return Err(unsupported("Only float32/float64/int64")),
     };
     let shape = dimensions(&meta["shape"])?;
@@ -935,7 +1020,23 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
     let attrs = meta["attributes"]
         .as_object()
         .ok_or_else(|| unsupported("Expected attributes object"))?;
-    let profile = coordinate_profile(meta, array_path)?;
+    let profile = if dataset {
+        None
+    } else {
+        coordinate_profile(meta, array_path)?
+    };
+    // Dataset mode keeps descriptive attributes, but never silently ignores a CF
+    // transform that would change values. The original attested API stays strict.
+    if dataset
+        && attrs.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "scale_factor" | "add_offset" | "missing_value" | "_Unsigned" | "_Encoding"
+            )
+        })
+    {
+        return Err(unsupported("Unsupported CF value transform"));
+    }
     // An allowlist: xarray coders key on attribute presence (e.g. `dtype`, `_Encoding`,
     // `scale_factor`) regardless of stored dtype, so unknown attributes are refused.
     const ALLOWED_ATTRIBUTES: &[&str] = &[
@@ -950,7 +1051,8 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
         "_FillValue",
     ];
     if let Some(key) = attrs.keys().find(|k| {
-        !ALLOWED_ATTRIBUTES.contains(&k.as_str())
+        !dataset
+            && !ALLOWED_ATTRIBUTES.contains(&k.as_str())
             && !profile
                 .as_ref()
                 .is_some_and(|p| p["attributes"].get(k.as_str()).is_some())
@@ -959,7 +1061,16 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
             "Attribute {key} is outside the stored-float contract"
         )));
     }
-    let time_encoding = cf_time::attested_encoding(dtype, attrs).is_ok();
+    let cf_attrs = if dataset {
+        attrs
+            .iter()
+            .filter(|(k, _)| matches!(k.as_str(), "units" | "calendar" | "dtype" | "_FillValue"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    } else {
+        attrs.clone()
+    };
+    let time_encoding = cf_time::attested_encoding(dtype, &cf_attrs).is_ok();
     // BooleanCoder and other dtype-directed casts remain excluded.
     if (attrs.contains_key("calendar") || attrs.contains_key("dtype")) && !time_encoding {
         return Err(unsupported("Unattested CF calendar or dtype"));
@@ -967,16 +1078,17 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
     if !time_encoding
         && attrs.get("units").and_then(Value::as_str).is_some_and(|s| {
             s.contains("since")
-                || matches!(
-                    s,
-                    "seconds"
-                        | "minutes"
-                        | "hours"
-                        | "days"
-                        | "milliseconds"
-                        | "microseconds"
-                        | "nanoseconds"
-                )
+                || ((!dataset || attrs.contains_key("dtype"))
+                    && matches!(
+                        s,
+                        "seconds"
+                            | "minutes"
+                            | "hours"
+                            | "days"
+                            | "milliseconds"
+                            | "microseconds"
+                            | "nanoseconds"
+                    ))
         })
     {
         return Err(unsupported("Time conversion outside stored-float contract"));
@@ -989,8 +1101,22 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
             return Err(unsupported("Only NaN _FillValue masking is supported"));
         }
     }
-    if dtype == "int64" && (fill.as_i64().is_none() || attrs.contains_key("_FillValue")) {
-        return Err(unsupported("Expected int64 fill without attribute masking"));
+    if dtype.starts_with("int") || dtype.starts_with("uint") {
+        let valid_fill = match dtype {
+            "int8" => fill.as_i64().is_some_and(|v| i8::try_from(v).is_ok()),
+            "int16" => fill.as_i64().is_some_and(|v| i16::try_from(v).is_ok()),
+            "int32" => fill.as_i64().is_some_and(|v| i32::try_from(v).is_ok()),
+            "int64" => fill.as_i64().is_some(),
+            "uint8" => fill.as_u64().is_some_and(|v| u8::try_from(v).is_ok()),
+            "uint16" => fill.as_u64().is_some_and(|v| u16::try_from(v).is_ok()),
+            "uint32" => fill.as_u64().is_some_and(|v| u32::try_from(v).is_ok()),
+            _ => false,
+        };
+        if !valid_fill || attrs.contains_key("_FillValue") {
+            return Err(unsupported(
+                "Expected in-range integer fill without attribute masking",
+            ));
+        }
     }
     if !(fill.is_number() || matches!(fill.as_str(), Some("NaN" | "Infinity" | "-Infinity"))) {
         return Err(unsupported("Unrecognized float fill"));
@@ -1017,7 +1143,7 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
     let codecs = meta["codecs"]
         .as_array()
         .ok_or_else(|| unsupported("Missing codecs"))?;
-    if dtype == "int64" {
+    if dtype == "int64" && (!dataset || shape.is_empty()) {
         let expected = if shape.is_empty() {
             json!([{"name":"bytes","configuration":{"endian":"little"}}, {"name":"zstd","configuration":{"level":0,"checksum":false}}])
         } else {
@@ -1047,7 +1173,11 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
                 "Expected little-endian bytes+crc32c shard index at start or end",
             ));
         }
-        numeric_codecs(&c["codecs"], width)?;
+        numeric_codecs(
+            &c["codecs"],
+            width,
+            dataset && (dtype.starts_with("int") || dtype.starts_with("uint")),
+        )?;
         let inner = dimensions(&c["chunk_shape"])?;
         if inner.len() != shape.len()
             || inner.contains(&0)
@@ -1059,7 +1189,11 @@ fn attest(meta: &Value, array_path: &str) -> Result<Capability, ReaderError> {
         checked_bytes(&counts, 16, MAX_INDEX_BYTES - 4)?;
         inner
     } else {
-        numeric_codecs(&meta["codecs"], width)?;
+        numeric_codecs(
+            &meta["codecs"],
+            width,
+            dataset && (dtype.starts_with("int") || dtype.starts_with("uint")),
+        )?;
         outer
     };
     checked_bytes(
@@ -1089,6 +1223,28 @@ impl Capability {
     }
 }
 
+/// Validate a full dimension-coordinate read and bound its chunk cardinality
+/// without materializing selectors or selector groups. Used by metadata budgets.
+pub fn coordinate_chunk_count(meta: &Value, name: &str) -> Result<usize, ReaderError> {
+    let cap = attest_with_mode(meta, name, true)?;
+    if cap.shape.len() != 1 {
+        return Err(unsupported("Expected a one-dimensional coordinate"));
+    }
+    let size = usize::try_from(cap.shape[0])
+        .map_err(|_| err(ErrorKind::SizeLimit, "Coordinate too large"))?;
+    if size > MAX_SELECTORS || size > MAX_OUTPUT_BYTES / cap.width {
+        return Err(err(ErrorKind::SizeLimit, "Coordinate too large"));
+    }
+    let chunks = cap.shape[0].div_ceil(cap.inner[0]);
+    if chunks > MAX_CHUNKS as u64 {
+        return Err(err(
+            ErrorKind::SizeLimit,
+            "Selection touches too many chunks",
+        ));
+    }
+    Ok(chunks as usize)
+}
+
 type AxisGroup = (u64, Vec<(usize, u64)>);
 struct Prepared {
     shape: Vec<usize>,
@@ -1101,6 +1257,54 @@ fn prepare(cap: &Capability, selection: &[Selector]) -> Result<Prepared, ReaderE
             ErrorKind::InvalidSelection,
             "Exactly one selector per stored dimension is required",
         ));
+    }
+    // Count distinct chunks before allocating any per-selector group buffers.
+    // The bounded set is discarded per axis; even sparse/duplicate selections
+    // cannot cause million-group staging before MAX_CHUNKS is enforced.
+    let empty = selection
+        .iter()
+        .any(|s| matches!(s, Selector::Indices(xs) if xs.is_empty()));
+    let mut chunks = 1usize;
+    let mut selectors = 0usize;
+    for ((selector, bound), chunk) in selection.iter().zip(&cap.shape).zip(&cap.inner) {
+        let indices = match selector {
+            Selector::Index(i) => std::slice::from_ref(i),
+            Selector::Indices(xs) => xs.as_slice(),
+        };
+        selectors = selectors
+            .checked_add(indices.len())
+            .filter(|n| *n <= MAX_SELECTORS)
+            .ok_or_else(|| err(ErrorKind::SizeLimit, "Too many selector indices"))?;
+        let mut unique = std::collections::BTreeSet::new();
+        for index in indices {
+            let index = u64::try_from(*index)
+                .map_err(|_| err(ErrorKind::InvalidSelection, "Negative index"))?;
+            if index >= *bound {
+                return Err(err(ErrorKind::InvalidSelection, "Index out of range"));
+            }
+            if !empty && unique.insert(index / chunk) && unique.len() > MAX_CHUNKS / chunks {
+                return Err(err(
+                    ErrorKind::SizeLimit,
+                    "Selection touches too many chunks",
+                ));
+            }
+        }
+        if !empty {
+            chunks *= unique.len();
+        }
+    }
+    if empty {
+        return Ok(Prepared {
+            shape: selection
+                .iter()
+                .filter_map(|s| match s {
+                    Selector::Indices(xs) => Some(xs.len()),
+                    Selector::Index(_) => None,
+                })
+                .collect(),
+            groups: Vec::new(),
+            elements: 0,
+        });
     }
     let mut shape = Vec::new();
     let mut groups = Vec::new();
@@ -1251,289 +1455,541 @@ async fn read_inner(
     cf_request: Option<&cf_time::Request>,
     containers: &[HttpVirtualChunkContainer],
 ) -> Result<(TypedBuffer, ReadTrace), ReaderError> {
-    let snapshot = snapshot_id
+    let _: icechunk::format::SnapshotId = snapshot_id
         .try_into()
         .map_err(|e| err(ErrorKind::Snapshot, e))?;
+    validate_array_path(array_path)?;
+    let session = ReadSession::open(
+        descriptor,
+        DatasetVersion::Snapshot(snapshot_id),
+        containers,
+    )
+    .await?;
+    session
+        .read_inner(array_path, selection, cf_request, false)
+        .await
+}
+
+/// A branch is resolved once; all reads use the resulting immutable snapshot.
+#[derive(Clone, Copy, Debug)]
+pub enum DatasetVersion<'a> {
+    Branch(&'a str),
+    Snapshot(&'a str),
+}
+
+/// Shared readonly Icechunk session. No repository/session is reopened by reads.
+pub struct ReadSession {
+    store: AsyncIcechunkStore,
+    snapshot_id: String,
+}
+impl ReadSession {
+    pub async fn open(
+        descriptor: &StoreDescriptor,
+        version: DatasetVersion<'_>,
+        containers: &[HttpVirtualChunkContainer],
+    ) -> Result<Self, ReaderError> {
+        tokio::time::timeout(
+            Duration::from_secs(90),
+            Self::open_inner(descriptor, version, containers),
+        )
+        .await
+        .map_err(|_| err(ErrorKind::Storage, "Reader timed out after 90 seconds"))?
+    }
+    async fn open_inner(
+        descriptor: &StoreDescriptor,
+        version: DatasetVersion<'_>,
+        containers: &[HttpVirtualChunkContainer],
+    ) -> Result<Self, ReaderError> {
+        let declared_http_prefixes: Vec<String> = containers
+            .iter()
+            .map(|container| container.url_prefix.clone())
+            .collect();
+        let HttpContainers {
+            containers,
+            credentials,
+        } = http_containers(containers)?;
+        let storage = match descriptor {
+            StoreDescriptor::Local(path) => {
+                icechunk::new_local_filesystem_storage(std::path::Path::new(path))
+                    .await
+                    .map_err(|e| err(ErrorKind::Storage, e))?
+            }
+            StoreDescriptor::Http { url } => {
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    return Err(unsupported("Expected HTTP(S) repository URL"));
+                }
+                icechunk::storage::new_http_storage(
+                    url.trim_end_matches('/'),
+                    Some(http_options()),
+                    None,
+                )
+                .map_err(|e| err(ErrorKind::Storage, e))?
+            }
+            StoreDescriptor::AnonymousS3 {
+                bucket,
+                prefix,
+                region,
+            } => icechunk::new_s3_object_store_storage(
+                S3Options::default()
+                    .with_region(region)
+                    .with_anonymous(true),
+                bucket.clone(),
+                Some(prefix.clone()),
+                Some(S3Credentials::Anonymous),
+                vec![],
+                vec![],
+            )
+            .await
+            .map_err(|e| err(ErrorKind::Storage, e))?,
+        };
+        let mut repo = Repository::open(
+            Some(icechunk::RepositoryConfig {
+                // Replace persisted containers, including their headers/options. Merely
+                // opening a repository must never grant access to undeclared locations.
+                virtual_chunk_containers: Some(containers),
+                storage: Some(icechunk::storage::Settings {
+                    retries: Some(icechunk::storage::RetriesSettings {
+                        max_tries: std::num::NonZeroU16::new(2),
+                        initial_backoff_ms: Some(100),
+                        max_backoff_ms: Some(1000),
+                    }),
+                    timeouts: Some(icechunk::storage::TimeoutSettings {
+                        connect_timeout_ms: Some(5000),
+                        read_timeout_ms: Some(20000),
+                        operation_timeout_ms: Some(30000),
+                        operation_attempt_timeout_ms: Some(20000),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            storage,
+            credentials,
+        )
+        .await
+        .map_err(|e| err(ErrorKind::Storage, e))?;
+        if !declared_http_prefixes.is_empty() {
+            repo.set_http_virtual_chunk_fetcher(Arc::new(
+                http::BoundedHttpFetcher::new(declared_http_prefixes)
+                    .map_err(|e| err(ErrorKind::Storage, e))?,
+            ));
+        }
+        let version = match version {
+            DatasetVersion::Snapshot(id) => VersionInfo::SnapshotId(
+                id.try_into()
+                    .map_err(|_| err(ErrorKind::Snapshot, format!("Unknown snapshot {id:?}")))?,
+            ),
+            DatasetVersion::Branch(branch) => VersionInfo::BranchTipRef(branch.into()),
+        };
+        let session = repo.readonly_session(&version).await.map_err(|e| {
+            let missing = matches!(
+                e.kind(),
+                icechunk::repository::RepositoryErrorKind::SnapshotNotFound { .. }
+                    | icechunk::repository::RepositoryErrorKind::FormatError(
+                        icechunk::format::IcechunkFormatErrorKind::SnapshotIdNotFound { .. }
+                    )
+            );
+            match &version {
+                VersionInfo::SnapshotId(id) if missing => err(
+                    ErrorKind::Snapshot,
+                    format!("Unknown snapshot {:?}", id.to_string()),
+                ),
+                _ => err(ErrorKind::Snapshot, e.kind()),
+            }
+        })?;
+        let snapshot_id = session.snapshot_id().to_string();
+        Ok(ReadSession {
+            store: AsyncIcechunkStore::new(session),
+            snapshot_id,
+        })
+    }
+    pub fn snapshot_id(&self) -> &str {
+        &self.snapshot_id
+    }
+
+    /// Root Zarr metadata only (no chunk enumeration), charged before copying
+    /// each serialized metadata object into the result. The Icechunk snapshot's
+    /// upstream allocation is outside this bound; see the reader README.
+    pub async fn root_metadata(
+        &self,
+        max_bytes: usize,
+    ) -> Result<BTreeMap<String, Vec<u8>>, ReaderError> {
+        tokio::time::timeout(Duration::from_secs(90), async {
+            let session = self.store.session();
+            let session = session.read().await;
+            let nodes = session
+                .list_nodes(&icechunk::format::Path::root())
+                .await
+                .map_err(|e| err(ErrorKind::Storage, e))?;
+            let mut result = BTreeMap::new();
+            let mut used = 0usize;
+            for node in nodes {
+                let node = node.map_err(|e| err(ErrorKind::Storage, e))?;
+                let path = node.path.to_string();
+                let name = path.trim_matches('/');
+                if name.contains('/') {
+                    continue;
+                }
+                // Shape/dimension names live outside user_data in Icechunk.
+                // Charge their reconstructed JSON before asking the store to
+                // serialize it. Escaped strings need at most six bytes/scalar.
+                let extra = if let icechunk::format::snapshot::NodeData::Array {
+                    shape,
+                    dimension_names,
+                    ..
+                } = &node.node_data
+                {
+                    let mut extra = shape.len().checked_mul(64);
+                    if let Some(names) = dimension_names {
+                        for name in names {
+                            let length = match name {
+                                icechunk::format::snapshot::DimensionName::Name(name) => name.len(),
+                                _ => 4,
+                            };
+                            extra = extra.and_then(|n| {
+                                length
+                                    .checked_mul(6)
+                                    .and_then(|len| len.checked_add(8))
+                                    .and_then(|len| n.checked_add(len))
+                            });
+                        }
+                    }
+                    extra
+                } else {
+                    Some(0)
+                };
+                used = used
+                    .checked_add(node.user_data.len())
+                    .and_then(|v| v.checked_add(name.len() + 96))
+                    .and_then(|v| extra.and_then(|extra| v.checked_add(extra)))
+                    .filter(|v| *v <= max_bytes)
+                    .ok_or_else(|| {
+                        err(
+                            ErrorKind::SizeLimit,
+                            "Opened dataset metadata exceeds byte limit",
+                        )
+                    })?;
+                // user_data is Icechunk's stored Zarr metadata; use the store to
+                // restore dimension names/shape exactly as xarray receives them.
+                let key = if name.is_empty() {
+                    "zarr.json".into()
+                } else {
+                    format!("{name}/zarr.json")
+                };
+                let raw = self
+                    .store
+                    .get(&StoreKey::new(key).map_err(unsupported)?)
+                    .await
+                    .map_err(|e| err(ErrorKind::Storage, e))?
+                    .ok_or_else(|| err(ErrorKind::Storage, "Metadata missing"))?;
+                used = used
+                    .checked_add(raw.len())
+                    .filter(|v| *v <= max_bytes)
+                    .ok_or_else(|| {
+                        err(
+                            ErrorKind::SizeLimit,
+                            "Opened dataset metadata exceeds byte limit",
+                        )
+                    })?;
+                result.insert(name.to_string(), raw.to_vec());
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(|_| err(ErrorKind::Storage, "Reader timed out after 90 seconds"))?
+    }
+
+    /// Broader descriptive metadata/coordinate layouts for the dataset adapter;
+    /// numeric codec, payload, output and selector bounds are unchanged.
+    pub async fn read_dataset_selection(
+        &self,
+        array_path: &str,
+        selection: &[Selector],
+        cf: Option<&cf_time::Request>,
+    ) -> Result<TypedBuffer, ReaderError> {
+        tokio::time::timeout(
+            Duration::from_secs(90),
+            self.read_inner(array_path, selection, cf, true),
+        )
+        .await
+        .map_err(|_| err(ErrorKind::Storage, "Reader timed out after 90 seconds"))?
+        .map(|(buffer, _)| buffer)
+    }
+    async fn read_inner(
+        &self,
+        array_path: &str,
+        selection: &[Selector],
+        cf_request: Option<&cf_time::Request>,
+        dataset: bool,
+    ) -> Result<(TypedBuffer, ReadTrace), ReaderError> {
+        validate_array_path(array_path)?;
+        let failure = Arc::new(Mutex::new(None));
+        let result = self
+            .read_array(array_path, selection, cf_request, dataset, failure.clone())
+            .await;
+        result.map_err(|mut error| {
+            if dataset
+                && let Some(failure) = failure.lock().unwrap_or_else(|e| e.into_inner()).take()
+            {
+                error.kind = ErrorKind::Storage;
+                error.virtual_chunk_fetch = failure.virtual_fetch;
+                error.message = failure.message;
+                error.exception_class = Some(failure.exception_class);
+            }
+            error
+        })
+    }
+    async fn read_array(
+        &self,
+        array_path: &str,
+        selection: &[Selector],
+        cf_request: Option<&cf_time::Request>,
+        dataset: bool,
+        failure: Arc<Mutex<Option<StorageFailure>>>,
+    ) -> Result<(TypedBuffer, ReadTrace), ReaderError> {
+        let trace = Arc::new(Mutex::new(ReadTrace::default()));
+        let store = Arc::new(ObservedStore {
+            inner: AsyncIcechunkStore::from(self.store.session()),
+            failure,
+            trace: trace.clone(),
+            payload: std::sync::OnceLock::new(),
+            index: Mutex::new(None),
+        });
+        let key = StoreKey::new(format!("{array_path}/zarr.json"))
+            .map_err(|e| unsupported(e.to_string()))?;
+        let raw = store
+            .get(&key)
+            .await
+            .map_err(|e| err(ErrorKind::Storage, e))?
+            .ok_or_else(|| err(ErrorKind::Storage, "Array metadata missing"))?;
+        let meta: Value = serde_json::from_slice(&raw).map_err(|e| unsupported(e.to_string()))?;
+        let cap = if dataset {
+            attest_with_mode(&meta, array_path, true)?
+        } else {
+            attest(&meta, array_path)?
+        };
+        refuse_bounds_targets(&store, array_path).await?;
+        store
+            .payload
+            .set(PayloadPolicy::from_metadata(&meta, &cap)?)
+            .map_err(|_| err(ErrorKind::Storage, "Payload policy already set"))?;
+        let requested = prepare(&cap, selection)?;
+        let full_selection = if let Some(request) = cf_request {
+            if request.revision != cf_time::REVISION {
+                return Err(unsupported("Unattested CF revision"));
+            }
+            match cf_time::attested_encoding(&cap.dtype, &request.attributes)? {
+                cf_time::Encoding::DurationSeconds
+                    if meta["dimension_names"]
+                        == json!([array_path.rsplit('/').next().unwrap()]) =>
+                {
+                    let size = usize::try_from(cap.shape[0])
+                        .map_err(|_| err(ErrorKind::SizeLimit, "CF decoding unit too large"))?;
+                    if size > MAX_SELECTORS || size > MAX_OUTPUT_BYTES / cap.width {
+                        return Err(err(ErrorKind::SizeLimit, "CF decoding unit too large"));
+                    }
+                    Some(vec![Selector::Indices((0..size as i64).collect())])
+                }
+                // Auxiliary variables decode lazily after isel in xarray. Integer
+                // epochs have no value-dependent context, so selection is safe too.
+                cf_time::Encoding::DurationSeconds | cf_time::Encoding::EpochSeconds => None,
+            }
+        } else {
+            None
+        };
+        let requested_selection = selection;
+        let selection = full_selection.as_deref().unwrap_or(selection);
+        let prepared = prepare(&cap, selection)?;
+        let mut bytes = vec![0u8; prepared.elements * cap.width];
+        trace.lock().unwrap_or_else(|e| e.into_inner()).output_bytes = bytes.len();
+        if cap.shape.is_empty() {
+            let key = StoreKey::new(format!("{array_path}/c")).map_err(unsupported)?;
+            bytes = match store
+                .get(&key)
+                .await
+                .map_err(|e| err(ErrorKind::Decode, e))?
+            {
+                Some(encoded) => {
+                    decode_scalar_zstd(&encoded).map_err(|e| err(ErrorKind::Decode, e))?
+                }
+                None => meta["fill_value"]
+                    .as_i64()
+                    .ok_or_else(|| unsupported("Invalid int64 fill"))?
+                    .to_le_bytes()
+                    .to_vec(),
+            };
+            let mut trace = trace.lock().unwrap_or_else(|e| e.into_inner());
+            trace.decoded_inner_chunks.push(vec![]);
+            trace.decoded_bytes = 8;
+            trace.subset_bytes = 8;
+            trace.max_concurrent_chunks = 1;
+        } else if prepared.elements > 0 {
+            let array = Array::async_open(store.clone(), &format!("/{array_path}"))
+                .await
+                .map_err(|e| unsupported(e.to_string()))?;
+            let options = CodecOptions::default().with_concurrent_target(1);
+            let sizes: Vec<_> = prepared.groups.iter().map(Vec::len).collect();
+            let mut position = vec![0; sizes.len()];
+            loop {
+                let chosen: Vec<_> = prepared
+                    .groups
+                    .iter()
+                    .zip(&position)
+                    .map(|(g, p)| &g[*p])
+                    .collect();
+                let chunk: Vec<_> = chosen.iter().map(|g| g.0).collect();
+                let start: Vec<_> = chunk.iter().zip(&cap.inner).map(|(i, n)| i * n).collect();
+                let shape: Vec<_> = start
+                    .iter()
+                    .zip(&cap.inner)
+                    .zip(&cap.shape)
+                    .map(|((s, n), b)| (*n).min(b - s))
+                    .collect();
+                let subset = ArraySubset::new_with_start_shape(start, shape.clone())
+                    .map_err(|e| err(ErrorKind::Decode, e))?;
+                // The codec has already decoded the admitted numeric dtype to
+                // native-endian fixed bytes. Avoid a separate generic retrieval
+                // future and typed-buffer copy for each integer/float width.
+                let decoded = array
+                    .async_retrieve_array_subset_opt::<ArrayBytes<'static>>(&subset, &options)
+                    .await
+                    .map_err(|e| err(ErrorKind::Decode, e))?
+                    .into_fixed()
+                    .map_err(|e| err(ErrorKind::Decode, e))?
+                    .into_owned();
+                #[cfg(target_endian = "big")]
+                let decoded = {
+                    let mut decoded = decoded;
+                    for element in decoded.chunks_exact_mut(cap.width) {
+                        element.reverse();
+                    }
+                    decoded
+                };
+                let count = checked_bytes(&shape, cap.width, cap.chunk_limit())?;
+                if decoded.len() != count {
+                    return Err(err(
+                        ErrorKind::Decode,
+                        "Decoded byte length differs from shape",
+                    ));
+                }
+                {
+                    let mut trace = trace.lock().unwrap_or_else(|e| e.into_inner());
+                    trace.decoded_inner_chunks.push(chunk);
+                    trace.decoded_bytes = trace
+                        .decoded_bytes
+                        .checked_add(checked_bytes(&cap.inner, cap.width, cap.chunk_limit())?)
+                        .ok_or_else(|| err(ErrorKind::SizeLimit, "Decoded work overflow"))?;
+                    trace.subset_bytes = trace
+                        .subset_bytes
+                        .checked_add(count)
+                        .ok_or_else(|| err(ErrorKind::SizeLimit, "Subset byte count overflow"))?;
+                    trace.max_concurrent_chunks = 1;
+                }
+                let scatter_sizes: Vec<_> = chosen.iter().map(|g| g.1.len()).collect();
+                let mut scatter = vec![0; sizes.len()];
+                loop {
+                    let mut output = 0usize;
+                    let mut source = 0usize;
+                    for d in 0..sizes.len() {
+                        let (out, index) = chosen[d].1[scatter[d]];
+                        source = source * (shape[d] as usize) + (index as usize);
+                        if let Selector::Indices(v) = &selection[d] {
+                            output = output * v.len() + out;
+                        }
+                    }
+                    bytes[output * cap.width..(output + 1) * cap.width]
+                        .copy_from_slice(&decoded[source * cap.width..(source + 1) * cap.width]);
+                    if !advance(&mut scatter, &scatter_sizes) {
+                        break;
+                    }
+                }
+                if !advance(&mut position, &sizes) {
+                    break;
+                }
+            }
+        }
+        drop(store);
+        let trace = Arc::try_unwrap(trace)
+            .map_err(|_| err(ErrorKind::Storage, "Trace still shared"))?
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut buffer = TypedBuffer {
+            dtype: cap.dtype,
+            shape: prepared.shape,
+            bytes,
+        };
+        let mut trace = trace;
+        if let Some(request) = cf_request {
+            buffer = cf_time::decode(buffer, request)?;
+            if full_selection.is_some() {
+                // prepare() already checked every index and the selected output size.
+                let indices = match &requested_selection[0] {
+                    Selector::Index(index) => std::slice::from_ref(index),
+                    Selector::Indices(indices) => indices.as_slice(),
+                };
+                let mut bytes = Vec::with_capacity(requested.elements * 8);
+                for index in indices {
+                    let offset = *index as usize * 8;
+                    bytes.extend_from_slice(&buffer.bytes[offset..offset + 8]);
+                }
+                buffer.shape = requested.shape;
+                buffer.bytes = bytes;
+            }
+        }
+        trace.output_bytes = buffer.bytes.len();
+        Ok((buffer, trace))
+    }
+}
+
+fn validate_array_path(array_path: &str) -> Result<(), ReaderError> {
     if array_path.is_empty()
         || array_path
             .split('/')
             .any(|p| p.is_empty() || p == "." || p == "..")
     {
-        return Err(unsupported("Expected relative array path"));
-    }
-    let declared_http_prefixes: Vec<String> = containers
-        .iter()
-        .map(|container| container.url_prefix.clone())
-        .collect();
-    let HttpContainers {
-        containers,
-        credentials,
-    } = http_containers(containers)?;
-    let storage = match descriptor {
-        StoreDescriptor::Local(path) => {
-            icechunk::new_local_filesystem_storage(std::path::Path::new(path))
-                .await
-                .map_err(|e| err(ErrorKind::Storage, e))?
-        }
-        StoreDescriptor::Http { url } => {
-            if !(url.starts_with("https://") || url.starts_with("http://")) {
-                return Err(unsupported("Expected HTTP(S) repository URL"));
-            }
-            icechunk::storage::new_http_storage(
-                url.trim_end_matches('/'),
-                Some(http_options()),
-                None,
-            )
-            .map_err(|e| err(ErrorKind::Storage, e))?
-        }
-        StoreDescriptor::AnonymousS3 {
-            bucket,
-            prefix,
-            region,
-        } => icechunk::new_s3_object_store_storage(
-            S3Options::default()
-                .with_region(region)
-                .with_anonymous(true),
-            bucket.clone(),
-            Some(prefix.clone()),
-            Some(S3Credentials::Anonymous),
-            vec![],
-            vec![],
-        )
-        .await
-        .map_err(|e| err(ErrorKind::Storage, e))?,
-    };
-    let mut repo = Repository::open(
-        Some(icechunk::RepositoryConfig {
-            // Replace persisted containers, including their headers/options. Merely
-            // opening a repository must never grant access to undeclared locations.
-            virtual_chunk_containers: Some(containers),
-            storage: Some(icechunk::storage::Settings {
-                retries: Some(icechunk::storage::RetriesSettings {
-                    max_tries: std::num::NonZeroU16::new(2),
-                    initial_backoff_ms: Some(100),
-                    max_backoff_ms: Some(1000),
-                }),
-                timeouts: Some(icechunk::storage::TimeoutSettings {
-                    connect_timeout_ms: Some(5000),
-                    read_timeout_ms: Some(20000),
-                    operation_timeout_ms: Some(30000),
-                    operation_attempt_timeout_ms: Some(20000),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        storage,
-        credentials,
-    )
-    .await
-    .map_err(|e| err(ErrorKind::Storage, e))?;
-    if !declared_http_prefixes.is_empty() {
-        repo.set_http_virtual_chunk_fetcher(Arc::new(
-            http::BoundedHttpFetcher::new(declared_http_prefixes)
-                .map_err(|e| err(ErrorKind::Storage, e))?,
-        ));
-    }
-    let session = repo
-        .readonly_session(&VersionInfo::SnapshotId(snapshot))
-        .await
-        .map_err(|e| err(ErrorKind::Snapshot, e))?;
-    let trace = Arc::new(Mutex::new(ReadTrace::default()));
-    let store = Arc::new(ObservedStore {
-        inner: AsyncIcechunkStore::new(session),
-        trace: trace.clone(),
-        payload: std::sync::OnceLock::new(),
-        index: Mutex::new(None),
-    });
-    let key =
-        StoreKey::new(format!("{array_path}/zarr.json")).map_err(|e| unsupported(e.to_string()))?;
-    let raw = store
-        .get(&key)
-        .await
-        .map_err(|e| err(ErrorKind::Storage, e))?
-        .ok_or_else(|| err(ErrorKind::Storage, "Array metadata missing"))?;
-    let meta: Value = serde_json::from_slice(&raw).map_err(|e| unsupported(e.to_string()))?;
-    let cap = attest(&meta, array_path)?;
-    refuse_bounds_targets(&store, array_path).await?;
-    store
-        .payload
-        .set(PayloadPolicy::from_metadata(&meta, &cap)?)
-        .map_err(|_| err(ErrorKind::Storage, "Payload policy already set"))?;
-    let requested = prepare(&cap, selection)?;
-    let full_selection = if let Some(request) = cf_request {
-        if request.revision != cf_time::REVISION {
-            return Err(unsupported("Unattested CF revision"));
-        }
-        match cf_time::attested_encoding(&cap.dtype, &request.attributes)? {
-            cf_time::Encoding::DurationSeconds
-                if meta["dimension_names"] == json!([array_path.rsplit('/').next().unwrap()]) =>
-            {
-                let size = usize::try_from(cap.shape[0])
-                    .map_err(|_| err(ErrorKind::SizeLimit, "CF decoding unit too large"))?;
-                if size > MAX_SELECTORS || size > MAX_OUTPUT_BYTES / cap.width {
-                    return Err(err(ErrorKind::SizeLimit, "CF decoding unit too large"));
-                }
-                Some(vec![Selector::Indices((0..size as i64).collect())])
-            }
-            // Auxiliary variables decode lazily after isel in xarray. Integer
-            // epochs have no value-dependent context, so selection is safe too.
-            cf_time::Encoding::DurationSeconds | cf_time::Encoding::EpochSeconds => None,
-        }
+        Err(unsupported("Expected relative array path"))
     } else {
-        None
-    };
-    let requested_selection = selection;
-    let selection = full_selection.as_deref().unwrap_or(selection);
-    let prepared = prepare(&cap, selection)?;
-    let mut bytes = vec![0u8; prepared.elements * cap.width];
-    trace.lock().unwrap_or_else(|e| e.into_inner()).output_bytes = bytes.len();
-    if cap.shape.is_empty() {
-        let key = StoreKey::new(format!("{array_path}/c")).map_err(unsupported)?;
-        bytes = match store
-            .get(&key)
-            .await
-            .map_err(|e| err(ErrorKind::Decode, e))?
-        {
-            Some(encoded) => decode_scalar_zstd(&encoded).map_err(|e| err(ErrorKind::Decode, e))?,
-            None => meta["fill_value"]
-                .as_i64()
-                .ok_or_else(|| unsupported("Invalid int64 fill"))?
-                .to_le_bytes()
-                .to_vec(),
-        };
-        let mut trace = trace.lock().unwrap_or_else(|e| e.into_inner());
-        trace.decoded_inner_chunks.push(vec![]);
-        trace.decoded_bytes = 8;
-        trace.subset_bytes = 8;
-        trace.max_concurrent_chunks = 1;
-    } else if prepared.elements > 0 {
-        let array = Array::async_open(store.clone(), &format!("/{array_path}"))
-            .await
-            .map_err(|e| unsupported(e.to_string()))?;
-        let options = CodecOptions::default().with_concurrent_target(1);
-        let sizes: Vec<_> = prepared.groups.iter().map(Vec::len).collect();
-        let mut position = vec![0; sizes.len()];
-        loop {
-            let chosen: Vec<_> = prepared
-                .groups
-                .iter()
-                .zip(&position)
-                .map(|(g, p)| &g[*p])
-                .collect();
-            let chunk: Vec<_> = chosen.iter().map(|g| g.0).collect();
-            let start: Vec<_> = chunk.iter().zip(&cap.inner).map(|(i, n)| i * n).collect();
-            let shape: Vec<_> = start
-                .iter()
-                .zip(&cap.inner)
-                .zip(&cap.shape)
-                .map(|((s, n), b)| (*n).min(b - s))
-                .collect();
-            let subset = ArraySubset::new_with_start_shape(start, shape.clone())
-                .map_err(|e| err(ErrorKind::Decode, e))?;
-            let decoded = if cap.width == 4 {
-                array
-                    .async_retrieve_array_subset_opt::<Vec<f32>>(&subset, &options)
-                    .await
-                    .map_err(|e| err(ErrorKind::Decode, e))?
-                    .into_iter()
-                    .flat_map(f32::to_le_bytes)
-                    .collect::<Vec<_>>()
-            } else if cap.dtype == "int64" {
-                array
-                    .async_retrieve_array_subset_opt::<Vec<i64>>(&subset, &options)
-                    .await
-                    .map_err(|e| err(ErrorKind::Decode, e))?
-                    .into_iter()
-                    .flat_map(i64::to_le_bytes)
-                    .collect::<Vec<_>>()
-            } else {
-                array
-                    .async_retrieve_array_subset_opt::<Vec<f64>>(&subset, &options)
-                    .await
-                    .map_err(|e| err(ErrorKind::Decode, e))?
-                    .into_iter()
-                    .flat_map(f64::to_le_bytes)
-                    .collect::<Vec<_>>()
-            };
-            let count = checked_bytes(&shape, cap.width, cap.chunk_limit())?;
-            if decoded.len() != count {
-                return Err(err(
-                    ErrorKind::Decode,
-                    "Decoded byte length differs from shape",
-                ));
-            }
-            {
-                let mut trace = trace.lock().unwrap_or_else(|e| e.into_inner());
-                trace.decoded_inner_chunks.push(chunk);
-                trace.decoded_bytes = trace
-                    .decoded_bytes
-                    .checked_add(checked_bytes(&cap.inner, cap.width, cap.chunk_limit())?)
-                    .ok_or_else(|| err(ErrorKind::SizeLimit, "Decoded work overflow"))?;
-                trace.subset_bytes = trace
-                    .subset_bytes
-                    .checked_add(count)
-                    .ok_or_else(|| err(ErrorKind::SizeLimit, "Subset byte count overflow"))?;
-                trace.max_concurrent_chunks = 1;
-            }
-            let scatter_sizes: Vec<_> = chosen.iter().map(|g| g.1.len()).collect();
-            let mut scatter = vec![0; sizes.len()];
-            loop {
-                let mut output = 0usize;
-                let mut source = 0usize;
-                for d in 0..sizes.len() {
-                    let (out, index) = chosen[d].1[scatter[d]];
-                    source = source * (shape[d] as usize) + (index as usize);
-                    if let Selector::Indices(v) = &selection[d] {
-                        output = output * v.len() + out;
-                    }
-                }
-                bytes[output * cap.width..(output + 1) * cap.width]
-                    .copy_from_slice(&decoded[source * cap.width..(source + 1) * cap.width]);
-                if !advance(&mut scatter, &scatter_sizes) {
-                    break;
-                }
-            }
-            if !advance(&mut position, &sizes) {
-                break;
-            }
-        }
+        Ok(())
     }
-    drop(store);
-    let trace = Arc::try_unwrap(trace)
-        .map_err(|_| err(ErrorKind::Storage, "Trace still shared"))?
-        .into_inner()
-        .unwrap_or_else(|e| e.into_inner());
-    let mut buffer = TypedBuffer {
-        dtype: cap.dtype,
-        shape: prepared.shape,
-        bytes,
-    };
-    let mut trace = trace;
-    if let Some(request) = cf_request {
-        buffer = cf_time::decode(buffer, request)?;
-        if full_selection.is_some() {
-            // prepare() already checked every index and the selected output size.
-            let indices = match &requested_selection[0] {
-                Selector::Index(index) => std::slice::from_ref(index),
-                Selector::Indices(indices) => indices.as_slice(),
-            };
-            let mut bytes = Vec::with_capacity(requested.elements * 8);
-            for index in indices {
-                let offset = *index as usize * 8;
-                bytes.extend_from_slice(&buffer.bytes[offset..offset + 8]);
-            }
-            buffer.shape = requested.shape;
-            buffer.bytes = bytes;
-        }
-    }
-    trace.output_bytes = buffer.bytes.len();
-    Ok((buffer, trace))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_virtual_failure_retains_source_diagnostics() {
+        use icechunk::format::manifest::VirtualReferenceErrorKind;
+        use icechunk::{
+            session::SessionErrorKind,
+            store::{StoreError, StoreErrorKind},
+        };
+        for diagnostic in [
+            "operation timeout (all attempts including retries) occurred after 20s",
+            "Error { code: \"SlowDown\", message: \"synthetic\" }",
+        ] {
+            let error = StoreError::capture(StoreErrorKind::SessionError(
+                SessionErrorKind::VirtualReferenceError(VirtualReferenceErrorKind::FetchError(
+                    Box::new(std::io::Error::other(diagnostic)),
+                )),
+            ));
+            let failure = storage_failure(&error);
+            assert!(failure.virtual_fetch);
+            assert!(failure.message.contains(diagnostic));
+            assert_eq!(failure.exception_class, "StorageError");
+            let generic = StoreError::capture(StoreErrorKind::Other(diagnostic.into()));
+            assert!(!storage_failure(&generic).virtual_fetch);
+        }
+        let permanent = StoreError::capture(StoreErrorKind::SessionError(
+            SessionErrorKind::VirtualReferenceError(VirtualReferenceErrorKind::NoContainerForName(
+                "synthetic".into(),
+            )),
+        ));
+        assert!(!storage_failure(&permanent).virtual_fetch);
+        assert_eq!(
+            storage_failure(&permanent).exception_class,
+            "InvalidInputError"
+        );
+    }
     #[test]
     fn checked_work_and_output() {
         assert!(product([usize::MAX, 2], usize::MAX).is_err());

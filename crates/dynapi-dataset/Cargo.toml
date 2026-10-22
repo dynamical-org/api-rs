@@ -1,0 +1,20 @@
+[package]
+name = "dynapi-dataset"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[dependencies]
+dynapi-reader = { path = "../dynapi-reader" }
+dynapi-query = { path = "../dynapi-query" }
+dynapi-contract = { path = "../dynapi-contract" }
+tokio = { workspace = true, features = ["sync"] }
+serde_json = { workspace = true, features = ["arbitrary_precision", "preserve_order", "float_roundtrip"] }
+
+serde.workspace = true
+
+[dev-dependencies]
+sha2 = "0.10"
+icechunk.workspace = true
+tempfile = "3"

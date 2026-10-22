@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dynapi-catalog", "crates/dynapi-reader", "crates/dynapi-read", "crates/dynapi-contract", "crates/dynapi-policy", "crates/dynapi-server", "crates/dynapi-query"]
+members = ["crates/dynapi-catalog", "crates/dynapi-reader", "crates/dynapi-read", "crates/dynapi-contract", "crates/dynapi-policy", "crates/dynapi-server", "crates/dynapi-query", "crates/dynapi-dataset"]
 resolver = "2"
 
 [workspace.dependencies]

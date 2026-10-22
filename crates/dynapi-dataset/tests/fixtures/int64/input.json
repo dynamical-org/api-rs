@@ -1,0 +1,309 @@
+{
+  "name": "int64",
+  "snapshot_id": "1TANDC1TA1XP39XE2ZEG",
+  "kind": "forecast",
+  "collection": {
+    "id": "fixture-int64",
+    "title": "Synthetic fixture",
+    "description": "Synthetic only",
+    "version": "1.2.3",
+    "license": "CC-BY-4.0",
+    "extent": {
+      "spatial": {
+        "bbox": [
+          [
+            -180,
+            -90,
+            180,
+            90
+          ]
+        ]
+      }
+    },
+    "cube:dimensions": {
+      "init_time": {
+        "type": "temporal"
+      },
+      "lead_time": {
+        "type": "other"
+      },
+      "latitude": {
+        "type": "other"
+      },
+      "longitude": {
+        "type": "other"
+      }
+    },
+    "cube:variables": {
+      "temperature_2m": {
+        "type": "data",
+        "dimensions": [
+          "init_time",
+          "lead_time",
+          "latitude",
+          "longitude"
+        ],
+        "unit": "degree_Celsius"
+      },
+      "count": {
+        "type": "data",
+        "dimensions": [
+          "init_time",
+          "lead_time",
+          "latitude",
+          "longitude"
+        ],
+        "unit": null
+      },
+      "static": {
+        "type": "data",
+        "dimensions": [
+          "latitude",
+          "longitude"
+        ],
+        "unit": "m"
+      }
+    },
+    "assets": {
+      "icechunk": {
+        "href": "s3://synthetic-fixture/int64/v1.2.3.icechunk/",
+        "xarray:storage_options": {
+          "client_kwargs": {
+            "region_name": "us-west-2"
+          }
+        }
+      }
+    },
+    "links": [
+      {
+        "rel": "self",
+        "href": "https://example.invalid/int64/collection.json"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "0",
+      "queries": [
+        {
+          "dataProductId": "fixture-int64",
+          "queryId": "query \u03b2 0",
+          "location": {
+            "latitude": 44,
+            "longitude": 0
+          },
+          "variables": [
+            "temperature_2m",
+            "count",
+            "static"
+          ],
+          "initTime": "2026-07-30T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "name": "1",
+      "queries": [
+        {
+          "dataProductId": "fixture-int64",
+          "queryId": "query \u03b2 1",
+          "location": {
+            "latitude": 40.9,
+            "longitude": -180
+          },
+          "variables": [
+            "temperature_2m",
+            "count",
+            "static"
+          ],
+          "initTime": "latest",
+          "maxLeadTimeHours": 2
+        }
+      ]
+    },
+    {
+      "name": "2",
+      "queries": [
+        {
+          "dataProductId": "fixture-int64",
+          "queryId": "query \u03b2 2",
+          "location": {
+            "latitude": 44,
+            "longitude": 0
+          },
+          "variables": [
+            "temperature_2m",
+            "count",
+            "static"
+          ],
+          "initTime": null,
+          "initTimesAfter": "2026-07-29T23:00:00Z",
+          "initTimesBefore": "2026-07-30T07:00:00Z"
+        }
+      ]
+    },
+    {
+      "name": "3",
+      "queries": [
+        {
+          "dataProductId": "fixture-int64",
+          "queryId": "query \u03b2 3",
+          "location": {
+            "latitude": 40.9,
+            "longitude": -180
+          },
+          "variables": [
+            "temperature_2m",
+            "count",
+            "static"
+          ],
+          "initTime": "latest",
+          "maxLeadTimeHours": 2,
+          "validTimeStart": "2026-07-30T07:00:00Z",
+          "validTimeEnd": "2026-07-30T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "name": "batch",
+      "queries": [
+        {
+          "dataProductId": "fixture-int64",
+          "queryId": "query \u03b2 0",
+          "location": {
+            "latitude": 44,
+            "longitude": 0
+          },
+          "variables": [
+            "temperature_2m",
+            "count",
+            "static"
+          ],
+          "initTime": "2026-07-30T00:00:00Z"
+        },
+        {
+          "dataProductId": "fixture-int64",
+          "queryId": "query \u03b2 1",
+          "location": {
+            "latitude": 40.9,
+            "longitude": -180
+          },
+          "variables": [
+            "temperature_2m",
+            "count",
+            "static"
+          ],
+          "initTime": "latest",
+          "maxLeadTimeHours": 2
+        }
+      ]
+    }
+  ],
+  "reads": [
+    {
+      "variable": "temperature_2m",
+      "positions": {
+        "init_time": 1,
+        "lead_time": [
+          4,
+          1,
+          4,
+          0
+        ],
+        "latitude": 1,
+        "longitude": [
+          5,
+          0,
+          5
+        ],
+        "ensemble_member": [
+          2,
+          0,
+          2
+        ],
+        "time": [
+          4,
+          1,
+          4
+        ],
+        "y": 1,
+        "x": [
+          5,
+          0,
+          5
+        ],
+        "ignored": 42
+      }
+    },
+    {
+      "variable": "count",
+      "positions": {
+        "init_time": 1,
+        "lead_time": [
+          4,
+          1,
+          4,
+          0
+        ],
+        "latitude": 1,
+        "longitude": [
+          5,
+          0,
+          5
+        ],
+        "ensemble_member": [
+          2,
+          0,
+          2
+        ],
+        "time": [
+          4,
+          1,
+          4
+        ],
+        "y": 1,
+        "x": [
+          5,
+          0,
+          5
+        ],
+        "ignored": 42
+      }
+    },
+    {
+      "variable": "static",
+      "positions": {
+        "init_time": 1,
+        "lead_time": [
+          4,
+          1,
+          4,
+          0
+        ],
+        "latitude": 1,
+        "longitude": [
+          5,
+          0,
+          5
+        ],
+        "ensemble_member": [
+          2,
+          0,
+          2
+        ],
+        "time": [
+          4,
+          1,
+          4
+        ],
+        "y": 1,
+        "x": [
+          5,
+          0,
+          5
+        ],
+        "ignored": 42
+      }
+    }
+  ]
+}
