@@ -1,5 +1,6 @@
 //! Private, unwired GRIB2 data decoder. No transport or product admission.
 
+mod ccsds;
 mod preflight;
 
 pub(super) const MAX_ENCODED_BYTES: usize = 32 * 1024 * 1024;
@@ -155,8 +156,8 @@ pub(super) fn decode(encoded: &[u8], profile: Profile<'_>) -> Result<Decoded, Er
     let checked = preflight::validate(encoded, profile)?;
     let message = gribberish::message::Message::from_data(encoded, 0).ok_or(Error::Decoder)?;
     let mut values = message.data().map_err(|_| Error::Decoder)?;
-    // Preflight has already established exact counts before resize can hide a
-    // mismatch. This is a defensive check, not the allocation boundary.
+    // Preflight establishes exact streamed counts or the explicit true-zero
+    // profile whose resize is qualified. This check is defensive, not admission.
     if values.len() != checked.nx * checked.ny {
         return Err(Error::Decoder);
     }

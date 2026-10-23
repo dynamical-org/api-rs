@@ -1,4 +1,6 @@
 use super::*;
+mod ccsds_oracle;
+mod ccsds_tests;
 mod fixtures;
 use fixtures::*;
 
@@ -147,7 +149,7 @@ fn constant_and_other_templates_rejected_before_upstream() {
         decode(&bytes, profile(&[2, 3])).unwrap_err(),
         Error::Unsupported("zero spatial descriptor octets")
     );
-    for template in [2, 40, 41, 42] {
+    for template in [2, 40, 41] {
         bytes[p + 9..p + 11].copy_from_slice(&(template as u16).to_be_bytes());
         assert_eq!(
             decode(&bytes, profile(&[2, 3])).unwrap_err(),

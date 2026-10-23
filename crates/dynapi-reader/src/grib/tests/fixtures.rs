@@ -88,12 +88,12 @@ pub(super) fn profile(shape: &[usize]) -> Profile<'_> {
 }
 
 #[derive(Default)]
-struct Bits {
+pub(super) struct Bits {
     bytes: Vec<u8>,
     length: usize,
 }
 impl Bits {
-    fn push(&mut self, value: u32, width: u8) {
+    pub(super) fn push(&mut self, value: u32, width: u8) {
         for bit in (0..width).rev() {
             if self.length.is_multiple_of(8) {
                 self.bytes.push(0);
@@ -104,6 +104,47 @@ impl Bits {
     }
     fn align(&mut self) {
         self.length = self.length.div_ceil(8) * 8;
+    }
+    pub(super) fn unary(&mut self, zeros: usize) {
+        self.length += zeros;
+        self.bytes.resize(self.length.div_ceil(8), 0);
+        self.push(1, 1);
+    }
+    pub(super) fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+pub(super) fn ccsds(ny: usize, nx: usize, width: u8, payload: Vec<u8>) -> Vec<u8> {
+    let mut packing = section(5, 25);
+    u32_at(&mut packing, 5, (ny * nx) as u32);
+    packing[10] = 42;
+    packing[19] = width;
+    packing[21..25].copy_from_slice(&[14, 32, 0, 128]);
+    let mut mask = section(6, 6);
+    mask[5] = 255;
+    assemble(grid(ny, nx, 0), packing, mask, payload)
+}
+
+pub(super) fn ccsds_uncompressed(width: u8, values: &[u32]) -> Vec<u8> {
+    assert!(values.len().is_multiple_of(32));
+    let id = ccsds_id_width(width);
+    let mut bits = Bits::default();
+    for block in values.chunks_exact(32) {
+        bits.push((1 << id) - 1, id);
+        for &value in block {
+            bits.push(value, width);
+        }
+    }
+    bits.finish()
+}
+
+pub(super) fn ccsds_id_width(width: u8) -> u8 {
+    match width {
+        2..=3 => 1,
+        4 => 2,
+        5..=8 => 3,
+        _ => 4,
     }
 }
 pub(super) struct Group {
