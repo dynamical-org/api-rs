@@ -583,7 +583,7 @@ until virtual GRIB support is implemented. No new public status is introduced.
   with X. Source phase accounting and owned-input peak witnesses are separate
   evidence from pool/cancellation conservation, allocator fragmentation or RSS.
 
-## D-vwire-1 — One retry authority for virtual HTTP ranges
+## D44 — One retry authority for virtual HTTP ranges
 
 - Trigger: the virtual HTTP range transport sends a request through reqwest and
   object_store.
