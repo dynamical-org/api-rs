@@ -72,7 +72,7 @@ existing compute permit retains both counts until physical work finishes,
 including after disconnect once the dataset worker starts. Cancellation during
 the preceding async catalog or caller-location check releases the slot and
 caller count immediately; any detached location flight retains its separate
-bounded lifetime ([D-fair-1](../DEVIATIONS.md#d-fair-1--cancellation-before-the-dataset-worker-starts)). Origin-authenticated requests without a nonempty
+bounded lifetime ([D42](../DEVIATIONS.md#d42--cancellation-before-the-dataset-worker-starts)). Origin-authenticated requests without a nonempty
 `CF-Connecting-IP` are unidentified and use capacity admission only. Without
 origin authentication, the socket host identifies the caller.
 

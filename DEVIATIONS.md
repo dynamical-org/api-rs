@@ -548,7 +548,7 @@ All three virtual analysis products retain generic HTTP 500 `Internal Server
 Error` before repository I/O, consistent with virtual forecast point serving,
 until virtual GRIB support is implemented. No new public status is introduced.
 
-## D-fair-1 — Cancellation before the dataset worker starts
+## D42 — Cancellation before the dataset worker starts
 
 - Trigger: a data request disconnects after compute admission while awaiting the catalog or caller-location check.
 - Python: admission lives in the handler thread, which keeps its slot and caller count until that check returns.
