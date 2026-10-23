@@ -338,7 +338,7 @@ impl Server {
     pub async fn socket(&self, method: &str, path: &str, body: &Value) -> TcpStream {
         self.socket_with_headers(method, path, &[], body).await
     }
-    async fn socket_with_headers(
+    pub async fn socket_with_headers(
         &self,
         method: &str,
         path: &str,

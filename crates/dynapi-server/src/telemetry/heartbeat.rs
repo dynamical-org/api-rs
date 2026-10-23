@@ -126,6 +126,10 @@ impl Heartbeat {
             "inflightAdmitted": self.admitted.load(Ordering::Relaxed),
             "computeSlotsInUse": gate.in_use, "computeSlots": gate.capacity,
             "oldestSlotAgeSeconds": gate.oldest_age_seconds,
+            "maxCallerSlots": gate.max_caller_slots,
+            "fairShareRefusals": gate.fair_share_refusals,
+            "fairShareWouldRefuseConservative": gate.fair_share_would_refuse_conservative,
+            "capacityRefusals": gate.capacity_refusals,
         });
         if let (Some(old), Some(new)) = (previous.cpu_seconds, current.cpu_seconds) {
             let delta = (new - old).max(0.0);
@@ -225,6 +229,10 @@ mod tests {
             in_use: 1,
             capacity: 6,
             oldest_age_seconds: Some(2.5),
+            max_caller_slots: 1,
+            fair_share_refusals: 2,
+            fair_share_would_refuse_conservative: 1,
+            capacity_refusals: 3,
         }
     }
     #[test]
@@ -246,7 +254,7 @@ mod tests {
         let record = heartbeat.record_delta("fake-container", gate(), &old, &new, 2.0);
         assert_eq!(
             record,
-            json!({"event":"api_container", "container":"fake-container", "inflightAdmitted":1, "computeSlotsInUse":1,"computeSlots":6,"oldestSlotAgeSeconds":2.5,"cpuSecondsDelta":1.0,"cpuUtilization":0.5,"nativeThreads":7,"nrThrottledDelta":2,"throttledUsecDelta":50})
+            json!({"event":"api_container", "container":"fake-container", "inflightAdmitted":1, "computeSlotsInUse":1,"computeSlots":6,"oldestSlotAgeSeconds":2.5,"maxCallerSlots":1,"fairShareRefusals":2,"fairShareWouldRefuseConservative":1,"capacityRefusals":3,"cpuSecondsDelta":1.0,"cpuUtilization":0.5,"nativeThreads":7,"nrThrottledDelta":2,"throttledUsecDelta":50})
         );
         drop(admitted);
         let reset = heartbeat.record_delta("local", gate(), &new, &old, 0.0);

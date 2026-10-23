@@ -106,6 +106,16 @@ does not establish that the edge allows that request.
 | Independent chunks/shards | Bounded concurrency, shared shard-index fetch and adjacent range coalescing qualification | gap | [#15](https://github.com/dynamical-org/api/issues/15); passing response tests do not establish physical I/O efficiency |
 | HEAD, GET, PUT, PATCH, DELETE; plain OPTIONS; slash forms | 405 method/Allow/body/type/length/CORS, plain OPTIONS 204 and slash redirects for GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE without catalog or compute | covered | [public_contract.rs::data_route_methods_plain_options_and_slash_redirects_need_no_catalog_or_compute][public-contract]; public edge reachability remains [#33](https://github.com/dynamical-org/api/issues/33) |
 
+### Per-caller fair-share admission
+
+| Scope | Capability / failure | Status | Evidence |
+| --- | --- | --- | --- |
+| Keyed admission | All occupancy combinations at C=6, atomic fair decision before capacity, bounded caller ownership and release, off/unidentified callers | covered | [fair_share.rs::every_boundary_and_unidentified_caller][fair-policy]; [fair_share.rs::admission_is_atomic_and_drop_restores_counts][fair-policy]; [fair_share.rs::off_and_unidentified_still_count_capacity][fair-policy]; [fair_share.rs::keyed_permit_survives_caller_cancellation_and_unwind_without_leaking_keys][fair-policy] (policy components) |
+| All four data routes | HTTP boundary table; exact fair 429 detail and independent Retry-After, CORS, ordinary failure records; preflight/auth/method/schema/rate before fair, fair before capacity/catalog/location policy | covered | [fair_share.rs::boundary_table_over_http][fair-http]; [fair_share.rs::all_four_routes_return_fair_share_before_catalog_and_geo_and_emit_ordinary_failures][fair-http]; [fair_share.rs::preflight_auth_routing_schema_and_rate_precede_fair_share][fair-http]; [fair_share.rs::fair_share_precedes_location_denial_and_shared_heartbeat_reports_decisions][fair-http] |
+| Caller key / exemptions | Same trusted IP/worker key as rate limiting; missing/empty authenticated IP excluded; unauthenticated socket identity; no-client fallback | covered | [fair_share.rs::identity_is_the_rate_key_with_explicit_identification][fair-policy] (policy); [fair_share.rs::worker_identity_and_unidentified_fallbacks_share_the_rate_key][fair-http] |
+| Cross-route / cancellation | A held worker on each route counts against a request on the forecast route after disconnect, until physical work finishes; pre-admission cancellation takes no slot | covered | [fair_share.rs::every_route_holds_its_caller_after_disconnect_until_physical_work_finishes][fair-http]; [fair_share.rs::cancellation_before_admission_takes_no_caller_slot][fair-http] |
+| Configuration / heartbeat | Small-C defaults inert, explicit activation, invalid B/K/retry rejection, off switch; current maximum identified occupancy and cumulative fair/conservative/capacity decisions | covered | [fair_share.rs::defaults_validation_and_small_capacity][fair-policy]; [fair_share.rs::environment_thresholds_are_validated_even_when_off_and_empty_thresholds_are_unset][fair-http]; [fair_share.rs::off_switch_and_inert_small_capacity_restore_capacity_only_http][fair-http]; [fair_share.rs::telemetry_is_current_occupancy_and_cumulative_decisions_with_conservative_precedence][fair-policy]; [fair_share.rs::fair_share_precedes_location_denial_and_shared_heartbeat_reports_decisions][fair-http] |
+
 ### Representation modes
 
 | Route/method | Mode × capability | Status | Evidence |
@@ -330,3 +340,6 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [geo-gate]: ../crates/dynapi-server/tests/geo_gate.rs
 [geo-gate-component]: ../crates/dynapi-server/src/geo_gate_tests.rs
 [blosc-typesize]: ../crates/dynapi-reader/tests/blosc_typesize.rs
+
+[fair-policy]: ../crates/dynapi-policy/tests/fair_share.rs
+[fair-http]: ../crates/dynapi-server/tests/fair_share.rs

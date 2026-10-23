@@ -78,14 +78,67 @@ impl<C: Clock> RateLimiter<C> {
     }
 }
 
+/// Per-caller admission thresholds. Defaults are inert when capacity is below four.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FairShare {
+    pub busy_slots: usize,
+    pub caller_slots: usize,
+    pub enabled: bool,
+    pub retry_after: u64,
+}
+impl FairShare {
+    pub fn from_settings(
+        capacity: usize,
+        enabled: bool,
+        busy: Option<usize>,
+        caller: Option<usize>,
+        retry_after: u64,
+    ) -> Result<Self, &'static str> {
+        let busy_slots = busy.unwrap_or(capacity.saturating_sub(2));
+        let caller_slots = caller.unwrap_or(2);
+        let share = if busy.is_none() && caller.is_none() && busy_slots < caller_slots {
+            Self {
+                busy_slots: capacity,
+                caller_slots: capacity,
+                enabled: false,
+                retry_after,
+            }
+        } else {
+            Self {
+                busy_slots,
+                caller_slots,
+                enabled,
+                retry_after,
+            }
+        };
+        if share.busy_slots == 0 || share.caller_slots == 0 || retry_after == 0 {
+            return Err("Fair-share thresholds and retry delay must be positive");
+        }
+        if share.busy_slots > capacity {
+            return Err("Fair-share busy slots cannot exceed the compute slots");
+        }
+        Ok(share)
+    }
+}
+#[derive(Debug, PartialEq)]
+pub enum AdmissionRefusal {
+    FairShare { retry_after: u64 },
+    Capacity,
+}
+#[derive(Default, Debug)]
 struct Slots {
     serial: u64,
-    held: BTreeMap<u64, f64>,
+    held: BTreeMap<u64, (f64, Option<String>)>,
+    callers: BTreeMap<String, usize>,
+    fair_share_refusals: u64,
+    conservative_refusals: u64,
+    capacity_refusals: u64,
 }
 pub struct ComputeGate<C> {
     clock: C,
     capacity: usize,
     retry_after: u64,
+    fair_share: Option<FairShare>,
     slots: Arc<Mutex<Slots>>,
 }
 #[derive(Debug, PartialEq)]
@@ -93,16 +146,28 @@ pub struct GateSnapshot {
     pub in_use: usize,
     pub capacity: usize,
     pub oldest_age_seconds: Option<f64>,
+    pub max_caller_slots: usize,
+    pub fair_share_refusals: u64,
+    pub fair_share_would_refuse_conservative: u64,
+    pub capacity_refusals: u64,
 }
 /// Ownership follows the work, including a worker whose caller has cancelled.
 /// There is no public early-release method.
+#[derive(Debug)]
 pub struct Permit {
     slots: Arc<Mutex<Slots>>,
     serial: u64,
 }
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.slots.lock().unwrap().held.remove(&self.serial);
+        let mut slots = self.slots.lock().unwrap();
+        if let Some((_, Some(caller))) = slots.held.remove(&self.serial) {
+            let count = slots.callers.get_mut(&caller).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                slots.callers.remove(&caller);
+            }
+        }
     }
 }
 impl<C: Clock> ComputeGate<C> {
@@ -114,21 +179,60 @@ impl<C: Clock> ComputeGate<C> {
             clock,
             capacity,
             retry_after,
-            slots: Arc::new(Mutex::new(Slots {
-                serial: 0,
-                held: BTreeMap::new(),
-            })),
+            fair_share: None,
+            slots: Arc::new(Mutex::new(Slots::default())),
         })
     }
+    pub fn with_fair_share(mut self, share: FairShare) -> Result<Self, &'static str> {
+        if share.busy_slots == 0
+            || share.busy_slots > self.capacity
+            || share.caller_slots == 0
+            || share.retry_after == 0
+        {
+            return Err("Invalid fair-share thresholds or retry delay");
+        }
+        self.fair_share = Some(share);
+        Ok(self)
+    }
     pub fn try_acquire(&self) -> Option<Permit> {
+        self.acquire(None).ok()
+    }
+    /// Decide fair share and capacity, then acquire, under the same bounded lock.
+    pub fn acquire(&self, caller: Option<&str>) -> Result<Permit, AdmissionRefusal> {
         let mut slots = self.slots.lock().unwrap();
-        if slots.held.len() >= self.capacity {
-            return None;
+        let in_use = slots.held.len();
+        let held = caller
+            .and_then(|key| slots.callers.get(key))
+            .copied()
+            .unwrap_or(0);
+        if let Some(share) = self
+            .fair_share
+            .filter(|share| share.enabled && caller.is_some())
+        {
+            // Strict comparisons avoid overflow for configured maximum thresholds.
+            if in_use > share.busy_slots && held > share.caller_slots {
+                slots.conservative_refusals = slots.conservative_refusals.saturating_add(1);
+            }
+            if in_use >= share.busy_slots && held >= share.caller_slots {
+                slots.fair_share_refusals = slots.fair_share_refusals.saturating_add(1);
+                return Err(AdmissionRefusal::FairShare {
+                    retry_after: share.retry_after,
+                });
+            }
+        }
+        if in_use >= self.capacity {
+            slots.capacity_refusals = slots.capacity_refusals.saturating_add(1);
+            return Err(AdmissionRefusal::Capacity);
         }
         slots.serial += 1;
         let serial = slots.serial;
-        slots.held.insert(serial, self.clock.now());
-        Some(Permit {
+        slots
+            .held
+            .insert(serial, (self.clock.now(), caller.map(str::to_owned)));
+        if let Some(caller) = caller {
+            *slots.callers.entry(caller.into()).or_default() += 1;
+        }
+        Ok(Permit {
             slots: self.slots.clone(),
             serial,
         })
@@ -144,9 +248,13 @@ impl<C: Clock> ComputeGate<C> {
             oldest_age_seconds: slots
                 .held
                 .values()
-                .copied()
+                .map(|(at, _)| *at)
                 .reduce(f64::min)
                 .map(|oldest| (self.clock.now() - oldest).max(0.0)),
+            max_caller_slots: slots.callers.values().copied().max().unwrap_or(0),
+            fair_share_refusals: slots.fair_share_refusals,
+            fair_share_would_refuse_conservative: slots.conservative_refusals,
+            capacity_refusals: slots.capacity_refusals,
         }
     }
 }
@@ -176,6 +284,31 @@ pub fn client_key(
     match cf_worker(worker) {
         Some(worker) => format!("{ip}|{worker}"),
         None => ip.into(),
+    }
+}
+#[derive(Debug, PartialEq)]
+pub struct CallerKey {
+    pub value: String,
+    pub identified: bool,
+}
+pub fn caller_key(
+    peer: Option<&str>,
+    authenticated: bool,
+    connecting_ip: Option<&str>,
+    worker: Option<&str>,
+) -> CallerKey {
+    CallerKey {
+        value: client_key(
+            peer.unwrap_or("unknown"),
+            authenticated,
+            connecting_ip,
+            worker,
+        ),
+        identified: if authenticated {
+            connecting_ip.is_some_and(|ip| !ip.is_empty())
+        } else {
+            peer.is_some()
+        },
     }
 }
 pub fn query_limited(path: &str) -> bool {

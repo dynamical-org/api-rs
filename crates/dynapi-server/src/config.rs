@@ -1,4 +1,4 @@
-use dynapi_policy::RateProfile;
+use dynapi_policy::{FairShare, RateProfile};
 use std::{collections::BTreeMap, env, time::Duration};
 
 pub const MAX_HEADER_FIELDS: usize = 100;
@@ -19,6 +19,7 @@ pub struct Config {
     pub rate: RateProfile,
     pub query_rate: RateProfile,
     pub compute_slots: usize,
+    pub fair_share: FairShare,
     pub max_connections: usize,
     pub header_read_timeout: Duration,
     pub body_read_timeout: Duration,
@@ -143,6 +144,27 @@ impl Config {
                 "DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS must be finite and nonnegative".into(),
             );
         }
+        let compute_slots = usize::try_from(positive("DYNAMICAL_API_COMPUTE_SLOTS", "6")?)
+            .map_err(|_| "DYNAMICAL_API_COMPUTE_SLOTS exceeds platform capacity")?;
+        let threshold = |key: &str| -> Result<Option<usize>, String> {
+            values
+                .get(key)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| format!("Invalid {key}"))
+                })
+                .transpose()
+        };
+        let fair_share = FairShare::from_settings(
+            compute_slots,
+            get("DYNAMICAL_API_FAIR_SHARE", "1") != "0",
+            threshold("DYNAMICAL_API_FAIR_SHARE_BUSY_SLOTS")?,
+            threshold("DYNAMICAL_API_FAIR_SHARE_CALLER_SLOTS")?,
+            positive("DYNAMICAL_API_FAIR_SHARE_RETRY_AFTER_SECONDS", "5")?,
+        )?;
         Ok(Self {
             release,
             public_scheme,
@@ -190,7 +212,8 @@ impl Config {
                 burst: positive("DYNAMICAL_API_QUERY_RATE_LIMIT_BURST", "30")?,
                 max_clients: clients,
             },
-            compute_slots: positive("DYNAMICAL_API_COMPUTE_SLOTS", "6")? as usize,
+            compute_slots,
+            fair_share,
             busy_retry_after: positive("DYNAMICAL_API_BUSY_RETRY_AFTER_SECONDS", "5")?,
             max_response_values: number("DYNAMICAL_API_MAX_RESPONSE_VALUES", "100000")?,
             max_read_values: number("DYNAMICAL_API_MAX_READ_VALUES", "450000000")?,
