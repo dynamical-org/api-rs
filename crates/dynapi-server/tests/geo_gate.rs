@@ -206,11 +206,134 @@ async fn responses_after_identification_are_private_including_validation_errors(
     );
     assert_eq!(proxy.count(), 2);
 }
+fn analysis_payload() -> serde_json::Value {
+    json!({"queries":input("analysis")["cases"][0]["queries"]})
+}
 #[tokio::test]
-async fn run_and_analysis_stubs_gate_before_compute_without_serving_data() {
+async fn runs_and_analyses_admit_before_checks_and_refuse_before_store_work() {
     let proxy = Proxy::start().await;
-    let server = server(&proxy, Some(SECRET), true).await;
-    let analysis = json!({"queries":[{"dataProductId":"fixture-analysis","location":{"latitude":44,"longitude":0},"variables":["count"]}]});
+    for (method, path, body) in [
+        (
+            "GET",
+            "/v1/forecasts/runs?dataProductId=fixture-forecast",
+            json!(null),
+        ),
+        ("POST", "/v1/analyses", analysis_payload()),
+    ] {
+        let server = server(&proxy, Some(SECRET), true).await;
+        let before = proxy.count();
+        let permit = server.app.gate.try_acquire().unwrap();
+        let busy = server
+            .request_with_headers(method, path, &viewer("BB", "R1"), &body)
+            .await;
+        assert_eq!(busy.status, 503);
+        assert_eq!(busy.headers["retry-after"], "5");
+        assert!(!busy.headers.contains_key("cache-control"));
+        assert_eq!(proxy.count(), before);
+        assert!(server.host.reads.paths.lock().unwrap().is_empty());
+        drop(permit);
+        private(
+            &server
+                .request_with_headers(method, path, &viewer("BB", "R1"), &body)
+                .await,
+            451,
+        );
+        assert_eq!(proxy.count(), before + 1);
+        assert!(
+            server
+                .host
+                .reads
+                .paths
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|p| !p.contains("/repository/"))
+        );
+        assert_eq!(server.app.gate.snapshot().in_use, 0);
+        let allowed = server
+            .request_with_headers(method, path, &viewer("AA", "R1"), &body)
+            .await;
+        private(&allowed, 200);
+        if method == "GET" {
+            assert!(!allowed.headers.contains_key("etag"));
+            assert_eq!(allowed.json()["runs"].as_array().unwrap().len(), 2);
+        } else {
+            assert!(allowed.headers.contains_key("etag"));
+            assert_eq!(
+                allowed.json()["results"].as_array().unwrap().len(),
+                body["queries"].as_array().unwrap().len()
+            );
+        }
+        assert_eq!(server.app.gate.snapshot().in_use, 0);
+    }
+}
+#[tokio::test]
+async fn runs_and_analyses_fail_closed_without_geo_configuration_before_store_work() {
+    let proxy = Proxy::start().await;
+    for (method, path, body) in [
+        (
+            "GET",
+            "/v1/forecasts/runs?dataProductId=fixture-forecast",
+            json!(null),
+        ),
+        ("POST", "/v1/analyses", analysis_payload()),
+    ] {
+        let server = server(&proxy, None, true).await;
+        let reply = server
+            .request_with_headers(method, path, &viewer("AA", "R1"), &body)
+            .await;
+        private(&reply, 503);
+        assert_eq!(reply.headers["retry-after"], "5");
+        assert!(
+            server
+                .host
+                .reads
+                .paths
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|p| !p.contains("/repository/"))
+        );
+        assert_eq!(server.app.gate.snapshot().in_use, 0);
+    }
+    assert_eq!(proxy.count(), 0);
+}
+#[tokio::test]
+async fn runs_and_analyses_check_hidden_gated_products_before_type_rejection() {
+    let proxy = Proxy::start().await;
+    let temp = tempfile::tempdir().unwrap();
+    let mut collection = input("forecast")["collection"].clone();
+    collection["cube:dimensions"]
+        .as_object_mut()
+        .unwrap()
+        .remove("init_time");
+    collection["assets"]["icechunk"]["icechunk:virtual_chunk_containers"] = json!([{
+        "url_prefix":"https://wn.dynamical.org/chunks/", "credentials":{"type":"http"}
+    }]);
+    std::fs::write(
+        temp.path().join("collection.json"),
+        serde_json::to_vec(&collection).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("catalog.json"),
+        json!({"links":[{"rel":"child","href":"collection.json"}]}).to_string(),
+    )
+    .unwrap();
+    let server = Server::start_with_catalog_and_root(
+        &[
+            ("DYNAPI_HARNESS_GEO_CHECK_URL", &proxy.url),
+            ("DYNAMICAL_API_GEO_CHECK_SECRET", SECRET),
+            ("DYNAMICAL_API_ORIGIN_SECRET", ORIGIN),
+        ],
+        None,
+        Some(temp.path().to_owned()),
+    )
+    .await;
+    let mut analysis = analysis_payload();
+    for query in analysis["queries"].as_array_mut().unwrap() {
+        query["dataProductId"] = json!("fixture-forecast");
+    }
     for (method, path, body) in [
         (
             "GET",
@@ -219,19 +342,17 @@ async fn run_and_analysis_stubs_gate_before_compute_without_serving_data() {
         ),
         ("POST", "/v1/analyses", analysis),
     ] {
-        let permit = server.app.gate.try_acquire().unwrap();
         private(
             &server
                 .request_with_headers(method, path, &viewer("BB", "R1"), &body)
                 .await,
             451,
         );
-        drop(permit);
         private(
             &server
                 .request_with_headers(method, path, &viewer("AA", "R1"), &body)
                 .await,
-            501,
+            404,
         );
     }
     assert!(

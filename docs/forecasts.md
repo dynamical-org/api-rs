@@ -1,13 +1,44 @@
-# Forecast and canonical point serving
+# Forecast, analysis and canonical point serving
 
-`dynapi-server` serves forecast batches and canonical point links for materialized
-rectilinear products. Both deterministic and ensemble values use the portable
-query engine's ordered JSON and SHA-256 ETags. Analysis data can be read through
-canonical GET; `POST /v1/analyses` remains a stub. Native HRRR Lambert conformal
-and HRDPS rotated-pole grids use the same operation for geographic selection and
-canonical locations, preserving stored y/x indices. Projected selection remains
-unsupported on WASM. Virtual GRIB, representation routing, discovery and run
-listing remain later work.
+`dynapi-server` serves forecast and analysis batches, forecast run listing, and
+canonical point links for materialized rectilinear products. Deterministic and
+ensemble data responses use the portable query engine's ordered JSON and SHA-256
+ETags. Native HRRR Lambert conformal and HRDPS rotated-pole grids use the same
+operation for geographic selection and canonical locations, preserving stored
+y/x indices. Projected selection remains unsupported on WASM. Virtual GRIB and representation routing remain later work.
+
+`POST /v1/analyses` accepts 1–10 queries, each with a product, location, 1–25
+variables and required timezone-aware `startTime`/`endTime`. The UTC elapsed
+window must be positive and at most 31 days. Selection includes start and
+excludes end; result times preserve source order. Responses contain analysis
+times, units, snapshot and canonical/catalog links, plus data or ensemble members.
+Static variables keep their own dimension cardinality. The shared response/read
+budgets apply atomically across a batch before loading, as for forecasts.
+
+`GET /v1/forecasts/runs` requires `dataProductId`, accepts independent strict
+`initTimesAfter`/`initTimesBefore` bounds, and returns newest-first unique init
+times with the opened snapshot. Limit defaults to 20 and accepts 1–100. It reads
+metadata coordinates without weather selection or data-query budget charges;
+point-grid eligibility does not restrict discovery. Successful responses use
+mutable caching and intentionally have no ETag, Server-Timing, dataset-cache or
+work-unit response headers. Catalog/type checks precede timezone/order checks;
+non-budget dataset-open failures retain the reference's generic 500 behavior.
+Run listing opens stored coordinate metadata with all virtual containers disabled,
+in a separate cache profile. Virtual forecast products can list runs when their
+coordinates are stored in the repository; virtual coordinates fail closed without
+fetching an external chunk. Virtual forecast point serving retains generic 500
+until virtual GRIB support is implemented; its container authorization stays
+separate from run discovery.
+
+Eight materialized analysis products are readable: GFS, GEFS, HRRR, hourly CONUS
+MRMS, both CHIRPS variants and both IMERG variants. Historical GEFS frames use
+the admitted Blosc header typesize (D33). IMERG integer-epoch coordinates use
+bounded staging within the unchanged 64 MiB metadata budget. The three virtual
+analysis products await virtual GRIB support and return generic 500 `Internal
+Server Error` before repository I/O, consistently with virtual forecast point
+serving. Only a typed metadata-limit failure still exceeding the cap maps to 422
+in the shared open-error mapper; unrelated metadata/storage failures keep their
+existing classifications (D40).
 
 The native catalog service warms at process startup and shares its refresh,
 freshness and failure-backoff state across requests. Schema validation precedes
@@ -70,10 +101,10 @@ No Python tooling or reference-service output is part of the test suite.
 
 A product with any `http` virtual chunk container whose hostname is
 `wn.dynamical.org` requires a caller-location check. Product IDs do not select the
-policy. Forecast POST and canonical GET acquire a compute slot before catalog
-resolution and caller-location checks. Forecast batches check every gated product
-before opening any dataset. Run listing and the analyses stub check before
-admission; allowed run/analysis requests retain their current 501 stub behavior.
+policy. Forecast and analysis POST, run listing and canonical GET acquire a
+compute slot before catalog resolution and caller-location checks. Batches check
+every known gated product before opening any dataset. Allowed requests then
+serve data or list runs using the exact catalog generation checked.
 
 Set `DYNAMICAL_API_GEO_CHECK_SECRET` to enable checks. The service sends it as
 `X-Geo-Check-Secret` to `https://wn.dynamical.org/geo-check`. Viewer country and
@@ -96,6 +127,7 @@ until its deadline. Capacity exhaustion fails closed with retryable 503.
 
 Once a gated product is identified, every later response uses
 `Cache-Control: private, no-store`, including canonical responses and errors.
-Successful bodies retain ETags. Earlier authentication, rate and schema failures
+Data responses retain ETags; run listing has no ETag. Earlier authentication,
+rate and schema failures
 retain their existing policy. See D36 through D39 in
 [DEVIATIONS.md](../DEVIATIONS.md).

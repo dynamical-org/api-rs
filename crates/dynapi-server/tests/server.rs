@@ -451,9 +451,9 @@ async fn preflight_bypasses_auth_rate_and_telemetry() {
 async fn middleware_url_path_controls_rate_without_changing_routing() {
     for (ordinary, method, routed_status) in [
         ("/v1/forecasts", "POST", 422),
-        ("/v1/forecasts/runs", "GET", 501),
-        ("/v1/analyses", "POST", 501),
-        ("/v1/data/example/snapshot/points/0", "GET", 501),
+        ("/v1/forecasts/runs", "GET", 422),
+        ("/v1/analyses", "POST", 422),
+        ("/v1/data/example/snapshot/points/0", "GET", 422),
     ] {
         for suffix in ["%3Ffoo", "%23foo", "%09", "%0D", "%0A"] {
             let server = Server::start(&[

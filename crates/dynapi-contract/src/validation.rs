@@ -20,6 +20,15 @@ pub const LATITUDE_BOUND: f64 = 90.;
 pub const LONGITUDE_BOUND: f64 = 180.;
 pub const LATEST_INIT_TIME: &str = "latest";
 pub const MIN_LEAD_TIME_HOURS: i64 = 0;
+pub const MAX_ANALYSIS_RANGE_SECONDS: i64 = 31 * 24 * 60 * 60;
+pub const DEFAULT_RUN_LIMIT: usize = 20;
+pub const MIN_RUN_LIMIT: usize = 1;
+pub const MAX_RUN_LIMIT: usize = 100;
+
+mod analyses;
+mod runs;
+pub use analyses::{validate_analysis, AnalysisBatch, AnalysisQuery};
+pub use runs::{validate_forecast_runs, ForecastRunsQuery};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForecastBatch {
@@ -211,7 +220,17 @@ fn is_json(content_type: Option<&str>) -> bool {
 }
 
 pub fn validate_forecast(body: &[u8], content_type: Option<&str>) -> ValidationResult {
-    let invalid = |r| ValidationResult::Invalid(r);
+    match validate_batch(body, content_type, Validator::query) {
+        Ok(queries) => ValidationResult::Valid(ForecastBatch { queries }),
+        Err(response) => ValidationResult::Invalid(response),
+    }
+}
+fn validate_batch<T>(
+    body: &[u8],
+    content_type: Option<&str>,
+    parse_query: fn(&mut Validator, &Value, &[Value]) -> Option<T>,
+) -> Result<Vec<T>, Response> {
+    let invalid = |r| Err(r);
     let root = vec![Value::from("body")];
     let input = if body.is_empty() {
         Value::Null
@@ -258,7 +277,7 @@ pub fn validate_forecast(body: &[u8], content_type: Option<&str>) -> ValidationR
             } else {
                 let before = validator.errors.len();
                 for (i, value) in values.iter().enumerate() {
-                    if let Some(q) = validator.query(value, &path(&loc, i)) {
+                    if let Some(q) = parse_query(&mut validator, value, &path(&loc, i)) {
                         queries.push(q);
                     }
                 }
@@ -274,7 +293,7 @@ pub fn validate_forecast(body: &[u8], content_type: Option<&str>) -> ValidationR
     }
     validator.extras(pairs, &["queries"], &root);
     if validator.errors.is_empty() {
-        ValidationResult::Valid(ForecastBatch { queries })
+        Ok(queries)
     } else {
         invalid(Response::errors(validator.errors))
     }
@@ -447,6 +466,15 @@ impl Validator {
         Some(value)
     }
     fn integer(&mut self, input: &Value, loc: &[Value]) -> Option<BigInt> {
+        self.integer_bounded(input, loc, MIN_LEAD_TIME_HOURS, None)
+    }
+    fn integer_bounded(
+        &mut self,
+        input: &Value,
+        loc: &[Value],
+        min: i64,
+        max: Option<i64>,
+    ) -> Option<BigInt> {
         let (value, kind) = match input {
             Value::Int(n) => (Some(n.clone()), ""),
             Value::Bool(b) => (Some(u8::from(*b).into()), ""),
@@ -477,13 +505,23 @@ impl Validator {
             self.push(kind, loc, msg, input, None);
             return None;
         };
-        if value < BigInt::from(MIN_LEAD_TIME_HOURS) {
+        if value < BigInt::from(min) {
             self.push(
                 "greater_than_equal",
                 loc,
-                "Input should be greater than or equal to 0",
+                &format!("Input should be greater than or equal to {min}"),
                 input,
-                Some(Value::object([("ge", Value::from(0i64))])),
+                Some(Value::object([("ge", Value::from(min))])),
+            );
+            return None;
+        }
+        if let Some(max) = max.filter(|max| value > BigInt::from(*max)) {
+            self.push(
+                "less_than_equal",
+                loc,
+                &format!("Input should be less than or equal to {max}"),
+                input,
+                Some(Value::object([("le", Value::from(max))])),
             );
             return None;
         }

@@ -471,12 +471,11 @@ impl Collection {
         serde_json::from_value(self.repository_config["virtual_chunk_containers"].clone())
             .unwrap_or_default()
     }
-    /// Pure mapping. Retain non-HTTP containers in the recipe, but reject them
-    /// for the current reader rather than silently dropping access declarations.
+    /// Repository mapping shared by full reads and stored-metadata discovery.
     #[cfg(feature = "reader")]
-    pub fn reader_config(&self) -> Result<ReaderConfig, CatalogError> {
-        use dynapi_reader::{HttpVirtualChunkContainer, StoreDescriptor};
-        let store = match &self.icechunk {
+    pub fn store_descriptor(&self) -> dynapi_reader::StoreDescriptor {
+        use dynapi_reader::StoreDescriptor;
+        match &self.icechunk {
             RepositoryLocation::Http(h) => StoreDescriptor::Http {
                 url: h.url.trim_end_matches('/').into(),
             },
@@ -485,7 +484,14 @@ impl Collection {
                 prefix: s.prefix.clone(),
                 region: s.region.clone(),
             },
-        };
+        }
+    }
+    /// Pure mapping. Retain non-HTTP containers in the recipe, but reject them
+    /// for the current reader rather than silently dropping access declarations.
+    #[cfg(feature = "reader")]
+    pub fn reader_config(&self) -> Result<ReaderConfig, CatalogError> {
+        use dynapi_reader::HttpVirtualChunkContainer;
+        let store = self.store_descriptor();
         // Python authorizes containers through a dict keyed by prefix, so a
         // repeated declaration is one authorization; the recipe keeps both.
         let mut containers: Vec<HttpVirtualChunkContainer> = vec![];

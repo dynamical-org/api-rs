@@ -18,10 +18,11 @@ to serve the API while the Rust implementation is verified during migration.
 
 The server currently serves the root redirect, robots and health check, and
 implements request IDs, CORS, origin authentication and rate limits. It serves
-`POST /v1/forecasts` and canonical `GET /v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}`
-for materialized rectilinear products, with bounded dataset caching, compute
-admission and response encoding. Analyses POST, run listing, discovery and
-documentation handlers remain internal 501 stubs. See [forecast serving](docs/forecasts.md)
+forecast and analysis batches, forecast run listing, and canonical
+`GET /v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}` for materialized
+rectilinear and attested projected products, with bounded dataset caching,
+compute admission and response encoding. Catalog and documentation routes have
+native handlers. See [forecast serving](docs/forecasts.md)
 for configuration, bounds and the fixture test contract. Optional analytics/error
 delivery and stdout heartbeat behavior are
 described in [docs/telemetry.md](docs/telemetry.md). Production connection/drain

@@ -254,7 +254,9 @@ impl<'a> BatchBuilder<'a> {
         observer.start("point_select");
         let point = select_nearest_point(input.dataset, input.latitude, input.longitude)?;
         observer.finish("point_select");
-        observer.start("run_select");
+        if kind == Kind::Forecast {
+            observer.start("run_select");
+        }
         let start = queries.len();
         let runs = if kind == Kind::Forecast {
             let mut selection = input.init_times.clone();
@@ -269,7 +271,9 @@ impl<'a> BatchBuilder<'a> {
         } else {
             vec![None]
         };
-        observer.finish("run_select");
+        if kind == Kind::Forecast {
+            observer.finish("run_select");
+        }
         // One normalized option list is shared by the run loop. Each retained
         // selection admits its own option clone before copying any label.
         let mut options = QueryOptions {

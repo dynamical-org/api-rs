@@ -196,6 +196,9 @@ for the catalog/documentation surface. Rust-owned fixture and loopback tests in
 `catalog_documentation.rs` and schema invariant tests in `openapi.rs` cover this
 surface; they do not qualify the pending execution handlers.
 
+Superseded in part: analyses and forecast run listing now have native handlers;
+their serving contract is documented in [point serving](docs/forecasts.md).
+
 ## D17 — Bounded catalog response encoding
 
 - Trigger: a catalog list or detail projection would encode more than
@@ -492,6 +495,12 @@ before its stub, and hidden forecast products skip the check and return 404
 without the gated privacy override, unlike the reference's refusal/unavailable
 response for gated hidden products; no data is served in these cases.
 
+Analysis POST and run listing now supersede the stub behavior above: both use
+schema validation, compute admission, catalog resolution and caller-location
+checks before store work, retaining the checked catalog generation. Hidden gated
+products are checked before type rejection on these two routes; the existing
+forecast-batch hidden-product exception remains unchanged.
+
 ## D38 — Bounded and coalesced location checks
 
 The reference Python service has no refusal-body or byte-cache ceiling and does
@@ -513,3 +522,28 @@ GET. Earlier schema/auth/rate errors retain their existing order and policy, mat
 remain. The configured check secret has redacted Debug output, sensitive HTTP
 header storage and static diagnostics. A refusal echoing the secret fails closed
 to generic 503 rather than copying it into a public detail or telemetry.
+
+Analysis POST and run listing now use the same admission-before-identification
+boundary. Run listing continues to omit ETags on successful responses.
+
+## D40 — Typed dataset metadata-budget rejection
+
+A typed `OpenError::MetadataLimit` maps to HTTP 422 with the existing safe detail
+`Opened dataset metadata exceeds 67108864 bytes`. Other metadata, reader and
+storage errors retain their existing classifications. This mapping is shared by
+forecast, analysis, run listing and canonical reads; it does not increase the 64 MiB budget or
+use product-ID exceptions. The 422 applies only when charged metadata still
+exceeds the cap after applicable bounded coordinate staging. The reference Python
+service does not impose this Rust bound.
+
+## D41 — Metadata-only run discovery and virtual exclusions
+
+Run listing uses a separate Metadata dataset-cache profile, retaining product,
+repository, snapshot and original container identity in the keys. The reader
+receives an empty container set that replaces persisted authorization. It opens
+only stored coordinate metadata and never loads weather selections. A virtual
+coordinate fails closed without fetching its external payload; normal point
+serving cannot reuse this profile. The reference supports more virtual layouts.
+All three virtual analysis products retain generic HTTP 500 `Internal Server
+Error` before repository I/O, consistent with virtual forecast point serving,
+until virtual GRIB support is implemented. No new public status is introduced.
