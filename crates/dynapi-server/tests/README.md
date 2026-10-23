@@ -100,8 +100,10 @@ These are real repository commits served through the loopback fixture host.
 
 Both snapshots retain the input latitude `[44, 42, 40, 38]`, longitude
 `[0, 60, 120, 180, 240, 300]` and geographic CRS. A removes the input temperature,
-static and auxiliary valid-time arrays. It replaces init/lead/count metadata and
-payloads with one uncompressed little-endian bytes chunk per array:
+static and auxiliary valid-time arrays. It resets root group attributes to only
+`{"coordinates":"spatial_ref"}` and count attributes to `{}`. It replaces
+init/lead/count metadata and payloads with one uncompressed little-endian bytes
+chunk per array:
 
 - A: init times 2026-07-30 00:00 and 06:00 UTC (int64 epoch seconds), lead times
   `[0, 3600]` seconds (float64, attested CF duration attributes including encoded

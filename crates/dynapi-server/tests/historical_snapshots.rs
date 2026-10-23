@@ -109,9 +109,11 @@ async fn commit(root: &Path, second: bool) -> String {
         for lead in 0..size as i64 {
             for cell in 0..24i64 {
                 counts.extend_from_slice(&(base + 100 * run + 10 * lead + cell).to_le_bytes());
-                humidity.extend_from_slice(
-                    &(50. + 10. * run as f64 + lead as f64 + cell as f64).to_le_bytes(),
-                );
+                if second {
+                    humidity.extend_from_slice(
+                        &(50. + 10. * run as f64 + lead as f64 + cell as f64).to_le_bytes(),
+                    );
+                }
             }
         }
     }
@@ -395,6 +397,7 @@ async fn historical_schema_and_appended_times_are_snapshot_specific() {
     let canonical_b = server.request("GET", &link_b, &Value::Null).await;
     assert_eq!(canonical_b.status, 200);
     assert_eq!(canonical_b.json()["forecasts"][0], result["forecasts"][0]);
+    assert_eq!(canonical_b.json()["variables"], result["variables"]);
     assert_eq!(canonical_b.headers["cache-control"], IMMUTABLE);
     assert_a(
         &server.request("GET", &link_a, &Value::Null).await,
