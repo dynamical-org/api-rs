@@ -167,6 +167,11 @@ routes. Typed one-shot reader faults assert exact public responses and successfu
 recovery, without leaking fixture diagnostics. These assertions are independent
 of any reference-service output and require no Python or external network.
 
+`historical_families.rs` extends main-advance HTTP coverage to analyses, stable
+and changed ensemble member axes, attested Lambert forecasts and run discovery.
+Its private A/B construction, arithmetic, cache-expiry/eviction sequence and
+independent expectations are specified in [support/history_families.md](support/history_families.md).
+
 ## Integer encoding and detail lifecycle recipes
 
 `integer_encoding_breadth.rs` constructs fresh Icechunk repositories from the
