@@ -264,6 +264,8 @@ fn validate_scalar_zstd(bytes: &[u8]) -> Result<(), StorageError> {
         || bytes.len() > 64
         || bytes[..4] != [0x28, 0xb5, 0x2f, 0xfd]
         || bytes[4] & 0x1f != 0
+        // Fixed-destination bulk decompression can bypass WindowLogMax.
+        || (bytes[4] & 0x20 == 0 && bytes[5] != 0)
         || zstd::zstd_safe::get_frame_content_size(bytes)
             .ok()
             .flatten()
@@ -2173,6 +2175,11 @@ mod tests {
         assert!(decode_member_zstd(&large_window, 6).is_err());
         large_window[5] = 0;
         assert_eq!(decode_member_zstd(&large_window, 6).unwrap(), input);
+    }
+
+    #[test]
+    fn scalar_zstd_empty_frame_is_rejected_before_decode() {
+        assert!(validate_scalar_zstd(&[]).is_err());
     }
 
     #[test]

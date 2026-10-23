@@ -1,0 +1,6 @@
+{
+  "mixed": [5000000001.0, 1e-9, null],
+  "fractional": [0.25, -0.25, 0.1, 1.000001, 1e-9, -1e-9, null],
+  "overflow": [9223372037.0, 1e-9, null],
+  "all_nat": [null, null, null]
+}
