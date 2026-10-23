@@ -647,7 +647,7 @@ until virtual GRIB support is implemented. No new public status is introduced.
   owns the typed rejection and unaffected selected auxiliary values. Other duration
   precision, NaT and selection assertions remain covered by the same fixture family.
 
-## D-vwire-2 — Explicit anonymous virtual-source preparation and identity
+## D47 — Explicit anonymous virtual-source preparation and identity
 
 The additive Rust source API captures routing from repository metadata for explicit
 anonymous S3/GCS declarations with matching persisted prefixes. Stored routing
@@ -686,7 +686,7 @@ payload operation expiry retain safe upstream 503, while other provider failures
 remain internal errors. The added ReaderError field is not serialized; Rust
 struct-literal callers require its explicit initialization.
 
-## D-vwire-3 — Owned preparation deadline and metadata aftermath
+## D48 — Owned preparation deadline and metadata aftermath
 
 All new source-aware preparation/open APIs share one nonblocking process-wide
 owner. A single absolute 90-second deadline covers bootstrap, routing capture,

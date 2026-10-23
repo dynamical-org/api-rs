@@ -483,7 +483,7 @@ explicit declarations with matching persisted prefixes, and stripped of credenti
 endpoints and arbitrary options. Native provider authorization-map entries stay absent. Named expansion
 is reauthorized against the original prefix; mapped ranges use checked arithmetic
 and deterministic HTTPS endpoints. The narrow source/key/region surface and policy
-cache identity are documented in D-vwire-2. A source-aware dataset open charges the
+cache identity are documented in D47. A source-aware dataset open charges the
 retained policy against its metadata budget. Capture precedes every source-aware
 cache lookup, even for a pinned snapshot.
 
@@ -492,4 +492,4 @@ Cloning/delaying a prepared value does not restart it. Cancellation/expiry leave
 upstream work owned until completion; no later stage or late cache insertion is
 allowed. An unexpected supervisor exit faults admission closed. Manifest preloading
 is explicitly disabled in this recipe, including through reopen; demanded metadata
-still works. See D-vwire-3 for aftermath, overdue, shutdown and accounting limits.
+still works. See D48 for aftermath, overdue, shutdown and accounting limits.
