@@ -32,10 +32,6 @@ pub mod cf_time;
 )]
 mod grib;
 mod http;
-#[allow(
-    dead_code,
-    reason = "Source-aware recipe integration follows the isolated owner witnesses"
-)]
 mod preparation;
 mod repository_http;
 pub use preparation::{
@@ -43,7 +39,9 @@ pub use preparation::{
     shutdown_preparation_until,
 };
 mod scale_offset;
+mod sources;
 use scale_offset::ScaleOffset;
+pub use sources::{PreparedSources, VirtualSourceDeclaration, prepare_sources};
 
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 56 * 1024 * 1024;
@@ -55,7 +53,7 @@ pub const MAX_SELECTORS: usize = 1_048_576;
 const MAX_CHUNKS: usize = 65_536;
 const MAX_RANK: usize = 16;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum StoreDescriptor {
     Local(String),
@@ -177,8 +175,29 @@ pub enum ErrorKind {
     Decode,
 }
 
+/// Typed source-aware failures survive adapter erasure without parsing text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualFailureKind {
+    Generic,
+    SlowDown,
+    OperationTimeout,
+    ObjectModified,
+    PreparationUnavailable,
+}
+impl From<http::provider::ProviderFailure> for VirtualFailureKind {
+    fn from(kind: http::provider::ProviderFailure) -> Self {
+        match kind {
+            http::provider::ProviderFailure::Generic => Self::Generic,
+            http::provider::ProviderFailure::SlowDown => Self::SlowDown,
+            http::provider::ProviderFailure::OperationTimeout => Self::OperationTimeout,
+            http::provider::ProviderFailure::ObjectModified => Self::ObjectModified,
+        }
+    }
+}
 #[derive(Debug, Serialize)]
 pub struct ReaderError {
+    #[serde(skip)]
+    pub virtual_failure: Option<VirtualFailureKind>,
     pub kind: ErrorKind,
     pub message: String,
     /// Set from Icechunk's typed FetchError before zarrs erases its source.
@@ -199,6 +218,7 @@ fn err(kind: ErrorKind, message: impl ToString) -> ReaderError {
         kind,
         message: message.to_string(),
         virtual_chunk_fetch: false,
+        virtual_failure: None,
         exception_class: None,
     }
 }
@@ -609,6 +629,7 @@ impl ShardPolicy {
 }
 
 struct StorageFailure {
+    virtual_failure: Option<VirtualFailureKind>,
     virtual_fetch: bool,
     message: String,
     exception_class: &'static str,
@@ -654,6 +675,7 @@ fn storage_failure(error: &icechunk::store::StoreError) -> StorageFailure {
         source = cause.source();
     }
     StorageFailure {
+        virtual_failure: None,
         virtual_fetch,
         message,
         exception_class: storage_exception_class(error.kind()),
@@ -661,6 +683,8 @@ fn storage_failure(error: &icechunk::store::StoreError) -> StorageFailure {
 }
 
 struct ObservedStore {
+    sources: Option<Arc<sources::SessionState>>,
+    attested: std::sync::OnceLock<sources::descriptor::AttestedArray>,
     inner: AsyncIcechunkStore,
     failure: Arc<Mutex<Option<StorageFailure>>>,
     trace: Arc<Mutex<ReadTrace>>,
@@ -760,36 +784,59 @@ impl ObservedStore {
             }
         }
     }
+    fn reader_failure(&self, error: ReaderError) -> StorageError {
+        *self.failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(StorageFailure {
+            virtual_fetch: error.virtual_chunk_fetch,
+            virtual_failure: error.virtual_failure,
+            message: error.message.clone(),
+            exception_class: error.exception_class.unwrap_or("StorageError"),
+        });
+        invalid_payload(error.message)
+    }
+    async fn resolve_payload(
+        &self,
+        key: &StoreKey,
+    ) -> Result<sources::descriptor::ResolvedPayload, StorageError> {
+        let array = self
+            .attested
+            .get()
+            .ok_or_else(|| invalid_payload("Payload metadata has not been attested"))?;
+        sources::descriptor::resolve(
+            self.inner.session(),
+            self.sources.as_ref(),
+            array,
+            key.as_str(),
+        )
+        .await
+        .map_err(|e| self.reader_failure(e))
+    }
     async fn read_payload(
         &self,
         key: &StoreKey,
         range: ByteRange,
     ) -> Result<MaybeBytes, StorageError> {
+        let resolved = self.resolve_payload(key).await?;
+        self.read_resolved(key, range, &resolved).await
+    }
+    async fn read_resolved(
+        &self,
+        key: &StoreKey,
+        range: ByteRange,
+        resolved: &sources::descriptor::ResolvedPayload,
+    ) -> Result<MaybeBytes, StorageError> {
         let policy = self
             .payload
             .get()
             .ok_or_else(|| invalid_payload("Payload metadata has not been attested"))?;
-        let store = icechunk::Store::from_session(self.inner.session()).await;
-        // getsize reads the logical chunk reference, not its payload. Icechunk uses
-        // zero for an absent chunk, so distinguish that with its typed NotFound.
-        let size = store
-            .getsize(key.as_str())
-            .await
-            .map_err(|e| self.storage_error(e))?;
-        if size == 0 {
-            return match store
-                .get(key.as_str(), &icechunk::format::ByteRange::ALL)
-                .await
-            {
-                Err(error)
-                    if matches!(error.kind(), icechunk::store::StoreErrorKind::NotFound(..)) =>
-                {
-                    Ok(None)
-                }
-                Err(error) => Err(self.storage_error(error)),
-                Ok(_) => Err(invalid_payload("Empty encoded chunk")),
-            };
+        let Some(size) = resolved.length() else {
+            return Ok(None);
+        };
+        if resolved.provider() {
+            return Err(self.reader_failure(unsupported(
+                "Provider virtual numeric payload is not supported",
+            )));
         }
+        let store = icechunk::Store::from_session(self.inner.session()).await;
         let span = resolve_range(range, size)?;
         let kind = self.range_kind(key, &span, size, policy)?;
         // resolve_range checked the sum and bounds BEFORE this constructor and
@@ -885,9 +932,10 @@ impl AsyncReadableStorageTraits for ObservedStore {
                 })
                 .collect(),
         );
+        let resolved = self.resolve_payload(key).await?;
         let mut values = Vec::new();
         for range in ranges {
-            let bytes = self.read_payload(key, range).await?;
+            let bytes = self.read_resolved(key, range, &resolved).await?;
             let Some(bytes) = bytes else {
                 return Ok(None);
             };
@@ -896,7 +944,11 @@ impl AsyncReadableStorageTraits for ObservedStore {
         Ok(Some(futures::stream::iter(values).boxed()))
     }
     async fn size_key(&self, key: &StoreKey) -> Result<Option<u64>, StorageError> {
-        self.inner.size_key(key).await
+        if key.as_str() == "zarr.json" || key.as_str().ends_with("/zarr.json") {
+            self.inner.size_key(key).await
+        } else {
+            Ok(self.resolve_payload(key).await?.length())
+        }
     }
     fn supports_get_partial(&self) -> bool {
         true
@@ -1581,8 +1633,62 @@ pub enum DatasetVersion<'a> {
     Snapshot(&'a str),
 }
 
+async fn new_storage(
+    descriptor: &StoreDescriptor,
+) -> Result<Arc<dyn icechunk_storage::Storage + Send + Sync>, ReaderError> {
+    Ok(match descriptor {
+        StoreDescriptor::Local(path) => {
+            icechunk::new_local_filesystem_storage(std::path::Path::new(path))
+                .await
+                .map_err(|e| err(ErrorKind::Storage, e))?
+        }
+        StoreDescriptor::Http { url } => {
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err(unsupported("Expected HTTP(S) repository URL"));
+            }
+            Arc::new(
+                repository_http::BoundedRepositoryStorage::new(url)
+                    .map_err(|e| err(ErrorKind::Storage, e))?,
+            )
+        }
+        StoreDescriptor::AnonymousS3 {
+            bucket,
+            prefix,
+            region,
+        } => icechunk::new_s3_object_store_storage(
+            S3Options::default()
+                .with_region(region)
+                .with_anonymous(true),
+            bucket.clone(),
+            Some(prefix.clone()),
+            Some(S3Credentials::Anonymous),
+            vec![],
+            vec![],
+        )
+        .await
+        .map_err(|e| err(ErrorKind::Storage, e))?,
+    })
+}
+fn repository_settings() -> icechunk::storage::Settings {
+    icechunk::storage::Settings {
+        retries: Some(icechunk::storage::RetriesSettings {
+            max_tries: std::num::NonZeroU16::new(2),
+            initial_backoff_ms: Some(100),
+            max_backoff_ms: Some(1000),
+        }),
+        timeouts: Some(icechunk::storage::TimeoutSettings {
+            connect_timeout_ms: Some(5000),
+            read_timeout_ms: Some(20000),
+            operation_timeout_ms: Some(30000),
+            operation_attempt_timeout_ms: Some(20000),
+        }),
+        ..Default::default()
+    }
+}
+
 /// Shared readonly Icechunk session. No repository/session is reopened by reads.
 pub struct ReadSession {
+    sources: Option<Arc<sources::SessionState>>,
     store: AsyncIcechunkStore,
     snapshot_id: String,
 }
@@ -1612,57 +1718,13 @@ impl ReadSession {
             containers,
             credentials,
         } = http_containers(containers)?;
-        let storage = match descriptor {
-            StoreDescriptor::Local(path) => {
-                icechunk::new_local_filesystem_storage(std::path::Path::new(path))
-                    .await
-                    .map_err(|e| err(ErrorKind::Storage, e))?
-            }
-            StoreDescriptor::Http { url } => {
-                if !(url.starts_with("https://") || url.starts_with("http://")) {
-                    return Err(unsupported("Expected HTTP(S) repository URL"));
-                }
-                Arc::new(
-                    repository_http::BoundedRepositoryStorage::new(url)
-                        .map_err(|e| err(ErrorKind::Storage, e))?,
-                )
-            }
-            StoreDescriptor::AnonymousS3 {
-                bucket,
-                prefix,
-                region,
-            } => icechunk::new_s3_object_store_storage(
-                S3Options::default()
-                    .with_region(region)
-                    .with_anonymous(true),
-                bucket.clone(),
-                Some(prefix.clone()),
-                Some(S3Credentials::Anonymous),
-                vec![],
-                vec![],
-            )
-            .await
-            .map_err(|e| err(ErrorKind::Storage, e))?,
-        };
+        let storage = new_storage(descriptor).await?;
         let mut repo = Repository::open(
             Some(icechunk::RepositoryConfig {
                 // Replace persisted containers, including their headers/options. Merely
                 // opening a repository must never grant access to undeclared locations.
                 virtual_chunk_containers: Some(containers),
-                storage: Some(icechunk::storage::Settings {
-                    retries: Some(icechunk::storage::RetriesSettings {
-                        max_tries: std::num::NonZeroU16::new(2),
-                        initial_backoff_ms: Some(100),
-                        max_backoff_ms: Some(1000),
-                    }),
-                    timeouts: Some(icechunk::storage::TimeoutSettings {
-                        connect_timeout_ms: Some(5000),
-                        read_timeout_ms: Some(20000),
-                        operation_timeout_ms: Some(30000),
-                        operation_attempt_timeout_ms: Some(20000),
-                    }),
-                    ..Default::default()
-                }),
+                storage: Some(repository_settings()),
                 ..Default::default()
             }),
             storage,
@@ -1701,6 +1763,7 @@ impl ReadSession {
         })?;
         let snapshot_id = session.snapshot_id().to_string();
         Ok(ReadSession {
+            sources: None,
             store: AsyncIcechunkStore::new(session),
             snapshot_id,
         })
@@ -1835,6 +1898,7 @@ impl ReadSession {
             {
                 error.kind = ErrorKind::Storage;
                 error.virtual_chunk_fetch = failure.virtual_fetch;
+                error.virtual_failure = failure.virtual_failure;
                 error.message = failure.message;
                 error.exception_class = Some(failure.exception_class);
             }
@@ -1851,6 +1915,8 @@ impl ReadSession {
     ) -> Result<(TypedBuffer, ReadTrace), ReaderError> {
         let trace = Arc::new(Mutex::new(ReadTrace::default()));
         let store = Arc::new(ObservedStore {
+            sources: self.sources.clone(),
+            attested: std::sync::OnceLock::new(),
             inner: AsyncIcechunkStore::from(self.store.session()),
             failure,
             trace: trace.clone(),
@@ -1870,6 +1936,12 @@ impl ReadSession {
         } else {
             attest(&meta, array_path)?
         };
+        store
+            .attested
+            .set(sources::descriptor::AttestedArray::new(
+                array_path, &cap, &meta, &raw,
+            )?)
+            .map_err(|_| unsupported("Array already attested"))?;
         refuse_bounds_targets(&store, array_path).await?;
         store
             .payload

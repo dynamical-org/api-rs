@@ -79,6 +79,7 @@ impl Gate {
     }
 }
 struct Server {
+    url: String,
     storage: Arc<dyn icechunk_storage::Storage + Send + Sync>,
     requests: Arc<Mutex<Vec<String>>>,
     active: Arc<AtomicUsize>,
@@ -87,6 +88,13 @@ struct Server {
 }
 impl Server {
     async fn new(fixture: &Fixture, paused: &[(&'static str, usize)]) -> Self {
+        Self::with_fault(fixture, paused, None).await
+    }
+    async fn with_fault(
+        fixture: &Fixture,
+        paused: &[(&'static str, usize)],
+        fault: Option<&'static str>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -128,7 +136,7 @@ impl Server {
                                     loop { let changed=gate.changed.notified(); tokio::pin!(changed); changed.as_mut().enable(); if gate.released.load(Ordering::SeqCst) { break; } changed.await; }
                                 }}
                                 let data=std::fs::read(root.join(&path));
-                                let response=match data {
+                                let response=if fault==Some(path.as_str()){b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()}else{match data {
                                     Err(_) => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
                                     Ok(data) => {
                                         let range=request.lines().find_map(|s|s.strip_prefix("range: bytes=")).map(|s|{
@@ -138,7 +146,7 @@ impl Server {
                                         if let Some(range)=&range { headers.push_str(&format!("Content-Range: bytes {}-{}/{}\r\n",range.start,range.end-1,data.len())); }
                                         headers.push_str("\r\n"); let mut response=headers.into_bytes(); response.extend_from_slice(&data[range.unwrap_or(0..data.len())]); response
                                     }
-                                };
+                                }};
                                 let _=socket.write_all(&response).await;
                                 active.fetch_sub(1,Ordering::SeqCst);
                             });
@@ -149,6 +157,7 @@ impl Server {
             }
         });
         Self {
+            url: url.clone(),
             storage: Arc::new(crate::repository_http::BoundedRepositoryStorage::new(&url).unwrap()),
             requests,
             active,
@@ -452,6 +461,192 @@ async fn capture_and_session_late_results_drain_without_delivery() {
             assert!(retained.lock().unwrap().upgrade().is_none());
             assert_eq!(delivered.load(Ordering::SeqCst), 0);
             assert_eq!(server.active.load(Ordering::SeqCst), 0);
+            assert!(
+                !server
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.starts_with("manifests/"))
+            );
         }
     }
+}
+
+#[tokio::test]
+async fn source_aware_http_only_preparation_does_not_capture_routing() {
+    let _serial = crate::preparation::SOURCE_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    for provider in [false, true] {
+        let server = Server::new(&fixture, &[]).await;
+        let declarations = if provider {
+            vec![crate::VirtualSourceDeclaration::AnonymousS3 {
+                url_prefix: "s3://example-bucket/".into(),
+                name: None,
+            }]
+        } else {
+            vec![crate::VirtualSourceDeclaration::Http {
+                url_prefix: "https://example.test/granted/".into(),
+                name: None,
+            }]
+        };
+        let result = crate::prepare_sources(
+            &crate::StoreDescriptor::Http {
+                url: server.url.clone(),
+            },
+            &declarations,
+        )
+        .await;
+        assert_eq!(result.is_ok(), !provider);
+        assert_eq!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.as_str() == "repo")
+                .count(),
+            if provider { 2 } else { 1 }
+        );
+        if let Ok(prepared) = result {
+            // This exercises the production source recipe against persisted
+            // True/nonzero preloading, not only the standalone override helper.
+            let session =
+                crate::ReadSession::open_prepared(&prepared, crate::DatasetVersion::Branch("main"))
+                    .await
+                    .unwrap();
+            let actual = session.store.session();
+            let guard = actual.read().await;
+            assert_eq!(guard.config().manifest().preload().max_total_refs(), 0);
+            assert!(matches!(
+                guard.config().manifest().preload().preload_if(),
+                ManifestPreloadCondition::False
+            ));
+            drop(guard);
+            drop(session);
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                !server
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.starts_with("manifests/"))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_error_does_not_release_the_other_joined_operation() {
+    let fixture = Fixture::new().await;
+    for (fault, paused) in [("repo", "config.yaml"), ("config.yaml", "repo")] {
+        let server = Server::with_fault(&fixture, &[(paused, 1)], Some(fault)).await;
+        let owner = Arc::new(Owner::default());
+        let job = tokio::spawn({
+            let storage = server.storage.clone();
+            let owner = owner.clone();
+            async move {
+                owner
+                    .run(Instant::now() + OPEN_TIMEOUT, move |ctx| async move {
+                        ctx.stage(PreparationStage::Bootstrap, async {
+                            Repository::open(Some(config()), storage, Default::default())
+                                .await
+                                .map_err(|e| err(ErrorKind::Storage, e))
+                        })
+                        .await
+                        .map(|_| ())
+                    })
+                    .await
+            }
+        });
+        server.reached(paused, 1).await;
+        server.reached(fault, 1).await;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        job.abort();
+        let _ = job.await;
+        settled(&owner, PreparationState::Aftermath).await;
+        assert!(server.active.load(Ordering::SeqCst) > 0);
+        server.gates[0].release();
+        settled(&owner, PreparationState::Available).await;
+        assert_eq!(server.active.load(Ordering::SeqCst), 0);
+    }
+}
+#[tokio::test]
+async fn repeated_actual_bootstrap_cancellation_has_no_growing_owned_aftermath() {
+    if std::env::var_os("DYNAPI_PREPARATION_ALLOCATION_CHILD").is_none() {
+        let status=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","preparation::tests::upstream::repeated_actual_bootstrap_cancellation_has_no_growing_owned_aftermath","--nocapture"])
+            .env("DYNAPI_PREPARATION_ALLOCATION_CHILD","1").status().unwrap();
+        assert!(status.success());
+        return;
+    }
+    let fixture = Fixture::new().await;
+    let owner = Arc::new(Owner::default());
+    let all_threads = crate::allocation_tests::AllThreads::start();
+    let measurement = crate::allocation_tests::Measurement::start();
+    let mut after = Vec::with_capacity(12);
+    let mut requests = 0;
+    for _ in 0..12 {
+        let mut server = Server::new(&fixture, &[("config.yaml", 1)]).await;
+        let job = tokio::spawn({
+            let storage = server.storage.clone();
+            let owner = owner.clone();
+            async move {
+                owner
+                    .run(Instant::now() + OPEN_TIMEOUT, move |ctx| async move {
+                        ctx.stage(PreparationStage::Bootstrap, async {
+                            Repository::open(Some(config()), storage, Default::default())
+                                .await
+                                .map_err(|e| err(ErrorKind::Storage, e))
+                        })
+                        .await
+                        .map(|_| ())
+                    })
+                    .await
+            }
+        });
+        server.reached("config.yaml", 1).await;
+        server.reached("repo", 1).await;
+        job.abort();
+        let _ = job.await;
+        settled(&owner, PreparationState::Aftermath).await;
+        let before = server.requests.lock().unwrap().len();
+        for _ in 0..8 {
+            assert!(
+                owner
+                    .run(Instant::now() + OPEN_TIMEOUT, |_| async { Ok(()) })
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(server.requests.lock().unwrap().len(), before);
+        server.gates[0].release();
+        settled(&owner, PreparationState::Available).await;
+        assert_eq!(server.active.load(Ordering::SeqCst), 0);
+        requests += server.requests.lock().unwrap().len();
+        server.task.abort();
+        let _ = (&mut server.task).await;
+        drop(server);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        after.push(all_threads.live());
+    }
+    let counts = measurement.counts();
+    eprintln!(
+        "actual bootstrap cycles=12 requests={requests} thread_scoped_peak={} thread_scoped_live={} foreign={}",
+        counts.peak, counts.live, counts.foreign_deallocation
+    );
+    eprintln!(
+        "actual bootstrap all-thread baseline={} peak={} live={} post_drain={after:?}",
+        all_threads.baseline,
+        all_threads.peak(),
+        all_threads.live()
+    );
+    assert!(after.last().unwrap().saturating_sub(after[0]) < 64 * 1024);
 }

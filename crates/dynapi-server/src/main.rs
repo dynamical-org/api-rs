@@ -178,12 +178,19 @@ async fn run(
                 "event": "api_shutdown", "phase": "request_drain",
             }),
         );
-        let drained = server.drain_until(stopped + app.config.drain_timeout).await;
+        let drain_deadline = stopped + app.config.drain_timeout;
+        let (request_drained, preparation) = tokio::join!(
+            server.drain_until(drain_deadline),
+            dynapi_reader::shutdown_preparation_until(drain_deadline),
+        );
+        let drained = request_drained && !preparation.occupied;
         stdout.emit(
             Stream::Terminal,
             serde_json::json!({
                 "event": "api_shutdown_drained", "drained": drained,
                 "computeInUse": app.gate.snapshot().in_use,
+                "requestDrained": request_drained,
+                "s8Preparation": preparation,
             }),
         );
         #[cfg(feature = "harness")]

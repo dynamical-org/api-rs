@@ -29,6 +29,8 @@ pub struct RepositoryKey {
     pub location: RepositoryLocation,
     pub profile: Profile,
     pub containers: Vec<VirtualChunkContainer>,
+    /// Exact freshly captured source policy; legacy/metadata recipes use None.
+    pub source_policy_id: Option<[u8; 32]>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DatasetKey {
@@ -37,6 +39,8 @@ pub struct DatasetKey {
     pub snapshot_id: Option<String>,
     pub profile: Profile,
     pub containers: Vec<VirtualChunkContainer>,
+    /// Exact freshly captured source policy; legacy/metadata recipes use None.
+    pub source_policy_id: Option<[u8; 32]>,
 }
 impl DatasetKey {
     pub fn new(collection: &Collection, snapshot_id: Option<&str>, profile: Profile) -> Self {
@@ -48,7 +52,12 @@ impl DatasetKey {
             snapshot_id: snapshot_id.map(str::to_owned),
             profile,
             containers,
+            source_policy_id: None,
         }
+    }
+    pub fn with_source_policy(mut self, policy_id: [u8; 32]) -> Self {
+        self.source_policy_id = Some(policy_id);
+        self
     }
     pub fn repository_key(&self) -> RepositoryKey {
         RepositoryKey {
@@ -56,6 +65,7 @@ impl DatasetKey {
             location: self.location.clone(),
             profile: self.profile,
             containers: self.containers.clone(),
+            source_policy_id: self.source_policy_id,
         }
     }
 }

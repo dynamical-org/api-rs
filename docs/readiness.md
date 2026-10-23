@@ -95,3 +95,27 @@ Rust subprocess tests exercise pre-bind success/failure/timeout, post-bind catal
 readiness, in-flight completion, refused connections after SIGTERM, SIGINT,
 stuck handlers, detached blocking work plus stuck synchronous cleanup, stopped
 heartbeat/readiness work, stdout backpressure and stalled telemetry resolution.
+
+## Source preparation availability
+
+`s8PreparationReady` and `s8Preparation` in the existing container heartbeat report
+the process-wide source preparation owner. The nested snapshot contains only its
+bounded state/stage, operation/aftermath ages, refusal/timeout counts, revision and
+closed/occupied flags. Direct library callers can use `preparation_snapshot()`;
+optional heartbeat delivery does not own or reset that state. Best-effort
+`api_source_preparation` records report observed transitions, including recovery.
+
+An abandoned operation remains occupied; after 90 seconds in aftermath its state
+is `overdue`. `faulted` means the supervisor ended unexpectedly with upstream
+quiescence unknown. Neither state starts a replacement. Other numeric/metadata
+work and the existing health endpoint retain their behavior. Recovery is observed
+operation completion or process replacement through the existing operational
+procedure. A retry hint does not promise that a stuck operation will recover.
+
+Shutdown stops new preparation admission and drains it alongside requests under
+the existing drain deadline. The shutdown record includes `requestDrained` and
+`s8Preparation`; `drained` is false while metadata remains owned, even with zero
+compute slots or connection tasks. The process deadline remains the final bound.
+Do not interpret a dropped task handle or zero request count as metadata drain.
+Connect degradation alerts to the operational recovery procedure before enabling
+source-backed products; this slice enables no catalog product.

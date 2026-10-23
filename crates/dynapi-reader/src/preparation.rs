@@ -90,7 +90,9 @@ fn abandoned() -> ReaderError {
     err(ErrorKind::Storage, "Source preparation abandoned")
 }
 fn unavailable() -> ReaderError {
-    err(ErrorKind::Storage, "Source preparation unavailable")
+    let mut error = err(ErrorKind::Storage, "Source preparation unavailable");
+    error.virtual_failure = Some(crate::VirtualFailureKind::PreparationUnavailable);
+    error
 }
 
 impl Owner {
@@ -341,6 +343,7 @@ impl Drop for FaultGuard {
                 state.closed = true;
             } else {
                 state.active = None;
+                state.task.take();
             }
             state.revision = state.revision.saturating_add(1);
             self.owner.changed.notify_waiters();
@@ -370,3 +373,6 @@ pub(crate) fn disable_preload(config: &mut icechunk::RepositoryConfig) {
     });
     config.manifest = Some(manifest);
 }
+
+#[cfg(test)]
+pub(crate) static SOURCE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

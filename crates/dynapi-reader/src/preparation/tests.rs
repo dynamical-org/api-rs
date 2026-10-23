@@ -2,7 +2,10 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn settled(owner: &Owner, state: PreparationState) {
-    for _ in 0..1000 {
+    // Loopback I/O completion depends on OS scheduling, not a yield count.
+    // Use real time so this wait never advances the paused operation clock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         if owner.snapshot().state == state {
             return;
         }
@@ -345,4 +348,43 @@ async fn repeated_aftermath_retains_one_allocation_then_disposes_it() {
     // Tokio may grow its bounded scheduler slab; released per-operation buffers
     // and tasks must not accumulate. This is Rust heap evidence, not an RSS cap.
     assert!(post_drain.last().unwrap().saturating_sub(post_drain[0]) < 16 * 1024);
+}
+
+#[tokio::test]
+async fn abort_before_first_upstream_poll_rolls_back_without_faulting() {
+    use std::task::Context as TaskContext;
+    let owner = Arc::new(Owner::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut call = Box::pin(owner.run(Instant::now() + OPEN_TIMEOUT, {
+        let calls = calls.clone();
+        move |_| async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }));
+    let mut context = TaskContext::from_waker(futures::task::noop_waker_ref());
+    assert!(call.as_mut().poll(&mut context).is_pending());
+    owner.lock().task.as_ref().unwrap().abort();
+    drop(call);
+    settled(&owner, PreparationState::Available).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(!owner.snapshot().admission_closed);
+    assert!(
+        owner
+            .run(Instant::now() + OPEN_TIMEOUT, |_| async { Ok(()) })
+            .await
+            .is_ok()
+    );
+}
+#[test]
+fn missing_runtime_starts_no_work_and_leaves_capacity_available() {
+    let owner = Arc::new(Owner::default());
+    let result: Result<(), _> =
+        futures::executor::block_on(owner.run(Instant::now() + OPEN_TIMEOUT, |_| async {
+            panic!("no runtime");
+            #[allow(unreachable_code)]
+            Ok(())
+        }));
+    assert!(result.is_err());
+    assert_eq!(owner.snapshot().state, PreparationState::Available);
 }

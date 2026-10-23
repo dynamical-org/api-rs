@@ -83,6 +83,7 @@ pub struct Heartbeat {
     resources: Arc<dyn ResourceSource>,
     loads: Arc<dyn LoadObserver>,
     previous: Mutex<(std::time::Instant, Resources)>,
+    preparation_previous: Mutex<Option<(dynapi_reader::PreparationState, u64)>>,
 }
 impl Default for Heartbeat {
     fn default() -> Self {
@@ -97,7 +98,22 @@ impl Heartbeat {
             resources,
             loads,
             previous,
+            preparation_previous: Mutex::new(None),
         }
+    }
+    fn preparation_transition(&self) -> Option<Value> {
+        let snapshot = dynapi_reader::preparation_snapshot();
+        let current = (snapshot.state, snapshot.revision);
+        let mut previous = self.preparation_previous.lock().unwrap();
+        if previous.as_ref() == Some(&current) {
+            return None;
+        }
+        let first = previous.is_none();
+        *previous = Some(current);
+        if first && snapshot.state == dynapi_reader::PreparationState::Available {
+            return None;
+        }
+        Some(json!({"event":"api_source_preparation","preparation":snapshot}))
     }
     pub fn admit(&self) -> Admission<'_> {
         self.admitted.fetch_add(1, Ordering::Relaxed);
@@ -121,6 +137,7 @@ impl Heartbeat {
         current: &Resources,
         elapsed: f64,
     ) -> Value {
+        let preparation = dynapi_reader::preparation_snapshot();
         let mut record = json!({
             "event": "api_container", "container": container,
             "inflightAdmitted": self.admitted.load(Ordering::Relaxed),
@@ -130,6 +147,8 @@ impl Heartbeat {
             "fairShareRefusals": gate.fair_share_refusals,
             "fairShareWouldRefuseConservative": gate.fair_share_would_refuse_conservative,
             "capacityRefusals": gate.capacity_refusals,
+            "s8PreparationReady": preparation.state==dynapi_reader::PreparationState::Available,
+            "s8Preparation": preparation,
         });
         if let (Some(old), Some(new)) = (previous.cpu_seconds, current.cpu_seconds) {
             let delta = (new - old).max(0.0);
@@ -195,6 +214,9 @@ impl HeartbeatTask {
                     };
                     // A broken measurement or sink must not stop future beats.
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if let Some(event) = app.heartbeat.preparation_transition() {
+                            app.emit(crate::telemetry::Stream::Terminal, event);
+                        }
                         app.emit(
                             crate::telemetry::Stream::Terminal,
                             app.heartbeat
@@ -251,7 +273,14 @@ mod tests {
             nr_throttled: Some(10),
             throttled_usec: Some(150),
         };
-        let record = heartbeat.record_delta("fake-container", gate(), &old, &new, 2.0);
+        let mut record = heartbeat.record_delta("fake-container", gate(), &old, &new, 2.0);
+        assert_eq!(
+            record["s8PreparationReady"].as_bool(),
+            Some(record["s8Preparation"]["state"] == "available")
+        );
+        assert!(record["s8Preparation"]["refusals"].is_u64());
+        record.as_object_mut().unwrap().remove("s8PreparationReady");
+        record.as_object_mut().unwrap().remove("s8Preparation");
         assert_eq!(
             record,
             json!({"event":"api_container", "container":"fake-container", "inflightAdmitted":1, "computeSlotsInUse":1,"computeSlots":6,"oldestSlotAgeSeconds":2.5,"maxCallerSlots":1,"fairShareRefusals":2,"fairShareWouldRefuseConservative":1,"capacityRefusals":3,"cpuSecondsDelta":1.0,"cpuUtilization":0.5,"nativeThreads":7,"nrThrottledDelta":2,"throttledUsecDelta":50})
@@ -324,11 +353,33 @@ mod tests {
         assert!(sink.0.lock().unwrap().is_empty());
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::task::yield_now().await;
-        assert_eq!(sink.0.lock().unwrap().len(), 1);
-        assert_eq!(sink.0.lock().unwrap()[0].1["event"], "api_container");
+        assert_eq!(
+            sink.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, record)| record["event"] == "api_container")
+                .count(),
+            1
+        );
+        assert!(
+            sink.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, record)| record["event"] == "api_container")
+        );
         task.stop().await;
         tokio::time::advance(Duration::from_secs(8)).await;
-        assert_eq!(sink.0.lock().unwrap().len(), 1);
+        assert_eq!(
+            sink.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, record)| record["event"] == "api_container")
+                .count(),
+            1
+        );
         for interval in [
             None,
             Some(0.0),

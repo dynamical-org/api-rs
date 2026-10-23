@@ -1037,3 +1037,19 @@ async fn invalid_required_validator_on_body_retry_keeps_its_own_class() {
         drained(&transport, 2);
     }
 }
+
+#[test]
+fn xml_attributes_require_whitespace_between_quoted_values() {
+    for body in [
+        b"<Error a='x'b='y'><Code>SlowDown</Code></Error>".as_slice(),
+        b"<?xml version='1.0'standalone='yes'?><Error><Code>SlowDown</Code></Error>",
+        b"<Error><Other a=\"x\"b=\"y\"/><Code>SlowDown</Code></Error>",
+    ] {
+        assert!(!slow_down(body), "{}", String::from_utf8_lossy(body));
+    }
+    for whitespace in [" ", "\t", "\r", "\n"] {
+        assert!(slow_down(
+            format!("<Error a='x'{whitespace}b='y'><Code>SlowDown</Code></Error>").as_bytes()
+        ));
+    }
+}

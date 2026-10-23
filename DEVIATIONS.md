@@ -646,3 +646,75 @@ until virtual GRIB support is implemented. No new public status is introduced.
 - Tests: `fractional_nat_and_overflow_tables_respect_dimension_versus_auxiliary_decoding_units`
   owns the typed rejection and unaffected selected auxiliary values. Other duration
   precision, NaT and selection assertions remain covered by the same fixture family.
+
+## D-vwire-2 — Explicit anonymous virtual-source preparation and identity
+
+The additive Rust source API captures routing from repository metadata for explicit
+anonymous S3/GCS declarations with matching persisted prefixes. Stored routing
+does not grant permission. Native provider credentials are absent (including no anonymous/environment fallback
+entry); sanitized named containers only support expansion. Expansion is authorized
+again against the original longest matching prefix. Existing HTTP-only APIs and
+serialized request contracts retain their previous recipe and transport policy.
+
+The new surface admits at most 64 declarations and 64 KiB of input/routing text,
+128-byte ASCII names, 4096-byte original/expanded URIs, 1024-byte ASCII opaque keys
+and 1024-byte ETags. Keys use unreserved ASCII and single slash separators, with
+no empty/dot segments, percent spelling, query, fragment, backslash, whitespace,
+Unicode or plus. S3 whole-key `soap`, dotted/IP-style authorities, access-point and
+directory-bucket spellings are rejected. Only standard regional S3 virtual-hosted
+HTTPS in us-east-1/eu-central-1 and fixed GCS XML HTTPS are mapped; known buckets
+require their declared mapping region. Custom endpoints/options and discovery,
+redirects, mirror fallback and credential/provider chains are not admitted.
+
+Policy assembly is bounded before native-map construction. The retained policy
+charge includes actual owned capacities plus conservative sanitized-map copies,
+is capped at 1 MiB and is included in dataset metadata/cache weight. A versioned,
+length-prefixed SHA-256 identity includes repository identity, canonical typed
+declarations, supplied/effective names, effective routes and endpoint/key/decoder
+profile/limit revisions. Both cache keys include this identity; legacy, Metadata
+and Routing keys remain separate. The source-aware cache seam captures fresh
+policy before every lookup, including pinned snapshots, then opens from that same
+opaque prepared value. This deliberately adds metadata I/O on cache hits.
+
+Only an absent manifest reference means fill. Present empty references and
+checked-range overflow fail; payload callbacks bind exact attested array/chunk
+keys. Provider-backed numeric/coordinate payloads fail before network access.
+The descriptor/transport seam does not enable GRIB dispatch or catalog products.
+Typed provider failures bypass legacy text classification; SlowDown and explicit
+payload operation expiry retain safe upstream 503, while other provider failures
+remain internal errors. The added ReaderError field is not serialized; Rust
+struct-literal callers require its explicit initialization.
+
+## D-vwire-3 — Owned preparation deadline and metadata aftermath
+
+All new source-aware preparation/open APIs share one nonblocking process-wide
+owner. A single absolute 90-second deadline covers bootstrap, routing capture,
+validation and session creation. Prepared values and clones retain that original
+deadline; completed values occupy no slot. Existing numeric/metadata recipes
+remain independent. Preparation saturation is typed separately from payload
+expiry and uses the service's existing busy response.
+
+Cancellation or expiry returns the caller while the explicitly owned supervisor
+continues awaiting the current upstream operation, including bootstrap's joined
+spec/config work. No later stage starts and late results are discarded before
+capacity returns. After 90 further seconds, aftermath becomes overdue without
+releasing capacity or starting a replacement. A panic, unexpected abort or runtime
+loss after polling starts faults/closes the owner; no timer resets unknown work.
+Failure before upstream polling may roll back. Only normal observed completion
+and state disposal/transfer restore capacity.
+
+The new bootstrap and reopened configuration explicitly set manifest preloading
+max_total_refs=0 and preload_if=False, overriding persisted/default preloading.
+This prevents Icechunk's unreturned preload task instead of claiming to join it;
+ordinary demanded metadata reads continue. Legacy recipes are unchanged.
+
+A bounded direct snapshot and heartbeat fields report state, stage, operation and
+aftermath ages, refusals/timeouts and preparation availability, with best-effort
+transition/recovery events. No source/caller identity or raw error is included.
+Health/liveness semantics remain unchanged; degradation affects source preparation.
+Shutdown closes admission, shares the existing drain deadline and reports retained
+metadata even when requests/compute reach zero. Unknown ownership is not reset
+before process exit. Recovery is actual completion or operational process
+replacement. Alert/recovery integration and mixed-service resource qualification
+remain gates before any product enablement; one owner is not a byte, physical
+request, upstream/native-allocation or whole-process memory bound.
