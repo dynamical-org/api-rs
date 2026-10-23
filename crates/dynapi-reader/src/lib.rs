@@ -235,7 +235,7 @@ struct PayloadPolicy {
 struct BloscPolicy {
     compressor_id: u8,
     typesize: u8,
-    byte_typesize: bool,
+    native_typesize: bool,
     shuffle_flags: u8,
 }
 #[derive(Debug)]
@@ -405,7 +405,7 @@ impl PayloadPolicy {
                     _ => return Err(unsupported("Unrecognized Blosc compressor policy")),
                 },
                 typesize: config["typesize"].as_u64().expect("attested typesize") as u8,
-                byte_typesize: config["typesize"].as_u64() == Some(cap.width as u64),
+                native_typesize: config["typesize"].as_u64() == Some(cap.width as u64),
                 shuffle_flags: match config["shuffle"].as_str() {
                     Some("noshuffle") => 0,
                     Some("shuffle") => 0x01,
@@ -491,7 +491,7 @@ impl PayloadPolicy {
         // The decoder uses the header typesize for unshuffling and partial-read
         // alignment. Header typesize 1 aligns every numeric read; keep nonnative
         // metadata item sizes restricted to their exact admitted header.
-        if bytes[3] != blosc.typesize && !(bytes[3] == 1 && blosc.byte_typesize) {
+        if bytes[3] != blosc.typesize && !(bytes[3] == 1 && blosc.native_typesize) {
             return Err(invalid_payload(
                 "Blosc typesize differs from admitted metadata",
             ));

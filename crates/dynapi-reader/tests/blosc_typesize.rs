@@ -3,6 +3,7 @@ use dynapi_reader::{DatasetVersion, ErrorKind, ReadSession, Selector, StoreDescr
 use icechunk::{Repository, store::Store};
 use serde_json::json;
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -10,6 +11,8 @@ use std::{
     },
 };
 use tokio::sync::RwLock;
+use zarrs::array::{BytesToBytesCodecTraits, CodecOptions, codec::BloscCodec};
+use zarrs::metadata_ext::codec::blosc::BloscCodecConfiguration;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -47,15 +50,42 @@ fn copy_tree(source: &Path, target: &Path) {
 // prefix and a Zstd block. Bit 4 disables splitting; bit 0 enables byte shuffle.
 // Shuffle transposes the byte position within each header-sized item. For
 // typesize 1 it is the identity, independently of the array's numeric dtype.
-fn frame(raw: &[u8], typesize: u8) -> Vec<u8> {
+fn frame(raw: &[u8], typesize: u8, shuffle: &str) -> Vec<u8> {
+    if shuffle == "bitshuffle" {
+        // The existing pinned encoder constructs the bit-plane permutation.
+        // Expectations below remain the explicit input numeric bytes; header
+        // typesize 1 bitshuffle is not an identity transform.
+        let config: BloscCodecConfiguration = serde_json::from_value(json!({
+            "cname":"zstd","clevel":3,"shuffle":"bitshuffle","typesize":typesize,"blocksize":0
+        }))
+        .unwrap();
+        let codec = BloscCodec::new_with_configuration(&config).unwrap();
+        let encoded = codec
+            .encode(Cow::Borrowed(raw), &CodecOptions::default())
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            encoded[2] & 0x06,
+            0x04,
+            "must exercise compressed bitshuffle, not memcpy"
+        );
+        assert_eq!(encoded[3], typesize);
+        return encoded;
+    }
     let mut shuffled = Vec::with_capacity(raw.len());
-    for byte in 0..usize::from(typesize) {
-        for item in raw.chunks_exact(usize::from(typesize)) {
-            shuffled.push(item[byte]);
+    if shuffle == "noshuffle" {
+        shuffled.extend_from_slice(raw);
+    } else {
+        assert_eq!(shuffle, "shuffle");
+        for byte in 0..usize::from(typesize) {
+            for item in raw.chunks_exact(usize::from(typesize)) {
+                shuffled.push(item[byte]);
+            }
         }
     }
     let compressed = zstd::bulk::compress(&shuffled, 3).unwrap();
-    let mut frame = vec![2, 1, 0x91, typesize];
+    let flags = if shuffle == "noshuffle" { 0x90 } else { 0x91 };
+    let mut frame = vec![2, 1, flags, typesize];
     frame.extend_from_slice(&(raw.len() as u32).to_le_bytes());
     frame.extend_from_slice(&(raw.len() as u32).to_le_bytes());
     frame.extend_from_slice(&((24 + compressed.len()) as u32).to_le_bytes());
@@ -85,6 +115,7 @@ async fn session(
     header: u8,
     metadata: u8,
     sharded: bool,
+    shuffle: &str,
 ) -> (Fixture, ReadSession) {
     let fixture = Fixture::new();
     let storage = icechunk::new_local_filesystem_storage(&fixture.0)
@@ -98,9 +129,9 @@ async fn session(
     let count = raw.len() / width;
     let mut codecs = json!([
         {"name":"bytes","configuration":{"endian":"little"}},
-        {"name":"blosc","configuration":{"cname":"zstd","clevel":3,"shuffle":"shuffle","typesize":metadata,"blocksize":0}}
+        {"name":"blosc","configuration":{"cname":"zstd","clevel":3,"shuffle":shuffle,"typesize":metadata,"blocksize":0}}
     ]);
-    let mut payload = frame(raw, header);
+    let mut payload = frame(raw, header, shuffle);
     if sharded {
         codecs = json!([{"name":"sharding_indexed","configuration":{"chunk_shape":[count],"codecs":codecs,"index_codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"crc32c"}],"index_location":"end"}}]);
         payload = shard(payload);
@@ -131,8 +162,7 @@ async fn session(
     .unwrap();
     (fixture, reader)
 }
-#[tokio::test]
-async fn byte_typesize_float32_and_int64_decode_header_shuffle_for_partial_and_full_reads() {
+async fn numeric_header_reads(shuffle: &str) {
     for (dtype, width, raw) in [
         (
             "float32",
@@ -150,7 +180,8 @@ async fn byte_typesize_float32_and_int64_decode_header_shuffle_for_partial_and_f
         ),
     ] {
         for sharded in [false, true] {
-            let (_fixture, reader) = session(dtype, width, &raw, 1, width as u8, sharded).await;
+            let (_fixture, reader) =
+                session(dtype, width, &raw, 1, width as u8, sharded, shuffle).await;
             let indices = [1023usize, 0, 77, 77];
             let result = reader
                 .read_dataset_selection(
@@ -178,22 +209,37 @@ async fn byte_typesize_float32_and_int64_decode_header_shuffle_for_partial_and_f
     }
 }
 #[tokio::test]
+async fn byte_typesize_float32_and_int64_decode_header_shuffle_for_partial_and_full_reads() {
+    numeric_header_reads("shuffle").await;
+}
+#[tokio::test]
+async fn header_typesize_one_noshuffle_preserves_partial_and_full_numeric_bytes() {
+    numeric_header_reads("noshuffle").await;
+}
+#[tokio::test]
+async fn header_typesize_one_bitshuffle_preserves_partial_and_full_numeric_bytes() {
+    numeric_header_reads("bitshuffle").await;
+}
+#[tokio::test]
 async fn other_mismatches_and_byte_header_with_nonnative_metadata_stay_rejected() {
     for (dtype, width, header, metadata) in
         [("float32", 4, 2, 4), ("int64", 8, 4, 8), ("int16", 2, 1, 4)]
     {
         let raw = vec![0u8; width * 1024];
-        let (_fixture, reader) = session(dtype, width, &raw, header, metadata, false).await;
-        let error = reader
-            .read_dataset_selection("values", &[Selector::Index(0)], None)
-            .await
-            .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Decode);
-        assert!(
-            error
-                .message
-                .contains("Blosc typesize differs from admitted metadata"),
-            "{error}"
-        );
+        for sharded in [false, true] {
+            let (_fixture, reader) =
+                session(dtype, width, &raw, header, metadata, sharded, "shuffle").await;
+            let error = reader
+                .read_dataset_selection("values", &[Selector::Index(0)], None)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Decode);
+            assert!(
+                error
+                    .message
+                    .contains("Blosc typesize differs from admitted metadata"),
+                "{error}"
+            );
+        }
     }
 }

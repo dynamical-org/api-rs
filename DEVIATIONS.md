@@ -410,8 +410,9 @@ metadata policy. The library alone enables no service route.
   remains outside the existing exact CF-time tuples; projected point selection
   and nested pressure-level query dimensions are separate unsupported contracts.
 - Blosc header typesize 1 is admitted when metadata typesize equals the stored
-  dtype width, matching the reference's header-driven unshuffling and historical
-  GEFS frames. The pinned decoder uses the header for full and partial reads.
+  dtype width, matching the reference's header-driven unshuffling. Historical
+  GEFS, GFS and HRRR frames include this layout. The pinned decoder uses the
+  header for full and partial reads.
   Other typesize mismatches remain rejected, including header 1 with nonnative
   metadata. Expected decoded unit length, encoded/decoded bounds, compressor,
   version, flags and shuffle guards remain unchanged. Constructed float32/int64
