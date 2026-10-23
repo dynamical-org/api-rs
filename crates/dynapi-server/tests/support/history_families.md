@@ -16,7 +16,7 @@ attested Lambert conformal WKT come from the existing `live-crs.json` input.
 | --- | --- |
 | Analysis | Latitude `[44,42]`, longitude `[0,60]`; `[time,latitude,longitude]` |
 | Ensemble | Same spatial axes; `[init_time,lead_time,ensemble_member,latitude,longitude]`; A member IDs `[7,-2,7]`; B either retains those IDs or changes to `[-2,11]` |
-| Lambert forecast | Stored y `[3000,0,-3000]` and x `[-3000,0,3000]` in metres; `[init_time,lead_time,y,x]` |
+| Lambert forecast | A stored y `[6000,0,-3000]`, x `[-3000,0,9000]`; B y `[7000,0,-3000]`, x `[-3000,0,10000]`, all in metres; `[init_time,lead_time,y,x]` |
 | Run discovery | Geographic deterministic forecast, `[init_time,lead_time,latitude,longitude]` |
 
 A analysis times are July 30, 2026 at 00:00 and 01:00 UTC; B appends 02:00.
@@ -36,11 +36,29 @@ Member identity is deliberately independent of ordinal. The two A members
 identified as 7 have counts `[1000,1010]` and `[3000,3010]` at `(0,0)` for the
 00:00 run. The changed B axis drops a duplicate, changes identity and cardinality,
 and retains source order; its first member is -2 but has ordinal-zero B values.
-At Lambert `(yIndex=1,xIndex=1)`, `s=4`, the projection origin is
-`(latitude=38.5,longitude=-97.5)` and A/B counts are `[1004,1014]` /
-`[2004,2014,2024]`. Returned coordinates must match across POST and canonical GET
-and both commits, with a small numerical tolerance only for the independently
-known origin. Historical replay compares exact bytes and ETags.
+At Lambert `(yIndex=0,xIndex=2)`, `s=2`, A uses `(x=9000,y=6000)` and B
+uses `(x=10000,y=7000)`. These non-origin offsets are unequal, and swapping stored
+index lookups instead selects `(-3000,-3000)`. A/B counts are `[1002,1012]` /
+`[2002,2012,2022]`, with B humidity `[52,53,54]`.
+
+The independently specified locations use the spherical LCC inverse (Snyder,
+USGS Professional Paper 1395, section 15), directly from the WKT parameters:
+`R=6371229 m`, origin/standard parallels `phi0=38.5 degrees`, central meridian
+`lambda0=-97.5 degrees`, zero false easting/northing. In radians:
+
+- `n = sin(phi0)` (equal standard parallels).
+- `F = cos(phi0) * tan(pi/4 + phi0/2)^n / n`.
+- `rho0 = R*F / tan(pi/4 + phi0/2)^n`.
+- `rho = hypot(x, rho0-y)`, `theta = atan2(x, rho0-y)`.
+- `phi = 2*atan((R*F/rho)^(1/n)) - pi/2`, `lambda = lambda0 + theta/n`.
+
+Converting to degrees gives A `(38.55391184367471,-97.39650417743823)` and B
+`(38.56289405072302,-97.38499028347202)`, each asserted within `1e-10` degrees.
+The POST location is A's known point; B's moved cell remains its nearest point.
+After B advances, A's cold reopened canonical response must retain its original
+location, `/points/0,2` link, values, exact bytes and ETag. POST/canonical at B
+must instead return B's known location. No projection implementation computes
+fixture expectations during tests.
 
 Analysis requests `[01:00,03:00)` yield A `[1010]` and B `[2010,2020]`.
 `[01:00,02:00)` excludes the new 02:00 record, `[02:00,03:00)` is empty in A,
@@ -57,8 +75,7 @@ known values. The same process covers both ensemble axis variants and Lambert.
 Run discovery warms its metadata-only profile and the point-query profile.
 Both may serve A before expiry. At 30 seconds both must expose B regardless of
 which profile refreshes first: newest-first runs `[12:00,06:00,00:00]`, with a
-strict after-06:00 filter and limit one returning only 12:00. Revalidation at 60
-seconds retains B. Successful run listings have the mutable 30-second cache
+strict after-06:00 filter and limit one returning only 12:00. After another TTL expiry at 60 seconds, the run list still reflects B. Successful run listings have the mutable 30-second cache
 policy and no ETag or query execution/cache headers. These contracts follow the
 reference Python service's route, query selection and response-header policies;
 the tests run entirely offline in Rust.

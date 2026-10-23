@@ -3,7 +3,7 @@
 mod history;
 mod support;
 
-use history::{Family, History};
+use history::{Family, History, LAMBERT_A_LOCATION, LAMBERT_B_LOCATION};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
@@ -49,7 +49,7 @@ fn expected_link(family: Family, snapshot: &str, variables: &str) -> String {
             "0,0",
             "startTime=2026-07-30T01%3A00%3A00Z&endTime=2026-07-30T03%3A00%3A00Z",
         ),
-        Family::Lambert => ("1,1", "initTime=2026-07-30T00%3A00%3A00Z"),
+        Family::Lambert => ("0,2", "initTime=2026-07-30T00%3A00%3A00Z"),
         _ => ("0,0", "initTime=2026-07-30T00%3A00%3A00Z"),
     };
     format!(
@@ -104,7 +104,7 @@ async fn advance(history: &History, query: &Value, post_a: &Reply) -> (String, R
     (b, post_b, get_b)
 }
 
-async fn replay_a(history: &History, first: &Reply, path: &str) {
+async fn replay_a(history: &History, first: &Reply, path: &str) -> Reply {
     history.server.host.reads.paths.lock().unwrap().clear();
     let reopened = history.server.request("GET", path, &Value::Null).await;
     data_headers(&reopened, IMMUTABLE);
@@ -132,6 +132,7 @@ async fn replay_a(history: &History, first: &Reply, path: &str) {
     assert_eq!(warm.body, first.body);
     assert_eq!(warm.headers["etag"], first.headers["etag"]);
     assert_eq!(warm.headers["x-dynamical-dataset-cache"], "hit");
+    reopened
 }
 
 async fn old_schema_rejects_humidity(history: &History) {
@@ -327,23 +328,41 @@ async fn ensemble_history_pins_old_member_ids_and_cardinality_when_the_axis_chan
     ensemble_history(true).await;
 }
 
+fn assert_lambert_location(result: &Value, expected: (f64, f64)) {
+    let selected = &result["point"]["selected"];
+    assert_eq!(selected["grid"], json!({"yIndex":0,"xIndex":2}));
+    assert!((selected["latitude"].as_f64().unwrap() - expected.0).abs() < 1e-10);
+    assert!((selected["longitude"].as_f64().unwrap() - expected.1).abs() < 1e-10);
+}
+
 #[tokio::test]
 async fn lambert_history_preserves_stored_indices_and_returned_location() {
     let history = History::new(Family::Lambert).await;
     let query = history.family.request(&["count"]);
     let (post_a, get_a, path_a) = begin(&history, &query).await;
     let selected = get_a.json()["point"]["selected"].clone();
-    assert_eq!(selected["grid"], json!({"yIndex":1,"xIndex":1}));
-    assert!((selected["latitude"].as_f64().unwrap() - 38.5).abs() < 1e-12);
-    assert!((selected["longitude"].as_f64().unwrap() + 97.5).abs() < 1e-12);
+    assert_eq!(selected["grid"], json!({"yIndex":0,"xIndex":2}));
     assert_eq!(
         get_a.json()["forecasts"][0]["data"],
-        json!({"count":[1004,1014]})
+        json!({"count":[1002,1012]})
     );
     assert_eq!(post_a.json()["results"][0]["point"]["selected"], selected);
     let (b, post_b, get_b) = advance(&history, &query, &post_a).await;
+    // B moves both selected axes. The cold historical GET must reconstruct A's
+    // non-origin geography, not use the current main's axes or swap y and x.
+    let reopened_a = replay_a(&history, &get_a, &path_a).await;
+    assert_lambert_location(&reopened_a.json(), LAMBERT_A_LOCATION);
+    assert_eq!(
+        reopened_a.json()["forecasts"][0]["links"]["canonical"],
+        expected_link(history.family, &history.a, "count")
+    );
+    assert_eq!(
+        reopened_a.json()["forecasts"][0]["data"],
+        json!({"count":[1002,1012]})
+    );
     for result in [&post_b.json()["results"][0], &get_b.json()] {
-        assert_eq!(result["point"]["selected"], selected);
+        assert_lambert_location(result, LAMBERT_B_LOCATION);
+        assert_ne!(result["point"]["selected"], selected);
         assert_eq!(
             result["forecasts"][0]["validTimes"],
             json!([
@@ -354,10 +373,9 @@ async fn lambert_history_preserves_stored_indices_and_returned_location() {
         );
         assert_eq!(
             result["forecasts"][0]["data"],
-            json!({"count":[2004,2014,2024]})
+            json!({"count":[2002,2012,2022]})
         );
     }
-    replay_a(&history, &get_a, &path_a).await;
     old_schema_rejects_humidity(&history).await;
     let added = history
         .server
@@ -370,21 +388,21 @@ async fn lambert_history_preserves_stored_indices_and_returned_location() {
     data_headers(&added, MUTABLE);
     let result = &added.json()["results"][0];
     assert_eq!(result["snapshotId"], b);
-    assert_eq!(result["point"]["selected"], selected);
+    assert_lambert_location(result, LAMBERT_B_LOCATION);
     assert_eq!(
         result["variables"],
         json!({"count":{"unit":null},"humidity":{"unit":"%"}})
     );
     assert_eq!(
         result["forecasts"][0]["data"],
-        json!({"count":[2004,2014,2024],"humidity":[54.,55.,56.]})
+        json!({"count":[2002,2012,2022],"humidity":[52.,53.,54.]})
     );
     let get = history
         .server
         .request("GET", &link(&added, history.family), &Value::Null)
         .await;
     data_headers(&get, IMMUTABLE);
-    assert_eq!(get.json()["point"]["selected"], selected);
+    assert_lambert_location(&get.json(), LAMBERT_B_LOCATION);
     assert_eq!(get.json()["forecasts"][0], result["forecasts"][0]);
 }
 
@@ -480,7 +498,7 @@ async fn run_discovery_refreshes_main_in_either_cache_profile_order() {
             )
             .await;
         assert_runs(&filtered, &history, &b, &["12"]);
-        // Revalidation of an unchanged B cannot restore the old runs.
+        // After another TTL expiry the run list must still reflect B.
         history.server.clock.0.store(60, Ordering::SeqCst);
         assert_runs(
             &history.server.request("GET", &path, &Value::Null).await,

@@ -4,6 +4,10 @@ use icechunk::{Repository, Store};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
+// Spherical LCC inverse from the fixture WKT; see history_families.md.
+pub const LAMBERT_A_LOCATION: (f64, f64) = (38.55391184367471, -97.39650417743823);
+pub const LAMBERT_B_LOCATION: (f64, f64) = (38.56289405072302, -97.38499028347202);
+
 #[derive(Clone, Copy)]
 pub enum Family {
     Analysis,
@@ -38,7 +42,7 @@ impl Family {
     }
     pub fn request(self, variables: &[&str]) -> Value {
         let location = if matches!(self, Self::Lambert) {
-            json!({"latitude":38.5,"longitude":-97.5})
+            json!({"latitude":LAMBERT_A_LOCATION.0,"longitude":LAMBERT_A_LOCATION.1})
         } else {
             json!({"latitude":44,"longitude":0})
         };
@@ -189,8 +193,16 @@ async fn commit(root: &Path, family: Family, second: bool) -> String {
     let spatial = if projected { 3 } else { 2 };
     for (name, values, units) in if projected {
         [
-            ("y", vec![3000., 0., -3000.], "m"),
-            ("x", vec![-3000., 0., 3000.], "m"),
+            (
+                "y",
+                vec![if second { 7000. } else { 6000. }, 0., -3000.],
+                "m",
+            ),
+            (
+                "x",
+                vec![-3000., 0., if second { 10000. } else { 9000. }],
+                "m",
+            ),
         ]
     } else {
         [
