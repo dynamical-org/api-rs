@@ -12,6 +12,10 @@ Component tests establish only their stated component behavior, not complete HTT
 or product coverage. A passing spot test does not certify every variable, snapshot
 or codec combination. Test links identify source files and function names; names
 and assertions were checked against the workspace test listing and source.
+**Cutover-pending** deviations still need an explicit implementation or acceptance
+decision in their linked issue. Product/deployment qualification rows owned by
+[#7](https://github.com/dynamical-org/api/issues/7) are tracked by that issue's
+whole-contract acceptance criteria.
 
 The [measured product sweep](https://github.com/dynamical-org/api/issues/7#issuecomment-6361528722)
 is separate migration evidence, not a committed fixture or a cutover sign-off.
@@ -24,14 +28,19 @@ native projected grids. Tables below use that current scope.
 Product, dtype and snapshot axes are **not applicable** to these responses.
 "Other methods" below refers to the explicitly listed methods, not an exhaustive
 HTTP-token sweep. CORS preflight is distinct from plain OPTIONS throughout.
+These tables describe origin behavior. Public reachability depends on the edge
+route/method and header-policy alignment tracked in
+[#33](https://github.com/dynamical-org/api/issues/33); an origin method-table gap
+does not establish that the edge allows that request.
 
 | Route | Method / capability or error | Status | Evidence |
 | --- | --- | --- | --- |
 | `/` | GET, HEAD: 301 to `https://dynamical.org/api/`, empty body | covered | [server.rs::health_and_root_have_explicit_responses][server] |
 | `/robots.txt` | GET, HEAD: embedded bytes, empty HEAD, length/type, ETag, Last-Modified, valid Date and distinct UUID4 IDs | covered | [server.rs::robots_get_head_and_packaged_metadata][server] |
-| `/robots.txt` | Range and build-time file metadata differ from a runtime file response | deviation | [D8](../DEVIATIONS.md#d8--compiled-robots-metadata-and-limited-file-response-surface) |
+| `/robots.txt` | Range and build-time file metadata differ from a runtime file response | deviation | [D8](../DEVIATIONS.md#d8--compiled-robots-metadata-and-limited-file-response-surface); Range behavior is **cutover-pending**, owned by [#32](https://github.com/dynamical-org/api/issues/32) |
+| `/robots.txt` | GET/HEAD HTTP `Cache-Control: public, max-age=300` | gap | [#10](https://github.com/dynamical-org/api/issues/10); [policy.rs::cache_and_timing_policy_preserve_order_and_accumulate][policy] asserts the HEAD cache-policy component only |
 | `/healthz` | GET: exact JSON body, type and length | covered | [server.rs::health_and_root_have_explicit_responses][server] |
-| `/healthz` | HEAD/OPTIONS and root/robots unsupported-method status/body/Allow matrix | gap | [#10](https://github.com/dynamical-org/api/issues/10), server response-surface coverage; the GET/HEAD tests above do not assert these cases |
+| `/healthz` | HEAD/OPTIONS and root/robots unsupported-method status/body/Allow matrix | gap | [#10](https://github.com/dynamical-org/api/issues/10), server response-surface coverage; the GET/HEAD tests above do not assert these cases; public reachability: [#33](https://github.com/dynamical-org/api/issues/33) |
 | `/healthz/` | GET: 307; omit empty query and preserve nonempty query bytes | covered | [server.rs::slash_redirect_omits_empty_query_and_preserves_nonempty_query][server] |
 | `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc` | GET, HEAD: 200, media type, length, empty HEAD, no cache/ETag/304 | covered | [catalog_documentation.rs::documentation_get_head_options_and_redirect_contract][catalog-docs] |
 | Same four documentation routes | OPTIONS, POST, PUT, PATCH, DELETE: 405 and Allow GET/HEAD; slash forms: 307 | covered | [catalog_documentation.rs::documentation_get_head_options_and_redirect_contract][catalog-docs] |
@@ -53,10 +62,12 @@ HTTP-token sweep. CORS preflight is distinct from plain OPTIONS throughout.
 | HEAD, POST, PUT, DELETE, PATCH | 405 Allow GET, HEAD body suppression, no catalog load | covered | [catalog_documentation.rs::catalog_methods_and_redirects_do_not_load_the_catalog][catalog-docs] |
 | OPTIONS | Plain 204 with empty body; Origin gets simple CORS | covered | [catalog_documentation.rs::catalog_methods_and_redirects_do_not_load_the_catalog][catalog-docs] |
 | GET, HEAD, OPTIONS, POST on slash forms | 307 with preserved query, no catalog load/cache headers | covered | [catalog_documentation.rs::catalog_methods_and_redirects_do_not_load_the_catalog][catalog-docs] |
-| GET list/detail and forecast POST | Startup warm/single-flight, failure backoff, stale generation serving and refresh publication shared across routes | covered | [catalog_lifecycle.rs::startup_catalog_and_forecast_share_one_root_child_flight_and_warm_snapshot][catalog-life]; [catalog_lifecycle.rs::startup_failure_backoff_and_refresh_publication_are_common_to_both_routes][catalog-life] |
+| GET list and forecast POST | Startup warm/single-flight, failure backoff, stale generation serving and refresh publication shared across these routes | covered | [catalog_lifecycle.rs::startup_catalog_and_forecast_share_one_root_child_flight_and_warm_snapshot][catalog-life]; [catalog_lifecycle.rs::startup_failure_backoff_and_refresh_publication_are_common_to_both_routes][catalog-life] |
+| GET detail | Startup single-flight, backoff, stale serving and refresh publication under held/failed catalog loads | gap | [#10](https://github.com/dynamical-org/api/issues/10); the shared lifecycle tests request only the list and forecast routes |
 | Catalog refresh component | Failed stale refresh preserves snapshot; backoff cap; returned objects are isolated | covered | [refresh.rs::stale_snapshot_is_preserved_backoff_caps_and_returned_values_are_isolated][refresh] |
 | Catalog refresh component | Deadline/close/retired flights cannot publish | covered | [refresh.rs::deadline_close_and_retired_generation_cannot_publish][refresh] |
-| Catalog input component | Restricted STAC input, URL/host/security and parser contract | deviation | [D11](../DEVIATIONS.md#d11--stac-catalog-input-contract-and-request-targets); broader skip/abort/coercion graph assertions remain [#10](https://github.com/dynamical-org/api/issues/10) |
+| Catalog input component | Restricted STAC input, URL/host/security and parser contract | deviation | [D11](../DEVIATIONS.md#d11--stac-catalog-input-contract-and-request-targets) |
+| Catalog input component | Broader skip/abort/coercion graph assertions | gap | [#10](https://github.com/dynamical-org/api/issues/10) |
 | GET list/detail | Encoding over 1 MiB fails with bounded generic 500; unused metadata stays borrowed | deviation | [D17](../DEVIATIONS.md#d17--bounded-catalog-response-encoding) |
 
 ## Forecast batches: `POST /v1/forecasts`
@@ -70,10 +81,12 @@ HTTP-token sweep. CORS preflight is distinct from plain OPTIONS throughout.
 | Request decoding/schema breadth | Complete media-type/UTF-8/16/32, coercion, null/missing, digit/datetime and multi-error tables | gap | [#10](https://github.com/dynamical-org/api/issues/10), contract schema/decoding work packages |
 | Deep JSON, surrogates and typed formatting extremes | Deliberately bounded parsing and typed output domains | deviation | [D1](../DEVIATIONS.md#d1--fixed-json-recursion-guard), [D2](../DEVIATIONS.md#d2--reject-lone-unicode-surrogates-during-parsing), [D3](../DEVIATIONS.md#d3--preserve-nonzero-sub-minute-datetime-offsets), [D4](../DEVIATIONS.md#d4--wider-typed-integer-output-domain) |
 | Product/variable selection | Unknown product 404; analysis on forecast endpoint 422; blank variable list rejected before repository open | covered | [forecasts.rs::product_variable_snapshot_and_canonical_validation_errors_are_public_only][forecasts]; [forecasts.rs::blank_variables_are_rejected_before_any_store_open][forecasts] |
+| Forecast POST and canonical GET | Unsupported spatial grid or time dimensions: 422 with the catalog product's point-query reason | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); discovery's unsupported-grid fixture does not assert data-route rejection |
 | Catalog failure | 503 without Retry-After; query/product context retained in failure analytics | covered | [forecasts.rs::catalog_not_loaded_is_503_and_failure_usage_retains_handler_context][forecasts] |
 | Response/read-value budgets | 422; variable selection error before aggregate read budget; response budget before later product lookup | covered | [forecasts.rs::both_budgets_and_selection_errors_precede_loading][forecasts]; [forecasts.rs::batch_response_budget_precedes_read_budget_and_later_product_lookup][forecasts] |
 | Admission order | Rate debit before validation; validation before compute; busy 503/Retry-After | covered | [server.rs::validation_precedes_compute_but_follows_rate_debit][server] |
-| Request/metadata/response bytes | 16 MiB body cap; metadata/cache/materialization byte bounds | deviation | [D6](../DEVIATIONS.md#d6--bounded-http-request-bodies), [D13](../DEVIATIONS.md#d13--bounded-opened-dataset-metadata), [D14](../DEVIATIONS.md#d14--byte-bounded-dataset-retention-and-response-materialization) |
+| Request bytes | 16 MiB body cap and 413 envelope | deviation | [D6](../DEVIATIONS.md#d6--bounded-http-request-bodies); **cutover-pending** limit decision: [#31](https://github.com/dynamical-org/api/issues/31) |
+| Metadata/response bytes | Metadata/cache/materialization byte bounds | deviation | [D13](../DEVIATIONS.md#d13--bounded-opened-dataset-metadata), [D14](../DEVIATIONS.md#d14--byte-bounded-dataset-retention-and-response-materialization) |
 | Dataset reuse | Miss/hit/30-second revalidation; immutable pinned hit; disabled cache/zero TTL miss | covered | [forecasts.rs::forecasts_and_canonical_links_own_values_units_headers_and_usage][forecasts]; [forecasts.rs::disabled_dataset_cache_and_zero_ttl_never_report_hits][forecasts] |
 | Dataset retention | Main and pinned entries share LRU capacity; byte eviction and oversized entry non-retention | covered | [forecasts.rs::main_and_pinned_snapshots_share_the_configured_lru_capacity][forecasts]; [cache.rs::byte_weight_evicts_lru_and_never_retains_oversized_handles][cache] (cache component) |
 | Response headers | Stable repeat body/ETag, cache status, Server-Timing phase order; analytics work units equal response header | covered | [forecasts.rs::forecasts_and_canonical_links_own_values_units_headers_and_usage][forecasts] |
@@ -84,7 +97,7 @@ HTTP-token sweep. CORS preflight is distinct from plain OPTIONS throughout.
 | Refresh during multi-query batch | One catalog generation retained across selections | deviation | [D18](../DEVIATIONS.md#d18--one-catalog-generation-per-forecast-batch) |
 | Co-tiled points/variables | Per-selection physical reads; no vectorized read discount | deviation | [D15](../DEVIATIONS.md#d15--per-selection-loading-without-physical-co-tile-vectorization) |
 | Independent chunks/shards | Bounded concurrency, shared shard-index fetch and adjacent range coalescing qualification | gap | [#15](https://github.com/dynamical-org/api/issues/15); passing response tests do not establish physical I/O efficiency |
-| HEAD, GET, PUT, PATCH, DELETE; plain OPTIONS; slash forms | Complete data-route method/Allow/body/CORS/redirect table | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); shared middleware tests below cover only their listed cases |
+| HEAD, GET, PUT, PATCH, DELETE; plain OPTIONS; slash forms | Complete data-route method/Allow/body/CORS/redirect table | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); shared middleware tests below cover only their listed cases; public reachability: [#33](https://github.com/dynamical-org/api/issues/33) |
 
 ### Representation modes
 
@@ -107,10 +120,11 @@ HTTP-token sweep. CORS preflight is distinct from plain OPTIONS throughout.
 | Handler validation | Missing/naive initTime, invalid/out-of-range grid indices; absent immutable snapshot: exact detail | covered | [forecasts.rs::product_variable_snapshot_and_canonical_validation_errors_are_public_only][forecasts] |
 | Snapshot transport failure | Upstream snapshot read failure stays generic 500 instead of unknown-snapshot 404 | covered | [forecasts.rs::upstream_snapshot_failure_is_not_an_unknown_snapshot][forecasts] |
 | Snapshot identifier component | Malformed/absent immutable ID vs missing branch error | covered | [fixtures.rs::unknown_snapshots_have_typed_errors_and_missing_branches_remain_reader_errors][dataset-fixtures] |
+| Canonical admission | Busy 503/Retry-After 5 and data-limiter 429 envelope, including applicable CORS | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); forecast POST admission tests do not exercise canonical admission |
 | Historical immutable snapshots | Serve a prior snapshot after main advances, with old values/metadata/links and immutable caching; missing historical arrays/variables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); current-snapshot canonical tests do not establish history |
 | Canonical error breadth | Invalid branch-name URL, variable sorting/dedup/25-variable bound, analysis window validation, encoded identifiers and transient failure HTTP tables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10) |
 | Projected forecast | HRRR/HRDPS synthetic values/indices/location, independent SHA-256 ETag, repeat stability, immutable cache and out-of-grid 422 | covered | [projected.rs::projected_forecasts_and_canonical_get_share_cells_values_locations_and_etags][server-projected] |
-| HEAD, POST, PUT, PATCH, DELETE; plain OPTIONS; slash forms | Complete canonical method/Allow/body/CORS/redirect assertions | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10) |
+| HEAD, POST, PUT, PATCH, DELETE; plain OPTIONS; slash forms | Complete canonical method/Allow/body/CORS/redirect assertions | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); public reachability: [#33](https://github.com/dynamical-org/api/issues/33) |
 
 ## Pending analyses and run listing
 
@@ -119,7 +133,7 @@ HTTP-token sweep. CORS preflight is distinct from plain OPTIONS throughout.
 | `/v1/analyses` | POST: all 11 analysis products, batch selection/data/headers and analysis validation | gap | [#4](https://github.com/dynamical-org/api/issues/4); [D16](../DEVIATIONS.md#d16--scope-of-the-remaining-http-milestone-stubs) records the 501 stub |
 | `/v1/forecasts/runs` | GET: forecast product, sorted unique runs, snapshot, limit/default and after/before windows | gap | [#4](https://github.com/dynamical-org/api/issues/4); [D16](../DEVIATIONS.md#d16--scope-of-the-remaining-http-milestone-stubs) |
 | `/v1/forecasts/runs` | GET: query/type/timezone/order/unknown-product/catalog errors and mutable run-cache headers | gap | [#4](https://github.com/dynamical-org/api/issues/4); middleware tests returning 501 are not handler coverage |
-| Both routes | HEAD/unsupported methods, plain OPTIONS and slash redirect response tables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10) |
+| Both routes | HEAD/unsupported methods, plain OPTIONS and slash redirect response tables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); public reachability: [#33](https://github.com/dynamical-org/api/issues/33) |
 
 ## Data-route dtype, codec and spatial families
 
@@ -137,7 +151,8 @@ The admission details and independent byte/work budgets are in
 | Narrow integer data variables | Full HTTP value/presentation table for every admitted integer width and codec | gap | [#10](https://github.com/dynamical-org/api/issues/10); member-coordinate component tests do not assert every weather-variable response |
 | float32/float64/int64 geographic coordinates | Dataset: exact decoded coordinate type/value; fractional lead duration and NaT | covered | [fixtures.rs::coordinate_dtypes_fractional_durations_and_float_bits_follow_the_recipe][dataset-fixtures] |
 | CF int64 epoch seconds | Reader: epoch zero, NaT sentinel, negative time and checked nanosecond overflow | covered | [cf_time.rs::epoch_zero_nat_and_checked_overflow][cf-time] |
-| CF float64 durations | Dataset: fractional precision and NaT from explicit recipe | covered | [fixtures.rs::coordinate_dtypes_fractional_durations_and_float_bits_follow_the_recipe][dataset-fixtures]; broader full-decoding-unit/auxiliary-duration cases remain [#10](https://github.com/dynamical-org/api/issues/10) |
+| CF float64 durations | Dataset: fractional precision and NaT from explicit recipe | covered | [fixtures.rs::coordinate_dtypes_fractional_durations_and_float_bits_follow_the_recipe][dataset-fixtures] |
+| CF float64 duration breadth | Full-decoding-unit and auxiliary-duration precision/selection cases | gap | [#10](https://github.com/dynamical-org/api/issues/10) |
 | Plain little-endian bytes; width-one omitted/null endian | Dataset/reader: admitted byte forms; big-endian and relaxed multibyte forms rejected | covered | [integer_coordinates.rs::one_byte_endian_forms_keep_multibyte_and_original_api_admission_strict][integer-coords] |
 | Plain Blosc/Zstd; indexed sharded Blosc/Zstd with bytes/CRC32C index | Dataset: physical float32, float64, int64 fixture reads follow numeric recipes | covered | [fixtures.rs::forecast_coordinates_metadata_and_cartesian_values_follow_the_recipe][dataset-fixtures] |
 | Sharded bytes; both index locations; all Blosc shuffle/level and memcpy/frame-corruption combinations | Complete selected-read, sparse/missing/corrupt-index and codec cross-product assertions | gap | [#10](https://github.com/dynamical-org/api/issues/10); metadata admission and happy-path sharded fixture reads do not prove this entire family |
@@ -181,26 +196,33 @@ for that product-level qualification; family-level fixture evidence is above.
 | `noaa-refs-forecast-hourly-virtual`, `noaa-refs-forecast-3-hourly-virtual`; `ecmwf-aifs-single-forecast-virtual` | Not served: virtual GRIB eligibility refused (13 forecast products total across the three rows) | gap | [#3](https://github.com/dynamical-org/api/issues/3) |
 | `noaa-gfs-analysis`, `noaa-gfs-analysis-virtual`; `noaa-gefs-analysis`, `noaa-gefs-analysis-0-25-degree-virtual` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); virtual GRIB dependency also [#3](https://github.com/dynamical-org/api/issues/3) |
 | `noaa-hrrr-analysis`, `noaa-hrrr-analysis-virtual`; `noaa-mrms-conus-analysis-hourly` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); native projected support does not complete analysis serving |
-| `nasa-imerg-analysis-early`, `nasa-imerg-analysis-late`; `ucsb-chc-chirps-analysis-final`, `ucsb-chc-chirps-analysis-preliminary` | Analysis POST remains 501 (11 products total across these three rows) | gap | [#4](https://github.com/dynamical-org/api/issues/4); IMERG also exceeds the unchanged opened-metadata bound in [D13](../DEVIATIONS.md#d13--bounded-opened-dataset-metadata); no claim that all analysis products work through canonical GET |
+| `ucsb-chc-chirps-analysis-final`, `ucsb-chc-chirps-analysis-preliminary` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); no claim that all analysis products work through canonical GET |
+| `nasa-imerg-analysis-early`, `nasa-imerg-analysis-late` | Eager coordinate staging exceeds the 64 MiB dataset-open metadata budget independently of the analysis POST stub (11 analysis products total across these four rows) | gap | [#30](https://github.com/dynamical-org/api/issues/30), [reader metadata-bound explanation](reader.md#catalog-units-and-staging-ledger); analysis POST also awaits [#4](https://github.com/dynamical-org/api/issues/4) |
 
 ## Shared data-route middleware and transport
 
 | Route/method scope | Capability × error / precedence | Status | Evidence |
 | --- | --- | --- | --- |
-| OPTIONS preflight, including unknown paths | Origin + Access-Control-Request-Method bypass origin auth, rate and telemetry; plain OPTIONS does not | covered | [server.rs::preflight_bypasses_auth_rate_and_telemetry][server] |
+| OPTIONS preflight, including unknown paths | Origin + Access-Control-Request-Method bypass origin auth and telemetry; encoded forecast paths also bypass an exhausted rate bucket; plain OPTIONS does not | covered | [server.rs::preflight_bypasses_auth_rate_and_telemetry][server]; [server.rs::middleware_url_path_preserves_preflight_and_origin_auth_precedence][server] |
 | CORS policy component | Allowed preflight vs disallowed method/headers; simple response vs unhandled 500 exposed headers | covered | [policy.rs::cors_preflight_is_distinct_from_simple_and_500][policy] |
+| OPTIONS preflight headers | HTTP allow-methods, max-age, allowed request headers and request ID | gap | [#10](https://github.com/dynamical-org/api/issues/10); [policy.rs::cors_preflight_is_distinct_from_simple_and_500][policy] checks the allowed-request-header value at component level only; status/body tests do not assert this HTTP header set |
+| Origin rejection, rate rejection and unmatched paths | Exact public 403 Forbidden, 429 rate-limit and unmatched-route 404 JSON detail envelopes | gap | [#10](https://github.com/dynamical-org/api/issues/10); the cited status/event tests do not assert these bodies |
 | Query paths and canonical prefix | Decoded middleware path determines query/data limiter without changing routing; encoded suffixes tested | covered | [server.rs::middleware_url_path_controls_rate_without_changing_routing][server] |
 | Forecast POST / encoded path variants | Preflight → auth → rate precedence, including exhausted buckets | covered | [server.rs::middleware_url_path_preserves_preflight_and_origin_auth_precedence][server] |
-| Forecast POST | Authenticated Cloudflare address/worker rate keys, first duplicate auth header wins | covered | [server.rs::origin_auth_controls_cf_rate_keys_and_first_duplicate_header_wins][server] |
+| Forecast POST | Authenticated worker suffix separates rate buckets; first duplicate auth header wins | covered | [server.rs::origin_auth_controls_cf_rate_keys_and_first_duplicate_header_wins][server] |
+| Rate-key policy component | Trust Cloudflare address/worker only after origin auth; normalize worker | covered | [policy.rs::trust_cf_metadata_only_after_auth_and_normalize_the_entire_worker][policy] |
+| HTTP rate keys | Distinguish Cloudflare address from socket peer, and ignore unauthenticated Cloudflare headers | gap | [#10](https://github.com/dynamical-org/api/issues/10); component policy evidence does not establish HTTP wiring |
 | Rate-limiter component | Token refill/retry rounding/clock regression and bounded client LRU | covered | [policy.rs::token_refill_retry_and_clock_regression_match_python][policy]; [policy.rs::rejected_clients_refresh_lru_and_eviction_is_bounded][policy] |
 | Redirecting paths | Configured scheme + validated Host; ignored forwarded headers; accepted-socket fallback | covered | [server.rs::public_redirect_scheme_uses_host_and_ignores_forwarded_headers][server]; [server.rs::slash_redirect_falls_back_to_accepted_socket_authority][server] |
 | Application responses | Optional release marker / required origin auth / startup validation | deviation | [D27](../DEVIATIONS.md#d27--optional-deployment-identity-authentication-and-redirect-scheme), [D9](../DEVIATIONS.md#d9--startup-configuration-validation) |
-| Data products using `wn.dynamical.org` | Authenticated viewer location, pre-compute gate, 451/503/retry, fail-closed cache and private no-store responses | gap | [#13](https://github.com/dynamical-org/api/issues/13); newer contract requirement, not present in the pinned reference revision |
+| Public route/method surface and trusted headers | Origin behavior agrees with edge route/method admission, rate policy and origin-auth/viewer-location header transforms | gap | [#33](https://github.com/dynamical-org/api/issues/33); public reachability and header-policy alignment need qualification independently of origin response tests |
+| Data products using `wn.dynamical.org` | Authenticated viewer location, pre-compute gate, 451/503/retry, fail-closed cache and private no-store responses | gap | [#13](https://github.com/dynamical-org/api/issues/13); the application gate is absent from the pinned reference revision, while its edge viewer-location/auth headers are present |
 | Native HTTP/1 | Hyper parser behavior, bounded connections/header/body/idle deadlines | deviation | [D10](../DEVIATIONS.md#d10--hyper-http1-wire-parsing-and-bounded-native-connections) |
 | HTTPS repository / virtual payload reader | No redirects, exact prefix/range/length checks, response caps; trusted repository metadata expansion remains | deviation | [D24](../DEVIATIONS.md#d24--bounded-readonly-repository-http-transport); payload/component tests do not qualify an arbitrary remote repository |
 | HTTP virtual payload reader | Declared-prefix success, duplicate values and exact requested byte range | covered | [http.rs::allowed_virtual_chunk_http_repository][reader-http] |
 | HTTP virtual payload reader | Undeclared prefix, redirect, mismatched range and chunked overflow rejection | covered | [http.rs::undeclared_virtual_chunk_is_not_fetched][reader-http]; [http.rs::redirect_cross_origin_is_not_followed][reader-http]; [http.rs::inconsistent_content_range_is_rejected][reader-http]; [http.rs::oversized_chunked_body_is_stopped][reader-http] |
-| Large WeatherNext ensemble | Full global-plane member/lead selection exceeds sequential reader deadline | deviation | [D25](../DEVIATIONS.md#d25--full-ensemble-global-plane-reads-exceed-the-reader-deadline); qualification remains [#9](https://github.com/dynamical-org/api/issues/9), [#15](https://github.com/dynamical-org/api/issues/15) |
+| Large WeatherNext ensemble | Full global-plane member/lead selection exceeds sequential reader deadline | deviation | [D25](../DEVIATIONS.md#d25--full-ensemble-global-plane-reads-exceed-the-reader-deadline) |
+| Large WeatherNext qualification | Complete full member/lead requests within a justified deadline with measured bounded memory | gap | [#9](https://github.com/dynamical-org/api/issues/9), [#15](https://github.com/dynamical-org/api/issues/15) |
 
 ## Telemetry conditions
 
