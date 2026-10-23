@@ -4,6 +4,7 @@ pub mod config;
 mod data;
 mod documentation;
 mod openapi;
+mod robots;
 pub mod telemetry;
 pub mod transport;
 
@@ -488,11 +489,7 @@ impl App {
                 b"{\"status\":\"ok\"}".to_vec(),
                 Some("application/json"),
             ),
-            "/robots.txt" => {
-                let mut result = response(200, ROBOTS.to_vec(), Some("text/plain; charset=utf-8"));
-                add_headers(&mut result, self.robots_headers.clone());
-                result
-            }
+            "/robots.txt" => robots::serve(request.headers(), &self.robots_headers),
             "/v1/data-products" => catalog_routes::list(&self.catalog).await,
             "/v1/data-products/{dataProductId}" => {
                 catalog_routes::describe(&self.catalog, path.split('/').nth(3).unwrap()).await
