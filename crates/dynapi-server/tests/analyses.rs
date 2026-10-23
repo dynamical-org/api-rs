@@ -788,3 +788,148 @@ async fn virtual_forecast_runs_use_only_stored_coordinates_without_virtual_autho
             .all(|p| !p.contains("/forbidden/"))
     );
 }
+
+#[tokio::test]
+async fn imerg_shaped_analyses_fit_the_default_metadata_budget_and_replay_canonical() {
+    // Synthetic half-hour epochs and global axes reproduce the metadata shape,
+    // without captured product data or network access. The full selector staging
+    // exceeds 64 MiB; bounded epoch batches must fit the unchanged default.
+    const SIZE: usize = 505_074;
+    let temp = tempfile::tempdir().unwrap();
+    let mut collections = Vec::new();
+    for id in ["nasa-imerg-analysis-early", "nasa-imerg-analysis-late"] {
+        let mut collection = input("analysis")["collection"].clone();
+        collection["id"] = json!(id);
+        collection["cube:variables"] = json!({"precipitation_surface":{"type":"data","dimensions":["time","latitude","longitude"],"unit":"mm/hr"}});
+        let path = temp.path().join(id).join("repository");
+        let storage = icechunk::new_local_filesystem_storage(&path).await.unwrap();
+        let repo = icechunk::Repository::create(None, storage, Default::default(), None, false)
+            .await
+            .unwrap();
+        let writer = std::sync::Arc::new(tokio::sync::RwLock::new(
+            repo.writable_session("main").await.unwrap(),
+        ));
+        let store = icechunk::Store::from_session(writer.clone()).await;
+        store
+            .set(
+                "zarr.json",
+                serde_json::to_vec(&json!({"zarr_format":3,"node_type":"group","attributes":{}}))
+                    .unwrap()
+                    .into(),
+            )
+            .await
+            .unwrap();
+        for (name, dtype, shape, dims, fill, attrs) in [
+            (
+                "time",
+                "int64",
+                vec![SIZE],
+                vec!["time"],
+                json!(0),
+                json!({"units":"seconds since 1970-01-01","calendar":"proleptic_gregorian"}),
+            ),
+            (
+                "latitude",
+                "float64",
+                vec![1800],
+                vec!["latitude"],
+                json!(0),
+                json!({}),
+            ),
+            (
+                "longitude",
+                "float64",
+                vec![3600],
+                vec!["longitude"],
+                json!(0),
+                json!({}),
+            ),
+            (
+                "precipitation_surface",
+                "float32",
+                vec![SIZE, 1800, 3600],
+                vec!["time", "latitude", "longitude"],
+                json!(7.25),
+                json!({}),
+            ),
+        ] {
+            let chunks = if name == "precipitation_surface" {
+                vec![1, 1, 1]
+            } else {
+                shape.clone()
+            };
+            let mut codecs = json!([{"name":"bytes","configuration":{"endian":"little"}}]);
+            if name == "time" {
+                codecs.as_array_mut().unwrap().push(json!({"name":"blosc","configuration":{"typesize":8,"cname":"zstd","clevel":3,"shuffle":"shuffle","blocksize":0}}));
+            }
+            let metadata = json!({"zarr_format":3,"node_type":"array","shape":shape,"data_type":dtype,"dimension_names":dims,"chunk_grid":{"name":"regular","configuration":{"chunk_shape":chunks}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":fill,"codecs":codecs,"attributes":attrs});
+            store
+                .set(
+                    &format!("{name}/zarr.json"),
+                    serde_json::to_vec(&metadata).unwrap().into(),
+                )
+                .await
+                .unwrap();
+        }
+        let raw: Vec<u8> = (0..SIZE)
+            .flat_map(|i| (883_612_800i64 + i as i64 * 1800).to_le_bytes())
+            .collect();
+        // Published Blosc memcpy frame: explicit little-endian epoch values.
+        let mut frame = vec![2, 1, 2, 8];
+        frame.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&(raw.len() as u32 + 16).to_le_bytes());
+        frame.extend_from_slice(&raw);
+        store.set("time/c/0", frame.into()).await.unwrap();
+        writer
+            .write()
+            .await
+            .commit("Synthetic half-hour analysis epochs")
+            .execute()
+            .await
+            .unwrap();
+        collections.push(collection);
+    }
+    catalog(temp.path(), &collections);
+    let server = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
+    for collection in collections {
+        let body = json!({"queries":[{"dataProductId":collection["id"],"location":{"latitude":0,"longitude":0},"variables":["precipitation_surface"],"startTime":"1998-01-01T00:00:00Z","endTime":"1998-01-01T01:00:00Z"}]});
+        let reply = server.request("POST", "/v1/analyses", &body).await;
+        assert_eq!(
+            reply.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        let json = reply.json();
+        let result = &json["results"][0];
+        assert_eq!(
+            result["analysisTimes"],
+            json!(["1998-01-01T00:00:00Z", "1998-01-01T00:30:00Z"])
+        );
+        assert_eq!(result["data"]["precipitation_surface"], json!([7.25, 7.25]));
+        assert_eq!(
+            reply.headers["etag"],
+            format!("\"{:x}\"", Sha256::digest(&reply.body))
+        );
+        let canonical = server
+            .request(
+                "GET",
+                result["links"]["canonical"].as_str().unwrap(),
+                &Value::Null,
+            )
+            .await;
+        assert_eq!(
+            canonical.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&canonical.body)
+        );
+        assert_eq!(canonical.json()["data"], result["data"]);
+        assert_eq!(canonical.json()["analysisTimes"], result["analysisTimes"]);
+        assert_eq!(
+            canonical.headers["etag"],
+            format!("\"{:x}\"", Sha256::digest(&canonical.body))
+        );
+    }
+}

@@ -30,15 +30,15 @@ fetching an external chunk. Virtual forecast point serving retains generic 500
 until virtual GRIB support is implemented; its container authorization stays
 separate from run discovery.
 
-Six materialized analysis products are readable: GFS, GEFS, HRRR, hourly CONUS
-MRMS and both CHIRPS variants. Historical GEFS windows depend on the separately
-qualified Blosc byte-typesize compatibility fix; the earlier reader rejects
-those frames with generic 500, also on canonical GET. The three virtual analysis
-products await virtual GRIB support and currently return generic 500 `Internal Server Error` before
-repository I/O, consistently with virtual forecast point serving. Both IMERG
-products temporarily exceed the unchanged 64 MiB metadata bound and return typed 422, pending [#30](https://github.com/dynamical-org/api/issues/30).
-Only that typed limit maps to 422 in the shared open-error mapper; unrelated
-metadata/storage failures keep their existing classifications (D40).
+Eight materialized analysis products are readable: GFS, GEFS, HRRR, hourly CONUS
+MRMS, both CHIRPS variants and both IMERG variants. Historical GEFS frames use
+the admitted Blosc header typesize (D33). IMERG integer-epoch coordinates use
+bounded staging within the unchanged 64 MiB metadata budget. The three virtual
+analysis products await virtual GRIB support and return generic 500 `Internal
+Server Error` before repository I/O, consistently with virtual forecast point
+serving. Only a typed metadata-limit failure still exceeding the cap maps to 422
+in the shared open-error mapper; unrelated metadata/storage failures keep their
+existing classifications (D40).
 
 The native catalog service warms at process startup and shares its refresh,
 freshness and failure-backoff state across requests. Schema validation precedes

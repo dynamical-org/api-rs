@@ -532,10 +532,9 @@ A typed `OpenError::MetadataLimit` maps to HTTP 422 with the existing safe detai
 `Opened dataset metadata exceeds 67108864 bytes`. Other metadata, reader and
 storage errors retain their existing classifications. This mapping is shared by
 forecast, analysis, run listing and canonical reads; it does not increase the 64 MiB budget or
-use product-ID exceptions. Both IMERG analysis products remain temporarily
-excluded while their eager coordinate staging exceeds this limit, pending the
-metadata-bound decision in [#30](https://github.com/dynamical-org/api/issues/30).
-The reference Python service can open these products without this Rust bound.
+use product-ID exceptions. The 422 applies only when charged metadata still
+exceeds the cap after applicable bounded coordinate staging. The reference Python
+service does not impose this Rust bound.
 
 ## D-an-2 — Metadata-only run discovery and virtual exclusions
 
