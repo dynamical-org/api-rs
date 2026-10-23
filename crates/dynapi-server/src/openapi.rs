@@ -545,12 +545,35 @@ fn responses(schema: V, errors: bool, data: bool, post: bool, validation: bool) 
     let mut responses = vec![("200", success(schema))];
     if errors {
         responses.push((
+            "451",
+            object([
+                (
+                    "description",
+                    V::from("The data proxy refused the caller location"),
+                ),
+                (
+                    "headers",
+                    object([(
+                        "Cache-Control",
+                        object([
+                            (
+                                "description",
+                                V::from("private, no-store for caller-location checked products"),
+                            ),
+                            ("schema", kind("string")),
+                        ]),
+                    )]),
+                ),
+                ("content", content(reference("ErrorDetail"))),
+            ]),
+        ));
+        responses.push((
             "429",
             retryable(crate::RATE_DETAIL, "Seconds to wait before retrying", post),
         ));
         responses.push(("503", retryable(
-            if data { "Server busy, catalog unavailable, or upstream data read timed out or was throttled" } else { "Server busy or catalog unavailable" },
-            if data { "Seconds to wait when server busy or upstream data timed out or was throttled; may be absent for catalog errors" } else { "Seconds to wait when server busy; may be absent for catalog errors" }, post)));
+            if data { "Server busy, catalog or caller-location check unavailable, or upstream data read timed out or was throttled" } else { "Server busy, catalog or caller-location check unavailable" },
+            if data { "Seconds to wait when server busy, caller-location check unavailable, or upstream data timed out or was throttled; may be absent for catalog errors" } else { "Seconds to wait when server busy or caller-location check unavailable; may be absent for catalog errors" }, post)));
     }
     if validation {
         responses.push(("422", validation_error()));
@@ -1108,6 +1131,24 @@ mod tests {
 
     #[test]
     fn response_schemas_include_unions_nullability_routing_and_retry_headers() {
+        let document = spec();
+        for (path, method) in [
+            ("/v1/forecasts", "post"),
+            ("/v1/analyses", "post"),
+            ("/v1/forecasts/runs", "get"),
+            (
+                "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}",
+                "get",
+            ),
+        ] {
+            let refusal = &document["paths"][path][method]["responses"]["451"];
+            assert_eq!(
+                refusal["content"]["application/json"]["schema"]["$ref"],
+                "#/components/schemas/ErrorDetail"
+            );
+            assert!(refusal["headers"]["Cache-Control"].is_object());
+        }
+
         let document = spec();
         let schemas = &document["components"]["schemas"];
         assert_eq!(

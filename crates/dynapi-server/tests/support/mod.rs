@@ -44,6 +44,7 @@ pub struct Reads {
     pub hold_snapshots: AtomicBool,
     pub snapshot_started: Notify,
     pub version_bytes: AtomicUsize,
+    pub gated: AtomicBool,
 }
 impl Default for Reads {
     fn default() -> Self {
@@ -60,6 +61,7 @@ impl Default for Reads {
             hold_snapshots: AtomicBool::new(false),
             snapshot_started: Notify::new(),
             version_bytes: AtomicUsize::new(0),
+            gated: AtomicBool::new(false),
         }
     }
 }
@@ -171,6 +173,11 @@ async fn serve_fixture(
         .and_then(|p| p.strip_suffix("/collection.json"))
     {
         let mut collection = input(name)["collection"].clone();
+        if reads.gated.load(Ordering::SeqCst) && matches!(name, "forecast" | "analysis") {
+            collection["assets"]["icechunk"]["icechunk:virtual_chunk_containers"] = json!([{
+                "url_prefix":"https://wn.dynamical.org/chunks/", "credentials":{"type":"http"}
+            }]);
+        }
         let bytes = reads.version_bytes.load(Ordering::SeqCst);
         if bytes > 0 {
             collection["version"] = json!("v".repeat(bytes));

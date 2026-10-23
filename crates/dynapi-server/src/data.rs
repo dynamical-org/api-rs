@@ -38,6 +38,7 @@ pub const MATERIALIZATION_BYTES: u128 = query::DEFAULT_MATERIALIZATION_BYTES;
 #[derive(Clone, Default)]
 pub(crate) struct Usage {
     pub products: Vec<String>,
+    pub geo_checked: bool,
     pub query_count: Option<usize>,
     pub work_units: Option<u64>,
     pub response_bytes: Option<usize>,
@@ -248,7 +249,7 @@ impl DataService {
     pub fn warm(&self) {
         self.catalog.warm();
     }
-    async fn snapshot(&self, usage: &SharedUsage) -> Result<Arc<Snapshot>, QueryError> {
+    pub(super) async fn snapshot(&self, usage: &SharedUsage) -> Result<Arc<Snapshot>, QueryError> {
         self.catalog.snapshot().await.map_err(|e| {
             usage.lock().unwrap().error_kind = Some(ErrorKind::CatalogUnavailable);
             QueryError {
@@ -258,14 +259,6 @@ impl DataService {
                 exception_class: None,
             }
         })
-    }
-    async fn product(
-        &self,
-        id: &str,
-        forecast: bool,
-        usage: &SharedUsage,
-    ) -> Result<Product, QueryError> {
-        Self::product_in(self.snapshot(usage).await?.as_ref(), id, forecast)
     }
     fn product_in(snapshot: &Snapshot, id: &str, forecast: bool) -> Result<Product, QueryError> {
         let product = snapshot
@@ -390,6 +383,7 @@ impl DataService {
     pub async fn forecasts(
         self: &Arc<Self>,
         payload: ForecastBatch,
+        catalog: Arc<Snapshot>,
         gate: &ComputeGate<SharedClock>,
         usage: SharedUsage,
     ) -> HttpResponse {
@@ -404,7 +398,7 @@ impl DataService {
             u.query_count = Some(payload.queries.len());
         }
         let mut timings = Timings::new(usage.clone(), self.observer.clone());
-        // A per-product caller policy can run here before admission or store I/O.
+        // Caller-location policy has completed before admission or store I/O.
         let Some(permit) = gate.try_acquire() else {
             return busy(gate);
         };
@@ -417,16 +411,11 @@ impl DataService {
             let mut budget = service.budget();
             let mut builder = query::BatchBuilder::new(Kind::Forecast);
             let mut opened = Vec::new();
-            // One immutable catalog generation for this batch, resolved lazily
-            // at the first product lookup to preserve admission/error order.
-            let mut snapshot = None;
+            // Keep the exact catalog generation checked before compute admission.
+            let snapshot = catalog;
             for (q, cell) in payload.queries.iter().zip(&resolved) {
                 timings.start("catalog");
-                if snapshot.is_none() {
-                    snapshot = Some(handle.block_on(service.snapshot(&usage))?);
-                }
-                let product =
-                    Self::product_in(snapshot.as_ref().unwrap(), &q.data_product_id, true)?;
+                let product = Self::product_in(&snapshot, &q.data_product_id, true)?;
                 if q.variables.iter().all(|v| {
                     v.trim_matches(dynapi_contract::output::python_whitespace)
                         .is_empty()
@@ -497,7 +486,7 @@ impl DataService {
     }
     pub async fn canonical(
         self: &Arc<Self>,
-        id: &str,
+        product: Product,
         snapshot: String,
         indices: &str,
         params: CanonicalQuery,
@@ -507,19 +496,18 @@ impl DataService {
         let started = Instant::now();
         {
             let mut u = usage.lock().unwrap();
-            u.products = vec![id.into()];
+            u.products = vec![product.id.clone()];
             u.query_count = Some(1);
         }
-        // A per-product caller policy can run here before admission or store I/O.
+        // Caller-location policy has completed before admission or store I/O.
         let mut timings = Timings::new(usage.clone(), self.observer.clone());
         let Some(permit) = gate.try_acquire() else {
             return busy(gate);
         };
         timings.start("catalog");
-        let product = match self.product(id, false, &usage).await {
-            Ok(p) => p,
-            Err(e) => return query_error(e),
-        };
+        if let Some(reason) = product.point_query_reason() {
+            return query_error(QueryError::invalid(reason));
+        }
         timings.finish("catalog");
         let variables = dynapi_contract::output::normalize_variables(
             &params

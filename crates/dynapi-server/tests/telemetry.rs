@@ -12,6 +12,19 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
+// Catalog preflight precedes compute admission, including busy rejections.
+// These telemetry cases need no products and must not use the public catalog.
+struct EmptyCatalog;
+impl dynapi_catalog::native::Fetcher for EmptyCatalog {
+    fn fetch<'a>(
+        &'a self,
+        _: &'a str,
+        _: dynapi_catalog::native::FetchContext,
+    ) -> futures_util::future::BoxFuture<'a, Result<Vec<u8>, dynapi_catalog::native::FetchError>>
+    {
+        Box::pin(async { Ok(br#"{"links":[]}"#.to_vec()) })
+    }
+}
 struct Server {
     address: std::net::SocketAddr,
     app: Arc<App>,
@@ -30,11 +43,21 @@ impl Server {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         let sink = Arc::new(RecordingSink::default());
+        let clock = Arc::new(Monotonic::default());
+        let catalog = dynapi_catalog::native::StacCatalog::with_dependencies(
+            "https://catalog.example.test/catalog.json",
+            dynapi_catalog::refresh::CatalogConfig::default(),
+            clock.clone(),
+            Arc::new(EmptyCatalog),
+            Arc::new(dynapi_catalog::native::NativeHooks),
+        )
+        .unwrap();
         let app = Arc::new(
-            App::new(
+            App::with_catalog(
                 Config::from_values(&values).unwrap(),
-                Arc::new(Monotonic::default()),
+                clock,
                 sink.clone(),
+                catalog,
             )
             .unwrap(),
         );

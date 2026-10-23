@@ -82,3 +82,10 @@ HTTP requests. It checks one startup root/child flight, a common warm snapshot,
 failure backoff, stale serving and refresh publication, request cancellation and
 final application shutdown. App owns catalog close; temporary DataService or
 catalog handles do not. Forecast batches retain one immutable catalog generation.
+
+`geo_gate.rs` and `geo_gate_tests.rs` own metadata-based target selection, trusted
+viewer fields, local proxy request headers, allow/refusal/error mapping, canonical
+privacy, unchanged direct products, gated stubs, catalog failure/refresh, expiry,
+redirect/timeout/body bounds, cache capacity and coalesced detached tasks. The fake
+proxy uses only loopback HTTP and obviously fictional credentials. No test calls
+the production check endpoint.

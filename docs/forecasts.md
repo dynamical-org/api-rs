@@ -10,14 +10,13 @@ unsupported on WASM. Virtual GRIB, representation routing, discovery and run
 listing remain later work.
 
 The native catalog service warms at process startup and shares its refresh,
-freshness and failure-backoff state across requests. Schema validation precedes
-compute admission. Each admitted worker resolves products, opens pinned dataset
+freshness and failure-backoff state across requests. Schema validation precedes catalog lookup and caller-location checks, which
+finish before compute admission. Each worker retains that exact catalog generation, opens pinned dataset
 views, selects points/runs/windows, and charges response values in input order.
 Only after every selection succeeds does it charge the aggregate read budget
 and load data. The worker owns its compute permit until reads and encoding finish,
-even if the HTTP client disconnects. Product policy has an insertion point before
-admission/store reads; successful response cache policy is set centrally by the
-encoder, allowing later per-response policy overrides.
+even if the HTTP client disconnects. Caller-location policy overrides response cache headers after a gated product
+is identified.
 
 | Environment variable | Default |
 | --- | --- |
@@ -47,7 +46,7 @@ revalidating that the branch still resolves to the same immutable snapshot.
 Pinned entries have no TTL; all entries share an LRU bounded by count and bytes.
 `X-Dynamical-Dataset-Cache` reports sorted unique `hit`, `miss` or `revalidated`
 statuses for the request. Canonical GET accepts immutable snapshot IDs and uses
-immutable caching. Invalid snapshot IDs return 404 with instructions to use a
+immutable caching for products without a caller-location check. Invalid snapshot IDs return 404 with instructions to use a
 response's `snapshotId`. Forecast POST uses mutable caching and accepts
 `representation` values `auto` and `requested`, with routing off for both.
 
@@ -63,3 +62,36 @@ response bytes and timings.
 Offline tests require the `dynapi-server/harness` feature. Its store substitution
 and typed reader fault hooks support synthetic fixtures; normal builds omit them.
 No Python tooling or reference-service output is part of the test suite.
+
+## Caller-location checks
+
+A product with any `http` virtual chunk container whose hostname is
+`wn.dynamical.org` requires a caller-location check. Product IDs do not select the
+policy. Forecast batches check all products before opening any dataset or taking
+a compute slot. Canonical GET, run listing and the analyses stub use the same
+policy; allowed run/analysis requests retain their current 501 stub behavior.
+
+Set `DYNAMICAL_API_GEO_CHECK_SECRET` to enable checks. The service sends it as
+`X-Geo-Check-Secret` to `https://wn.dynamical.org/geo-check`. Viewer country and
+region are forwarded only when both `X-Dynamical-Origin-Auth` and
+`X-Dynamical-Viewer-Auth` match the configured origin secret. Empty fields and
+untrusted viewer headers are omitted. Location never comes from query parameters
+or client IP inference.
+
+A 204 allows the request. A 451 returns the proxy's trimmed text in the JSON
+`detail` field, with a fixed fallback for empty text. Missing configuration,
+transport failures, redirects, other statuses or an oversized refusal return 503
+with `Retry-After: 5`. The client never follows redirects, and a check, including
+its body, has a five-second deadline. Refusal bodies are limited to 16 KiB.
+
+204 and 451 decisions are cached for 300 seconds by country and region; failures
+are never cached. The cache holds at most 1024 decisions and 4 MiB of charged key,
+detail and entry storage. At most 16 distinct checks may run at once. Identical
+checks share one task; disconnecting callers leave that bounded task running only
+until its deadline. Capacity exhaustion fails closed with retryable 503.
+
+Once a gated product is identified, every later response uses
+`Cache-Control: private, no-store`, including canonical responses and errors.
+Successful bodies retain ETags. Earlier authentication, rate and schema failures
+retain their existing policy. See D-geo-1 through D-geo-4 in
+[DEVIATIONS.md](../DEVIATIONS.md).
