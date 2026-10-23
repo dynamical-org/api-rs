@@ -38,6 +38,7 @@ jobs:
               rustup target add wasm32-unknown-unknown
               cargo check --locked --target wasm32-unknown-unknown -p dynapi-contract -p dynapi-policy -p dynapi-query --keep-going
               cargo check --locked --target wasm32-unknown-unknown -p dynapi-catalog --no-default-features
+              cargo check --locked --target wasm32-unknown-unknown -p dynapi-projection
               cargo fmt --all --check
               cargo check --locked -p dynapi-server --no-default-features
               cargo build --locked --release --workspace --features dynapi-server/harness,dynapi-server/telemetry-delivery
