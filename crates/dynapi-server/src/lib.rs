@@ -6,6 +6,8 @@ mod documentation;
 mod geo_gate;
 mod openapi;
 mod robots;
+#[cfg(feature = "harness")]
+pub mod route_contract;
 pub mod telemetry;
 pub mod transport;
 

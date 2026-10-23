@@ -1,0 +1,224 @@
+{
+  "methodBehavior": {
+    "allow": "registered_methods",
+    "headBody": "suppressed_including_errors",
+    "unsupportedStatus": 405
+  },
+  "pathBehavior": {
+    "parameters": "one_nonempty_decoded_segment",
+    "percentDecoding": "once_utf8_lossy",
+    "slashRedirect": {
+      "authority": "validated_host_or_socket",
+      "preserveQuery": true,
+      "removeTrailingSlashes": "all",
+      "scheme": "configured_public_scheme",
+      "status": 307
+    },
+    "staticTerminalLf": "one_tolerated",
+    "unmatchedStatus": 404
+  },
+  "preflight": {
+    "beforeOriginAuthentication": true,
+    "beforeRouting": true,
+    "method": "OPTIONS",
+    "rejectionStatus": 400,
+    "requiresHeaders": [
+      "Origin",
+      "Access-Control-Request-Method"
+    ],
+    "scope": "all_paths",
+    "successStatus": 200
+  },
+  "routes": [
+    {
+      "directRedirectStatus": 301,
+      "head": {
+        "body": "suppressed",
+        "registered": true
+      },
+      "intent": "redirect",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": false,
+      "template": "/"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": true
+      },
+      "intent": "static",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": true,
+      "template": "/robots.txt"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "health",
+      "methods": [
+        "GET"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": true,
+      "template": "/healthz"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": true
+      },
+      "intent": "documentation",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": true,
+      "template": "/openapi.json"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": true
+      },
+      "intent": "documentation",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": true,
+      "template": "/docs"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": true
+      },
+      "intent": "documentation",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": true,
+      "template": "/docs/oauth2-redirect"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": true
+      },
+      "intent": "documentation",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "plainOptionsStatus": 405,
+      "slashAlternativeRedirect": true,
+      "template": "/redoc"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "data",
+      "methods": [
+        "POST"
+      ],
+      "plainOptionsStatus": 204,
+      "slashAlternativeRedirect": true,
+      "template": "/v1/forecasts"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "data",
+      "methods": [
+        "POST"
+      ],
+      "plainOptionsStatus": 204,
+      "slashAlternativeRedirect": true,
+      "template": "/v1/analyses"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "data",
+      "methods": [
+        "GET"
+      ],
+      "plainOptionsStatus": 204,
+      "slashAlternativeRedirect": true,
+      "template": "/v1/forecasts/runs"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "catalog",
+      "methods": [
+        "GET"
+      ],
+      "plainOptionsStatus": 204,
+      "slashAlternativeRedirect": true,
+      "template": "/v1/data-products"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "catalog",
+      "methods": [
+        "GET"
+      ],
+      "plainOptionsStatus": 204,
+      "slashAlternativeRedirect": true,
+      "template": "/v1/data-products/{dataProductId}"
+    },
+    {
+      "directRedirectStatus": null,
+      "head": {
+        "body": "suppressed",
+        "registered": false
+      },
+      "intent": "data",
+      "methods": [
+        "GET"
+      ],
+      "plainOptionsStatus": 204,
+      "slashAlternativeRedirect": true,
+      "template": "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}"
+    }
+  ],
+  "schemaVersion": 1,
+  "scope": "origin"
+}
