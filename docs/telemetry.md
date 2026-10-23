@@ -22,6 +22,46 @@ heartbeat counters; an unconfigured network adapter adds these fields only after
 a stdout loss. A best-effort, nonblocking Unix stderr diagnostic reports stdout
 loss totals at shutdown, including records abandoned with a stalled writer.
 
+## Weighted analytics sampling
+
+Every request analytics event carries integer `properties.sample_weight`, including
+when analytics sampling is off. Count requests as
+`sum(coalesce(sample_weight, 1))` when combining weighted and older events.
+
+| Environment variable | Default |
+| --- | --- |
+| `DYNAMICAL_API_ANALYTICS_SAMPLING` | `0`; only exact `1` enables |
+| `DYNAMICAL_API_ANALYTICS_SAMPLING_THRESHOLD` | `100` |
+| `DYNAMICAL_API_ANALYTICS_SAMPLING_WINDOW_SECONDS` | `3600` |
+| `DYNAMICAL_API_ANALYTICS_SAMPLING_WEIGHT` | `10` |
+
+The threshold, window and weight must be positive integers, including when the
+sampler is disabled. Sampling applies only to the analytics events described
+below: configured analytics for `/v1/` requests after origin authentication.
+Static routes, preflights, authentication rejections and cancelled requests do
+not consume a prefix. Both rate and handler errors do consume it.
+
+When enabled, each container counts eligible events for identified distinct IDs in fixed windows
+`floor(monotonic_seconds / window_seconds)`. Production Unix clocks use the OS
+monotonic epoch; tests inject the clock. All eligible events count, including
+errors, dropped successes and failed capture attempts. Events 1 through the
+threshold are sent at weight 1. Later 2xx events are sent with probability
+`1 / weight`, carrying that weight. Other statuses are always sent at weight 1.
+The existing distinct ID hashes the authenticated client address without the
+Worker suffix; `anonymous` bypasses counting and is always sent at weight 1.
+
+The per-window LRU holds at most 10,000 distinct IDs, with counts capped at the
+threshold plus one. Every counted event refreshes recency. An evicted caller
+starts a fresh prefix; a window change clears all counts. This matches the
+reference Python service's existing bound. Production draws use seeded state
+owned by each sampler; tests inject deterministic draws.
+
+A sampler, clock or draw failure sends the eligible event at weight 1. Capture
+failure cannot change its HTTP response. Analytics sampling changes neither
+admission nor the independent terminal success sampling rule above. Terminal
+failures, heartbeats and error reports retain their existing behavior. The
+optional delivery adapter preserves the integer weight on the wire.
+
 ## Optional delivery
 
 Build production delivery explicitly:

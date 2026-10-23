@@ -285,6 +285,17 @@ Network delivery requires the separate `telemetry-delivery` build feature.
 | Geo-gate privacy in telemetry | Refusal containing the configured secret fails closed without copying it into response or captured telemetry | covered | [geo_gate.rs::denial_text_trims_python_whitespace_and_empty_text_has_fallback][geo-gate]; this specific assertion does not establish the full denial/error event field and counter table |
 | Routing and geo-gate telemetry breadth | Shadow/auto counters/provenance and complete viewer-policy denial/error event assertions | gap | [#3](https://github.com/dynamical-org/api/issues/3), [#10](https://github.com/dynamical-org/api/issues/10); implemented gate HTTP behavior does not establish complete telemetry conditions |
 
+### Weighted request analytics
+
+| Scope | Capability / failure | Status | Evidence |
+| --- | --- | --- | --- |
+| Sampler policy | T/W strict boundary, all eligible statuses count, non-2xx retained, independent callers | covered | [sampling.rs::threshold_and_strict_probability_boundaries_count_every_eligible_status][sampling-policy] (component); [analytics_sampling.rs::weighted_successes_errors_window_reset_and_worker_identity_follow_http_contract][sampling-http] |
+| Fixed window / bounds | Exact rollover and backward reset, 10,000-entry production LRU, saturated counts, atomic concurrent prefix | covered | [sampling.rs::fixed_window_rollover_and_clock_reversal_reset_counts][sampling-policy]; [sampling.rs::lru_and_saturated_counts_bound_both_indexes][sampling-policy]; [sampling.rs::production_limit_retains_only_ten_thousand_caller_ids][sampling-policy]; [sampling.rs::concurrent_calls_keep_an_exact_prefix_and_capped_state][sampling-policy] (components; small injected capacity exercises the production eviction algorithm) |
+| Off / anonymous / configuration | Integer unit weights by default and for anonymous requests; positive settings and exact enable switch | covered | [analytics_sampling.rs::analytics_sampling_settings_are_positive_and_enable_only_exact_one][sampling-http]; [analytics_sampling.rs::default_off_and_anonymous_always_emit_integer_unit_weight][sampling-http]; [sampling.rs::anonymous_and_off_never_consult_clock_draw_or_state][sampling-policy] |
+| Eligibility / cancellation | Only configured post-auth `/v1/` analytics consume the prefix; rate/handler errors count; static/auth/preflight/cancel do not | covered | [analytics_sampling.rs::only_eligible_analytics_count_and_every_non_success_is_retained][sampling-http]; [analytics_sampling.rs::cancellation_never_consumes_the_analytics_prefix][sampling-http] |
+| Failure / terminal independence | Sampler failure sends unit weight; capture failure preserves HTTP response and terminal failure; dropped analytics leaves terminal success intact | covered | [sampling.rs::clock_and_draw_failures_send_unit_weight_and_allow_recovery][sampling-policy]; [analytics_sampling.rs::failing_sampler_emits_each_eligible_event_at_unit_weight][sampling-http]; [analytics_sampling.rs::failing_capture_never_changes_http_responses_or_terminal_failures][sampling-http]; [analytics_sampling.rs::dropping_analytics_preserves_response_and_independent_terminal_success][sampling-http]; [analytics_sampling.rs::disabled_terminal_success_sampling_keeps_weighted_analytics_active][sampling-http] |
+| Analytics delivery | Integer weight survives approved-property filtering and loopback capture delivery | covered | [delivery.rs::loopback_wire_contract_and_shutdown_flush_both_destinations][sampling-delivery] (requires `telemetry-delivery`) |
+
 ## Readiness and drain
 
 | Scope | Capability / failure | Status | Evidence |
@@ -346,3 +357,7 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [fair-http]: ../crates/dynapi-server/tests/fair_share.rs
 
 [fair-map]: ../crates/dynapi-policy/src/lib.rs
+
+[sampling-policy]: ../crates/dynapi-server/src/telemetry/sampling.rs
+[sampling-http]: ../crates/dynapi-server/tests/analytics_sampling.rs
+[sampling-delivery]: ../crates/dynapi-server/src/telemetry/delivery.rs

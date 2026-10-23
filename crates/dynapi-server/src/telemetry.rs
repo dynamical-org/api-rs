@@ -1,9 +1,10 @@
-//! Injectable telemetry. Only handler success records are sampled; failures and
-//! heartbeats are unsampled. Delivery is an optional native adapter.
+//! Injectable telemetry. Terminal success sampling and weighted analytics
+//! sampling are independent. Delivery is an optional native adapter.
 #[cfg(feature = "telemetry-delivery")]
 pub mod delivery;
 pub mod heartbeat;
 pub mod loads;
+pub mod sampling;
 pub mod shutdown;
 mod stdout;
 pub use stdout::StdoutSink;

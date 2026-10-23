@@ -461,6 +461,7 @@ fn posthog_payload(token: &str, record: &Value) -> Option<Value> {
         "query_count",
         "work_units",
         "dataset_cache",
+        "sample_weight",
     ] {
         if let Some(value) = properties.get(key) {
             safe.insert(key.to_owned(), value.clone());
@@ -684,7 +685,7 @@ mod tests {
             ("SENTRY_DSN".into(), format!("http://public@{address}/1")),
         ]))
         .unwrap();
-        sink.emit(Stream::Analytics,json!({"event":"api_request","distinct_id":"anonymous","properties":{"status":422,"$process_person_profile":false}}));
+        sink.emit(Stream::Analytics,json!({"event":"api_request","distinct_id":"anonymous","properties":{"status":200,"$process_person_profile":false,"sample_weight":10}}));
         let error =
             super::super::error_record(super::super::ErrorKind::Startup, json!({})).unwrap();
         sink.emit(Stream::Error, error);
@@ -699,7 +700,7 @@ mod tests {
             if path == "/capture/" {
                 assert_eq!(
                     serde_json::from_slice::<Value>(&body).unwrap(),
-                    json!({"api_key":"fake-project-token","event":"api_request","distinct_id":"anonymous","properties":{"status":422,"$process_person_profile":false}})
+                    json!({"api_key":"fake-project-token","event":"api_request","distinct_id":"anonymous","properties":{"status":200,"$process_person_profile":false,"sample_weight":10}})
                 );
             } else {
                 assert_eq!(path, "/api/1/envelope/");
