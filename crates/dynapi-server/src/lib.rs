@@ -622,16 +622,30 @@ impl App {
                     };
                 match dynapi_contract::validate_analysis(&bytes, content_type.as_deref()) {
                     Ok(payload) => {
-                        let ids: Vec<_> = payload.queries.iter().map(|q| q.data_product_id.as_str()).collect();
+                        let ids: Vec<_> = payload
+                            .queries
+                            .iter()
+                            .map(|q| q.data_product_id.as_str())
+                            .collect();
                         let Some(permit) = self.admit_data(&ids, &usage) else {
                             return Ok(data::busy(&self.gate));
                         };
-                        let catalog = match self.checked_catalog(&ids, false, true, &geo_headers, viewer_trusted, &usage).await {
+                        let catalog = match self
+                            .checked_catalog(
+                                &ids,
+                                false,
+                                true,
+                                &geo_headers,
+                                viewer_trusted,
+                                &usage,
+                            )
+                            .await
+                        {
                             Ok(catalog) => catalog,
                             Err(response) => return Ok(response),
                         };
                         self.data.analyses(payload, catalog, permit, usage).await
-                    },
+                    }
                     Err(invalid) => response(
                         invalid.status,
                         invalid.body,
@@ -651,12 +665,22 @@ impl App {
                         let Some(permit) = self.admit_data(&ids, &usage) else {
                             return Ok(data::busy(&self.gate));
                         };
-                        let catalog = match self.checked_catalog(&ids, false, false, request.headers(), viewer_trusted, &usage).await {
+                        let catalog = match self
+                            .checked_catalog(
+                                &ids,
+                                false,
+                                false,
+                                request.headers(),
+                                viewer_trusted,
+                                &usage,
+                            )
+                            .await
+                        {
                             Ok(catalog) => catalog,
                             Err(response) => return Ok(response),
                         };
                         self.data.runs(params, catalog, permit, usage).await
-                    },
+                    }
                     Err(invalid) => response(
                         invalid.status,
                         invalid.body,

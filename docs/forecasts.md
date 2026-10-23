@@ -5,8 +5,7 @@ canonical point links for materialized rectilinear products. Deterministic and
 ensemble data responses use the portable query engine's ordered JSON and SHA-256
 ETags. Native HRRR Lambert conformal and HRDPS rotated-pole grids use the same
 operation for geographic selection and canonical locations, preserving stored
-y/x indices. Projected selection remains
-unsupported on WASM. Virtual GRIB and representation routing remain later work.
+y/x indices. Projected selection remains unsupported on WASM. Virtual GRIB and representation routing remain later work.
 
 `POST /v1/analyses` accepts 1–10 queries, each with a product, location, 1–25
 variables and required timezone-aware `startTime`/`endTime`. The UTC elapsed
@@ -93,10 +92,10 @@ No Python tooling or reference-service output is part of the test suite.
 
 A product with any `http` virtual chunk container whose hostname is
 `wn.dynamical.org` requires a caller-location check. Product IDs do not select the
-policy. Forecast POST and canonical GET acquire a compute slot before catalog
-resolution and caller-location checks. Forecast batches check every gated product
-before opening any dataset. Run listing and the analyses stub check before
-admission; allowed run/analysis requests retain their current 501 stub behavior.
+policy. Forecast and analysis POST, run listing and canonical GET acquire a
+compute slot before catalog resolution and caller-location checks. Batches check
+every known gated product before opening any dataset. Allowed requests then
+serve data or list runs using the exact catalog generation checked.
 
 Set `DYNAMICAL_API_GEO_CHECK_SECRET` to enable checks. The service sends it as
 `X-Geo-Check-Secret` to `https://wn.dynamical.org/geo-check`. Viewer country and
@@ -119,6 +118,7 @@ until its deadline. Capacity exhaustion fails closed with retryable 503.
 
 Once a gated product is identified, every later response uses
 `Cache-Control: private, no-store`, including canonical responses and errors.
-Successful bodies retain ETags. Earlier authentication, rate and schema failures
+Data responses retain ETags; run listing has no ETag. Earlier authentication,
+rate and schema failures
 retain their existing policy. See D36 through D39 in
 [DEVIATIONS.md](../DEVIATIONS.md).

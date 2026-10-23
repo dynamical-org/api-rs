@@ -495,6 +495,12 @@ before its stub, and hidden forecast products skip the check and return 404
 without the gated privacy override, unlike the reference's refusal/unavailable
 response for gated hidden products; no data is served in these cases.
 
+Analysis POST and run listing now supersede the stub behavior above: both use
+schema validation, compute admission, catalog resolution and caller-location
+checks before store work, retaining the checked catalog generation. Hidden gated
+products are checked before type rejection on these two routes; the existing
+forecast-batch hidden-product exception remains unchanged.
+
 ## D38 — Bounded and coalesced location checks
 
 The reference Python service has no refusal-body or byte-cache ceiling and does
@@ -516,6 +522,9 @@ GET. Earlier schema/auth/rate errors retain their existing order and policy, mat
 remain. The configured check secret has redacted Debug output, sensitive HTTP
 header storage and static diagnostics. A refusal echoing the secret fails closed
 to generic 503 rather than copying it into a public detail or telemetry.
+
+Analysis POST and run listing now use the same admission-before-identification
+boundary. Run listing continues to omit ETags on successful responses.
 
 ## D-an-1 — Typed dataset metadata-budget rejection
 

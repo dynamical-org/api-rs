@@ -145,6 +145,7 @@ does not establish that the edge allows that request.
 | `/v1/forecasts/runs` | Typed query defaults, last-wins/ignored extras, bounded integer coercion; unique full-ns ordering, NaT removal and strict filtering | covered | [analyses.rs::runs_accept_last_query_value_extras_and_decimal_integer_coercion][analysis-contract]; [query.rs::run_listing_sorts_unique_full_precision_times_drops_nat_and_filters_strictly][query] |
 | `/v1/forecasts/runs` | Metadata-only values/snapshot/limits/empty windows, mutable caching, no ETag or data-query headers; unsupported point grid remains discoverable | covered | [analyses.rs::runs_are_strict_newest_first_metadata_only_and_have_no_query_response_headers][analyses]; [analyses.rs::run_discovery_bypasses_point_grid_eligibility][analyses] |
 | Both routes | Schema before compute; lookup/type/time before open, catalog before deferred handler checks; generic runs open error has no Retry-After | covered | [analyses.rs::new_route_schema_checks_precede_compute_and_both_routes_release_permits][analyses]; [analyses.rs::runs_lookup_type_and_time_guards_precede_open_errors][analyses]; [analyses.rs::both_new_routes_preserve_catalog_failure_before_handler_checks][analyses] |
+| Both routes | Admission before caller-location checks; refused/unconfigured checks before store work, allowed data/run headers, hidden gated products before type rejection | covered | [geo_gate.rs::runs_and_analyses_admit_before_checks_and_refuse_before_store_work][server-geo]; [geo_gate.rs::runs_and_analyses_fail_closed_without_geo_configuration_before_store_work][server-geo]; [geo_gate.rs::runs_and_analyses_check_hidden_gated_products_before_type_rejection][server-geo] |
 | Both routes | Analysis body cap before catalog/compute; cancellation retains permit through owned store work | covered | [analyses.rs::analysis_body_cap_precedes_catalog_and_compute][analyses]; [analyses.rs::cancelled_analysis_and_runs_keep_their_permit_until_owned_store_work_finishes][analyses] |
 | Both routes | HEAD/unsupported methods, plain OPTIONS and slash redirect response tables without catalog/compute use | covered | [public_contract.rs::data_route_methods_plain_options_and_slash_redirects_need_no_catalog_or_compute][public-contract]; public edge reachability remains [#33](https://github.com/dynamical-org/api/issues/33) |
 
@@ -313,3 +314,5 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [analyses]: ../crates/dynapi-server/tests/analyses.rs
 [analysis-contract]: ../crates/dynapi-contract/tests/analyses.rs
 [data-service]: ../crates/dynapi-server/src/data.rs
+
+[server-geo]: ../crates/dynapi-server/tests/geo_gate.rs
