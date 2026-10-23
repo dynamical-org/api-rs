@@ -16,17 +16,24 @@ to serve the API while the Rust implementation is verified during migration.
 - `dynapi-read`: single-request JSON command-line adapter for exercising the reader.
 - `dynapi-server`: native Hyper HTTP/1.1 server, middleware, admission and telemetry sink boundaries.
 
-The server currently serves the root redirect, robots and health check, and
-implements request IDs, CORS, origin authentication and rate limits. It serves
-forecast and analysis batches, forecast run listing, and canonical
-`GET /v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}` for materialized
-rectilinear and attested projected products, with bounded dataset caching,
-compute admission and response encoding. Catalog and documentation routes have
-native handlers. See [forecast serving](docs/forecasts.md)
-for configuration, bounds and the fixture test contract. Optional analytics/error
-delivery and stdout heartbeat behavior are
-described in [docs/telemetry.md](docs/telemetry.md). Production connection/drain
-qualification remains unfinished; see [DEVIATIONS.md](DEVIATIONS.md).
+The native server implements forecast and analysis batches
+(`POST /v1/forecasts`, `POST /v1/analyses`), forecast run listing
+(`GET /v1/forecasts/runs`) and canonical
+`GET /v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}`. Tested families
+include deterministic and ensemble rectilinear products, materialized analyses
+and attested HRRR/HRDPS projected grids. Catalog discovery, documentation, root
+redirect, robots and health routes also have native handlers.
+
+Middleware includes request IDs, CORS, origin authentication, rate limits,
+caller-location gating and per-caller fair-share admission. Optional weighted
+request analytics sampling and telemetry delivery are described in
+[telemetry](docs/telemetry.md).
+
+Virtual GRIB point serving remains unwired
+([#3](https://github.com/dynamical-org/api/issues/3)); stored-coordinate run
+discovery can work independently. See the [coverage matrix](docs/coverage.md) and
+[deviations](DEVIATIONS.md) for qualification, bounds and remaining gaps, and
+[forecast serving](docs/forecasts.md) for configuration.
 
 ## Build and checks
 
