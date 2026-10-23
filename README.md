@@ -76,7 +76,8 @@ allowlist. Ordered list selectors preserve duplicates and use Cartesian indexing
 CF time conversion is explicit and separate from stored-value reads.
 
 Work is checked before allocation/decode: output is capped at 64 MiB, float inner
-chunks at 16 MiB, int64 chunks at 64 MiB, shard indexes at 8 MiB, selector entries
+chunks at 56 MiB, int64 chunks at 64 MiB, other integer widths at 16 MiB,
+shard indexes at 8 MiB, selector entries
 at 1,048,576 and touched inner chunks at 65,536. Reads and decodes are sequential
 with a 90-second reader deadline. Sparse sharded reads fetch selected payload
 ranges and decode each touched inner chunk once. Trace counters describe logical

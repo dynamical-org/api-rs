@@ -363,3 +363,50 @@ metadata policy. The library alone enables no service route.
 - Rust library: requires nonempty finite monotonic axes in either direction, with finite span and half-cell bounds. Rotated axes must be within longitude/latitude ranges. Duplicates are allowed and choose the first original array index on ties; singleton/constant axes have zero tolerance. Bounds use half the median spacing between unique coordinates and include their endpoints. No rounding epsilon changes admission or indices.
 - Consequence: malformed axes can be rejected before selection. WKT attests only the operation; the adapter must still validate coordinate membership, dtype and units. All attested HRRR/HRDPS axes satisfy this contract. This library contract does not change existing service routes until adapter integration.
 - Tests: `ascending_descending_and_duplicate_ties_choose_first_array_index`, `bounds_use_median_unique_spacing_and_are_inclusive`, `singleton_and_constant_axes_have_zero_tolerance`, and `invalid_axes_and_points_fail_before_selection` own explicit axis arrays and adjacent representable boundary values.
+
+
+## D32 — Catalog decoded-unit ceiling
+
+- The reference Python service has no equivalent 16 MiB per-float-chunk admission
+  ceiling. Rust now admits up to **56 MiB (58,720,256 bytes)** per decoded float
+  inner unit, covering all inventoried root arrays. IMERG analysis requires
+  57,600,000 bytes, MRMS analysis 25,920,000 and HRRR analysis 17,496,000; the
+  affected IFS forecast units require 17,756,160 and 18,213,120 bytes.
+- The existing 64 MiB int64, 64 MiB output, 8 MiB index, selector/work and dataset
+  metadata budgets stay independent. The largest new decode units are analysis
+  arrays; this does not implement the analyses endpoint or increase IMERG's
+  dataset metadata budget. Concurrent decode pools must budget for the largest
+  admitted unit: the 64 MiB int64 ceiling, or
+  `max(MAX_CHUNK_BYTES, MAX_INTEGER_CHUNK_BYTES)`. See `docs/reader.md` for the
+  per-unit staging ledger.
+- Tests: `float_chunk_boundary_and_in_place_scale_obey_unit_staging_charge` checks
+  exact-limit decoding, allocation charge and one-float-over preflight rejection,
+  with and without scale/offset. `decoded_unit_boundaries_and_zstd_window_are_fixed`
+  checks exact-byte limits and the small native Zstd frame/window policy.
+
+## D33 — Explicit catalog codec subset and lazy data variables
+
+- The reference Python service supports more Zarr extension combinations. Rust
+  adds leading float32 `scale_offset` only with NaN fill, numeric finite float32
+  parameters, defaults scale 1/offset 0 and a nonzero converted scale. Division
+  and addition run separately in float32. Integer/float64 transforms, string
+  parameters, finite fills and transpose remain unsupported. These exclusions
+  return typed Unsupported; oversized decoded units return typed SizeLimit.
+- Dataset-mode rank-one int16 standalone Zstd admits only little-endian bytes,
+  level 0/checksum false, <=128 decoded bytes and <=256 encoded bytes with an
+  exact declared content size. Other standalone Zstd layouts retain typed
+  rejection. No dependency or native-library versions change. Strict stored-value
+  coordinate profiles remain separate from the dataset entry point; in particular
+  a WeatherNext init_time tuple outside those profiles remains unsupported there.
+- Data variables are already lazy: supported siblings remain readable when another
+  variable has an unsupported codec. Required query coordinates are eager and
+  may fail dataset open. With a gzip sibling, both engines open and read supported
+  bytes data; the reference also reads gzip, while Rust rejects its selection.
+  For a codec neither engine resolves, the reference can fail the whole open
+  while Rust keeps supported siblings readable. This more lenient open is an
+  intentional deviation. HRDPS's auxiliary expected_forecast_length CF tuple
+  remains outside the existing exact CF-time tuples; projected point selection
+  and nested pressure-level query dimensions are separate unsupported contracts.
+- Tests use synthetic Rust-owned byte recipes, explicit decoded values and dtype
+  precision invariants; no captured reference output is committed. See
+  `catalog_encodings.rs` and `docs/reader.md` for codec and frame cases.

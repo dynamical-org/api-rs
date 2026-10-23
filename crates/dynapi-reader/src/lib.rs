@@ -26,10 +26,13 @@ use zarrs_storage::{
 pub mod cf_time;
 mod http;
 mod repository_http;
+mod scale_offset;
+use scale_offset::ScaleOffset;
 
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_CHUNK_BYTES: usize = 56 * 1024 * 1024;
 const MAX_INTEGER_CHUNK_BYTES: usize = 64 * 1024 * 1024;
+const MAX_NARROW_INTEGER_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;
 /// Bound checked before adapters allocate positional selector copies.
 pub const MAX_SELECTORS: usize = 1_048_576;
@@ -218,6 +221,7 @@ struct PayloadPolicy {
     blosc: Option<BloscPolicy>,
     shard: Option<ShardPolicy>,
     scalar_zstd: bool,
+    member_zstd: bool,
     max_decoded_bytes: usize,
 }
 #[derive(Debug)]
@@ -243,6 +247,7 @@ enum PayloadRead {
     Blosc,
     Bytes,
     ScalarZstd,
+    MemberZstd,
 }
 
 fn validate_scalar_zstd(bytes: &[u8]) -> Result<(), StorageError> {
@@ -277,6 +282,54 @@ fn decode_scalar_zstd(bytes: &[u8]) -> Result<Vec<u8>, StorageError> {
         ));
     }
     Ok(output.to_vec())
+}
+
+fn validate_member_zstd(bytes: &[u8], decoded_bytes: usize) -> Result<(), StorageError> {
+    if bytes.len() < 6
+        || bytes.len() > 256
+        || bytes[..4] != [0x28, 0xb5, 0x2f, 0xfd]
+        || bytes[4] & 0x1f != 0
+        // Bulk decompression can ignore WindowLogMax when using the caller's
+        // fixed destination as history. A non-single-segment window descriptor
+        // of zero is the only one whose window is at most 1 KiB.
+        || (bytes[4] & 0x20 == 0 && bytes[5] != 0)
+        || zstd::zstd_safe::get_frame_content_size(bytes)
+            .ok()
+            .flatten()
+            != Some(decoded_bytes as u64)
+        || zstd::zstd_safe::find_frame_compressed_size(bytes).ok() != Some(bytes.len())
+    {
+        return Err(invalid_payload("Unattested int16 Zstd frame"));
+    }
+    Ok(())
+}
+
+fn decode_member_zstd(bytes: &[u8], decoded_bytes: usize) -> Result<Vec<u8>, StorageError> {
+    validate_member_zstd(bytes, decoded_bytes)?;
+    let mut decoder = zstd::bulk::Decompressor::new().map_err(invalid_payload)?;
+    decoder
+        .set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(10))
+        .map_err(invalid_payload)?;
+    let mut output = vec![0; decoded_bytes];
+    let size = decoder
+        .decompress_to_buffer(bytes, &mut output[..])
+        .map_err(invalid_payload)?;
+    if size != output.len() {
+        return Err(invalid_payload("Zstd output differs from full int16 chunk"));
+    }
+    Ok(output)
+}
+
+fn member_zstd(meta: &Value) -> bool {
+    meta["data_type"] == "int16"
+        && meta["shape"]
+            .as_array()
+            .is_some_and(|shape| shape.len() == 1)
+        && meta["codecs"]
+            == json!([
+                {"name":"bytes","configuration":{"endian":"little"}},
+                {"name":"zstd","configuration":{"level":0,"checksum":false}}
+            ])
 }
 
 fn invalid_payload(message: impl ToString) -> StorageError {
@@ -325,8 +378,18 @@ impl PayloadPolicy {
             &meta["codecs"]
         };
         let scalar_zstd = cap.shape.is_empty();
-        let blosc = if !scalar_zstd && codecs.as_array().is_some_and(|c| c.len() == 2) {
-            let config = &codecs[1]["configuration"];
+        let member_zstd = member_zstd(meta);
+        let blosc = if !scalar_zstd
+            && !member_zstd
+            && codecs
+                .as_array()
+                .is_some_and(|c| c.last().is_some_and(|c| c["name"] == "blosc"))
+        {
+            let config = &codecs
+                .as_array()
+                .expect("attested codecs")
+                .last()
+                .expect("blosc")["configuration"];
             Some(BloscPolicy {
                 compressor_id: match config["cname"].as_str() {
                     Some("zstd") => 4,
@@ -361,12 +424,15 @@ impl PayloadPolicy {
             blosc,
             shard,
             scalar_zstd,
+            member_zstd,
             max_decoded_bytes: cap.chunk_limit(),
         })
     }
     fn encoded_limit(&self) -> usize {
         if self.scalar_zstd {
             64
+        } else if self.member_zstd {
+            256
         } else {
             self.max_decoded_bytes + 16
         }
@@ -650,6 +716,12 @@ impl ObservedStore {
                 }
                 return Ok(PayloadRead::ScalarZstd);
             }
+            if policy.member_zstd {
+                if span.start != 0 || span.end != size {
+                    return Err(invalid_payload("Expected complete int16 Zstd frame"));
+                }
+                return Ok(PayloadRead::MemberZstd);
+            }
             if policy.blosc.is_some() {
                 if span.start != 0 || span.end != size {
                     return Err(invalid_payload("Expected complete Blosc frame"));
@@ -716,6 +788,7 @@ impl ObservedStore {
             PayloadRead::Blosc => policy.validate_frame(&bytes)?,
             PayloadRead::Bytes => {}
             PayloadRead::ScalarZstd => validate_scalar_zstd(&bytes)?,
+            PayloadRead::MemberZstd => validate_member_zstd(&bytes, policy.full_bytes)?,
             PayloadRead::Index => {
                 let payloads = policy.validate_index(&bytes, size)?;
                 *self.index.lock().unwrap_or_else(|e| e.into_inner()) = Some(ValidatedIndex {
@@ -812,6 +885,7 @@ struct Capability {
     width: usize,
     shape: Vec<u64>,
     inner: Vec<u64>,
+    scale_offset: Option<ScaleOffset>,
 }
 fn dimensions(value: &Value) -> Result<Vec<u64>, ReaderError> {
     let values = value
@@ -858,6 +932,12 @@ fn numeric_codecs(value: &Value, width: usize, integer: bool) -> Result<(), Read
     let codecs = value
         .as_array()
         .ok_or_else(|| unsupported("Missing codecs"))?;
+    numeric_codec_slice(codecs, width, integer)
+}
+fn numeric_codec_slice(codecs: &[Value], width: usize, integer: bool) -> Result<(), ReaderError> {
+    if codecs.iter().any(|codec| codec["name"] == "zstd") {
+        return Err(unsupported("Unsupported standalone Zstd configuration"));
+    }
     if !(1..=2).contains(&codecs.len()) || !bytes_codec(&codecs[0], width) {
         return Err(unsupported(
             "Expected little-endian bytes, optionally followed by blosc",
@@ -1134,6 +1214,14 @@ fn attest_with_mode(
     let codecs = meta["codecs"]
         .as_array()
         .ok_or_else(|| unsupported("Missing codecs"))?;
+    let scale_offset = if codecs.first().is_some_and(|c| c["name"] == "scale_offset") {
+        if dtype != "float32" || meta["fill_value"] != "NaN" {
+            return Err(unsupported("scale_offset requires float32 with NaN fill"));
+        }
+        Some(ScaleOffset::parse(&codecs[0])?)
+    } else {
+        None
+    };
     if dtype == "int64" && (!dataset || shape.is_empty()) {
         let expected = if shape.is_empty() {
             json!([{"name":"bytes","configuration":{"endian":"little"}}, {"name":"zstd","configuration":{"level":0,"checksum":false}}])
@@ -1180,37 +1268,39 @@ fn attest_with_mode(
         checked_bytes(&counts, 16, MAX_INDEX_BYTES - 4)?;
         inner
     } else {
-        numeric_codecs(
-            &meta["codecs"],
-            width,
-            dataset && (dtype.starts_with("int") || dtype.starts_with("uint")),
-        )?;
+        checked_bytes(&outer, width, chunk_limit(dtype))?;
+        if dataset && member_zstd(meta) {
+            checked_bytes(&outer, width, 128)?;
+        } else {
+            numeric_codec_slice(
+                &codecs[usize::from(scale_offset.is_some())..],
+                width,
+                dataset && (dtype.starts_with("int") || dtype.starts_with("uint")),
+            )?;
+        }
         outer
     };
-    checked_bytes(
-        &inner,
-        width,
-        if dtype == "int64" {
-            MAX_INTEGER_CHUNK_BYTES
-        } else {
-            MAX_CHUNK_BYTES
-        },
-    )?;
+    checked_bytes(&inner, width, chunk_limit(dtype))?;
     Ok(Capability {
         dtype: dtype.into(),
         width,
         shape,
         inner,
+        scale_offset,
     })
+}
+
+fn chunk_limit(dtype: &str) -> usize {
+    match dtype {
+        "int64" => MAX_INTEGER_CHUNK_BYTES,
+        "float32" | "float64" => MAX_CHUNK_BYTES,
+        _ => MAX_NARROW_INTEGER_CHUNK_BYTES,
+    }
 }
 
 impl Capability {
     fn chunk_limit(&self) -> usize {
-        if self.dtype == "int64" {
-            MAX_INTEGER_CHUNK_BYTES
-        } else {
-            MAX_CHUNK_BYTES
-        }
+        chunk_limit(&self.dtype)
     }
 }
 
@@ -1813,9 +1903,34 @@ impl ReadSession {
             trace.subset_bytes = 8;
             trace.max_concurrent_chunks = 1;
         } else if prepared.elements > 0 {
-            let array = Array::async_open(store.clone(), &format!("/{array_path}"))
-                .await
-                .map_err(|e| unsupported(e.to_string()))?;
+            let member_zstd = member_zstd(&meta);
+            // Scale_offset is decoded locally in place; zarrs receives only the
+            // attested bytes/Blosc suffix. NaN fill is unchanged by the transform.
+            let array = if member_zstd {
+                None
+            } else if cap.scale_offset.is_some() {
+                let mut metadata = meta.clone();
+                metadata["codecs"]
+                    .as_array_mut()
+                    .expect("attested codecs")
+                    .remove(0);
+                let metadata =
+                    serde_json::from_value(metadata).map_err(|e| unsupported(e.to_string()))?;
+                Some(
+                    Array::new_with_metadata(
+                        store.clone(),
+                        &format!("/{array_path}"),
+                        zarrs::metadata::ArrayMetadata::V3(metadata),
+                    )
+                    .map_err(|e| unsupported(e.to_string()))?,
+                )
+            } else {
+                Some(
+                    Array::async_open(store.clone(), &format!("/{array_path}"))
+                        .await
+                        .map_err(|e| unsupported(e.to_string()))?,
+                )
+            };
             let options = CodecOptions::default().with_concurrent_target(1);
             let sizes: Vec<_> = prepared.groups.iter().map(Vec::len).collect();
             let mut position = vec![0; sizes.len()];
@@ -1839,21 +1954,47 @@ impl ReadSession {
                 // The codec has already decoded the admitted numeric dtype to
                 // native-endian fixed bytes. Avoid a separate generic retrieval
                 // future and typed-buffer copy for each integer/float width.
-                let decoded = array
-                    .async_retrieve_array_subset_opt::<ArrayBytes<'static>>(&subset, &options)
-                    .await
-                    .map_err(|e| err(ErrorKind::Decode, e))?
-                    .into_fixed()
-                    .map_err(|e| err(ErrorKind::Decode, e))?
-                    .into_owned();
-                #[cfg(target_endian = "big")]
-                let decoded = {
-                    let mut decoded = decoded;
-                    for element in decoded.chunks_exact_mut(cap.width) {
-                        element.reverse();
-                    }
+                let mut decoded = if member_zstd {
+                    let key = StoreKey::new(format!("{array_path}/c/{}", chunk[0]))
+                        .map_err(unsupported)?;
+                    let size = checked_bytes(&cap.inner, cap.width, 128)?;
+                    let mut decoded = match store
+                        .get(&key)
+                        .await
+                        .map_err(|e| err(ErrorKind::Decode, e))?
+                    {
+                        Some(encoded) => decode_member_zstd(&encoded, size)
+                            .map_err(|e| err(ErrorKind::Decode, e))?,
+                        None => {
+                            let fill =
+                                meta["fill_value"].as_i64().expect("attested int16 fill") as i16;
+                            fill.to_le_bytes().repeat(size / 2)
+                        }
+                    };
+                    decoded.truncate(checked_bytes(&shape, cap.width, 128)?);
                     decoded
+                } else {
+                    array
+                        .as_ref()
+                        .expect("numeric array")
+                        .async_retrieve_array_subset_opt::<ArrayBytes<'static>>(&subset, &options)
+                        .await
+                        .map_err(|e| err(ErrorKind::Decode, e))?
+                        .into_fixed()
+                        .map_err(|e| err(ErrorKind::Decode, e))?
+                        .into_owned()
                 };
+                #[cfg(target_endian = "big")]
+                {
+                    if !member_zstd {
+                        for element in decoded.chunks_exact_mut(cap.width) {
+                            element.reverse();
+                        }
+                    }
+                }
+                if let Some(transform) = cap.scale_offset {
+                    transform.decode(&mut decoded);
+                }
                 let count = checked_bytes(&shape, cap.width, cap.chunk_limit())?;
                 if decoded.len() != count {
                     return Err(err(
@@ -1946,6 +2087,74 @@ fn validate_array_path(array_path: &str) -> Result<(), ReaderError> {
 mod tests {
     use super::*;
     #[test]
+    fn member_zstd_encoded_boundary_frames_are_valid_and_size_checked() {
+        for raw in [false, true] {
+            // RFC 8878: single-segment content size 2, empty raw blocks, then
+            // two zero bytes in an RLE (4-byte) or raw (5-byte) final block.
+            let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x20, 2];
+            frame.resize(frame.len() + 82 * 3, 0);
+            frame.extend_from_slice(if raw {
+                &[0x11, 0, 0, 0, 0]
+            } else {
+                &[0x13, 0, 0, 0]
+            });
+            assert_eq!(frame.len(), if raw { 257 } else { 256 });
+            // Bypass the reader policy to prove that the over-limit control
+            // is a valid frame, rather than failing on unrelated corruption.
+            assert_eq!(zstd::bulk::decompress(&frame, 2).unwrap(), [0, 0]);
+            assert_eq!(validate_member_zstd(&frame, 2).is_ok(), !raw);
+        }
+    }
+
+    #[test]
+    fn decoded_unit_boundaries_and_zstd_window_are_fixed() {
+        assert_eq!(MAX_CHUNK_BYTES, 58_720_256);
+        assert_eq!(chunk_limit("int16"), 16 * 1024 * 1024);
+        assert_eq!(chunk_limit("int64"), 64 * 1024 * 1024);
+        assert_eq!(
+            checked_bytes(&[MAX_CHUNK_BYTES as u64], 1, MAX_CHUNK_BYTES).unwrap(),
+            MAX_CHUNK_BYTES
+        );
+        assert_eq!(
+            checked_bytes(&[MAX_CHUNK_BYTES as u64 + 1], 1, MAX_CHUNK_BYTES)
+                .unwrap_err()
+                .kind,
+            ErrorKind::SizeLimit
+        );
+        assert_eq!(
+            checked_bytes(
+                &[MAX_INTEGER_CHUNK_BYTES as u64],
+                1,
+                MAX_INTEGER_CHUNK_BYTES
+            )
+            .unwrap(),
+            MAX_INTEGER_CHUNK_BYTES
+        );
+        let input = [i16::MIN, 0, i16::MAX]
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = zstd::bulk::compress(&input, 0).unwrap();
+        assert_eq!(decode_member_zstd(&encoded, 6).unwrap(), input);
+        for malformed in [
+            [encoded.clone(), encoded.clone()].concat(),
+            [encoded.clone(), vec![0]].concat(),
+            vec![0; 257],
+        ] {
+            assert!(decode_member_zstd(&malformed, 6).is_err());
+        }
+        assert!(decode_member_zstd(&encoded, 8).is_err());
+        // A syntactically valid non-single-segment frame may advertise a huge
+        // window despite its six-byte content size. Limit native scratch first.
+        let mut large_window = vec![0x28, 0xb5, 0x2f, 0xfd, 0x80, 0xa0, 6, 0, 0, 0];
+        large_window.extend_from_slice(&[0x31, 0, 0]);
+        large_window.extend_from_slice(&input);
+        assert!(decode_member_zstd(&large_window, 6).is_err());
+        large_window[5] = 0;
+        assert_eq!(decode_member_zstd(&large_window, 6).unwrap(), input);
+    }
+
+    #[test]
     fn typed_virtual_failure_retains_source_diagnostics() {
         use icechunk::format::manifest::VirtualReferenceErrorKind;
         use icechunk::{
@@ -1987,6 +2196,7 @@ mod tests {
             width: 8,
             shape: vec![u64::MAX, 4],
             inner: vec![1, 1],
+            scale_offset: None,
         };
         assert_eq!(
             prepare(&cap, &[Selector::Index(-1), Selector::Index(0)])

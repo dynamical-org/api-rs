@@ -124,7 +124,8 @@ outside this allowlist:
 
 - Zarr v3, stored `float32`/`float64`/`int64`, regular positive chunk shapes, default `/`
   chunk-key encoding, no storage transformers, at most 16 dimensions.
-- Float codec chains: `bytes`, or `bytes` then `blosc`. Non-scalar int64 admits
+- Float codec chains: `bytes`, or `bytes` then `blosc`, optionally preceded by
+  one `scale_offset` for float32 with NaN fill. Non-scalar int64 admits
   only the deployed little-endian `bytes` + `blosc` chain, with typesize 8, zstd,
   clevel 3, shuffle `shuffle`, blocksize 0. Int64 sharding and other chains are excluded.
 - Scalar int64 admits only `bytes` little-endian + `zstd` with exactly
@@ -135,6 +136,25 @@ outside this allowlist:
   most 64 bytes; the decoder also sets WindowLogMax(10). Other standalone Zstd
   layouts remain excluded. The existing C-backed Zstd dependency is now direct;
   this adds no package versions to the lockfile.
+- The dataset entry point additionally admits rank-one int16 `bytes` little-endian
+  + standalone `zstd` with exactly `{"level":0,"checksum":false}`, for member
+  coordinates. Full padded chunks are at most 128 decoded bytes; frames are at
+  most 256 encoded bytes. One ordinary frame must declare exactly that content
+  size, with no dictionary, checksum, reserved flags, concatenation or trailing
+  bytes. An exact-size destination and WindowLogMax(10) bound decode; the frame
+  header independently limits a non-single-segment window to 1 KiB. Missing
+  chunks use the admitted integer fill; edge padding is removed before scatter.
+  This reuses the existing direct Zstd dependency. Other standalone non-scalar
+  Zstd layouts remain unsupported and report a Zstd-specific typed error.
+- `scale_offset` accepts only a leading configured codec with optional numeric
+  `scale` and `offset`, defaulting to 1 and 0. Both must be finite after float32
+  conversion; scale must remain nonzero. Unknown keys, string parameters, other
+  dtypes, finite fills and additional array transforms are excluded. Decode uses
+  float32 division followed by float32 addition, `(stored / scale) + offset`,
+  in place on the decoded inner subset before scatter. Parameters are converted
+  to float32 first; there is no float64 intermediate or fused operation. NaN fill
+  remains NaN. Blosc validation still uses the original chain's metadata. See the
+  [Zarr extension specification](https://github.com/zarr-developers/zarr-extensions/tree/main/codecs/scale_offset).
 - `bytes` must specify exactly `{"endian":"little"}`. Big-endian storage is excluded.
 - `blosc` must have exactly `typesize`, `cname`, `clevel`, `shuffle`, `blocksize`:
   matching numeric width, `zstd`, integer level 0–9, `noshuffle`/`shuffle`/`bitshuffle`,
@@ -173,14 +193,19 @@ outside this allowlist:
   the logical access/byte trace.
 
 The supported layouts include plain bytes, plain Blosc, sharded Blosc and sharded
-bytes; standalone float Zstd and unrecognized configurations are rejected.
+bytes; standalone float Zstd and unrecognized configurations are rejected. The dataset
+entry point already attests data variables lazily; an unsupported data variable
+does not prevent opening and reading supported siblings. Query dimension
+coordinates remain eager, so an unsupported required coordinate can fail open.
+The stricter stored-value entry point retains its pinned coordinate profiles;
+dataset mode uses its separate descriptive-metadata/coordinate admission.
 Migration checks compared dtype and shape first, then uint32/uint64 views and raw
 bytes, including malformed frames for the int64 scalar Zstd exception.
 
 ## Bounded work and selective reads
 
-Output is limited to 64 MiB, one decoded float inner chunk to 16 MiB, one int64
-chunk to 64 MiB, the shard index to 8 MiB, selector entries to 1,048,576, and touched
+Output is limited to 64 MiB, one decoded float inner chunk to 56 MiB, one int64
+chunk to 64 MiB (other integer widths keep 16 MiB), the shard index to 8 MiB, selector entries to 1,048,576, and touched
 inner chunks to 65,536. Size products are checked before allocation or decoder
 construction. Reads/decode are sequential, with codec concurrency 1 and a
 90-second reader timeout. These are prototype reader bounds, not a production
@@ -257,8 +282,10 @@ The header audit uses the pinned c-blosc bundled by blosc-src 0.3.8:
   0 for noshuffle, `0x01` for shuffle, `0x04` for bitshuffle. Setting both shuffle
   bits is rejected. LZ4, zlib and blosclz frames cannot reach those decoders through
   Zstd metadata; Zstd frames likewise cannot reach that decoder through LZ4 metadata.
-- Byte 3 typesize must match the stored numeric width (4 or 8) for **both compressed
-  and memcpy** frames. It affects zarrs' partial-read item alignment even when no
+- Byte 3 typesize must match the admitted metadata for **both compressed
+  and memcpy** frames. Float layouts require the stored numeric width; dataset
+  integer layouts can declare a different shuffle item size (for example int16
+  with typesize 4). It affects zarrs' partial-read item alignment even when no
   compressor/filter is invoked. A merely valid but metadata-mismatched typesize is
   rejected before decode.
 - Memcpy frames (bit 1 set) copy raw bytes and bypass compressor dispatch and both
@@ -288,6 +315,49 @@ only for bounded single-inner shards, whose index and frame are checked first.
 Partial reads retain at most one validated index and fetch/decode only touched inner
 payloads. Migration checks covered CRC-valid malformed inline indexes in debug
 and release builds; there is no panic-catching fallback.
+
+## Catalog units and staging ledger
+
+The 56 MiB float ceiling (58,720,256 bytes) covers every inventoried root-array
+layout. Largest units are analysis arrays: IMERG 57,600,000 bytes, MRMS
+25,920,000 bytes and HRRR 17,496,000 bytes. IFS forecast units require
+17,756,160 bytes (15-day) and 18,213,120 bytes (46-day six-hourly).
+Concurrent decode pools must budget for the largest admitted per-dtype unit:
+64 MiB, the int64 ceiling (`max(MAX_CHUNK_BYTES, MAX_INTEGER_CHUNK_BYTES)`).
+Output, index, metadata, selector and work budgets remain independent.
+
+For one sequential numeric decode unit, a conservative Rust staging charge is
+`2E + 3D + 5I + O`, plus metadata and selector/group charges:
+
+| Term | Charge |
+| --- | --- |
+| E | Encoded frame delivery/cache staging, at most the dtype ceiling + 16 bytes |
+| D | Full padded decoded inner unit, at most 56 MiB (int64: 64 MiB) |
+| I | Shard index staging and validated ranges, charged separately; encoded index <=8 MiB |
+| O | Retained selected output, at most 64 MiB across the read |
+
+The five index terms cover encoded/decoded index staging, the retained u64 index
+and up to twice the nonmissing-entry count for the validated-range Vec capacity. Scale/offset
+runs in place and adds no D-sized buffer. The small standalone int16 Zstd path
+instead uses <=256 encoded and <=128 decoded bytes, plus its decoder context and
+at most a 1 KiB window, as in the existing scalar decoder. Traces continue to
+charge full padded decoded work and the returned subset bytes.
+
+`float_chunk_boundary_and_in_place_scale_obey_unit_staging_charge` checks exact
+56 MiB decode units with and without the transform using an isolated counting
+allocator, against this charge and a fixed 2 MiB fixture/upstream allowance. A
+chunk one float larger fails before payload allocation; the arithmetic unit test
+also checks exactly one byte above the ceiling. These tests count Rust-requested
+allocations. Native codec scratch, upstream repository metadata expansion/caches,
+and whole-process RSS remain outside this charge; it is not a process memory cap.
+
+WeatherNext pressure-level groups are outside the point-query contract in both
+services and outside the reference dataset root. Historical transposed pressure
+arrays need 215,953,920 decoded bytes each and return SizeLimit before constructing
+a codec. Transpose remains unadmitted. Operational pressure arrays may fit the
+byte ceiling but require unsupported pressure dimensions at the query layer.
+IMERG's eager coordinate metadata staging exceeds the unchanged 64 MiB dataset
+open budget; increasing the decode ceiling does not change that separate limit.
 
 ## Explicit CF time decoding
 
