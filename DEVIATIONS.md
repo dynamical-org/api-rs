@@ -341,6 +341,8 @@ through stuck synchronous cleanup.
 
 ## D-proj-1 — HRDPS rotated operation matches the reference
 
+## D29 — HRDPS rotated operation matches the reference
+
 This is an alignment note, not an active contract deviation. Both the reference
 Python service and `dynapi-projection` use the rotated-pole transform for HRDPS
 geographic request selection and returned locations, including canonical point
@@ -350,7 +352,7 @@ identity-geographic shortcut. Dataset/query adapter and server wiring remain
 separate work and must preserve the five identity CRS cases and D12's fail-closed
 metadata policy. The library alone enables no service route.
 
-## D-proj-2 — Projected selection is unsupported on WASM
+## D30 — Projected selection is unsupported on WASM
 
 - Trigger: construction of a projected selector on a WASM target.
 - Rust: `ProjectedGrid::new` returns `UnsupportedTarget`. Compilable pure projection math is available for experiments, but neither projected family is qualified for WASM selection or serving.
@@ -358,7 +360,7 @@ metadata policy. The library alone enables no service route.
 - Future gate: qualify the actual release selector and canonical reconstruction on the intended WASM deployment runtime, including adjacent-representable geographic boundary inputs, domain admission, indices, returned location bits/serialization and dataset metadata dispatch. Any change in cell/value/admission behavior needs an explicit contract decision before enablement; no epsilon may hide it.
 - Native scope: release compiler and math runtime must be recorded for numerical comparisons. Results from one runtime do not establish universal bit-identical output, and signed zero must be checked explicitly.
 
-## D-proj-3 — Validate projected axes before selecting
+## D31 — Validate projected axes before selecting
 
 - Trigger: construction of the standalone projected-grid library with empty, nonfinite, nonmonotonic, overflowing, or out-of-range rotated axes.
 - Reference: the previous selector sorts unique finite values for its bounds but scans the original arrays for argmin, potentially admitting nonmonotonic axes or selecting a NaN. It does not separately validate axis extents.

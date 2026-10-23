@@ -3,7 +3,7 @@
 //! This library does not classify geographic CRSs or wire service queries.
 //! HRDPS is a derived geographic CRS whose axes require a rotated operation.
 //! Projected selection is unsupported on WASM; compiling the math is not a
-//! qualification to serve grid cells there. See deviations D-proj-1/2.
+//! qualification to serve grid cells there. See deviations D29/2.
 
 mod axis;
 mod transform;

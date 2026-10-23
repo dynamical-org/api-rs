@@ -49,13 +49,13 @@ Projected selection is **unsupported on WASM**: grid construction returns
 `Error::UnsupportedTarget`. The pure transform math can compile there for
 experiments, but this is not qualification for projected serving. Native and WASM
 math can choose different cells at boundaries, with different weather values.
-See D-proj-2 for the future target/selector qualification gate. Native numerical
+See D30 for the future target/selector qualification gate. Native numerical
 qualification must identify the release compiler and math runtime; compilation
 alone does not establish universal bit-for-bit parity.
 
 Both the reference Python service and this library use HRDPS rotation for
 geographic selection and canonical locations while preserving stored indices and
-values. D-proj-1 records this alignment. This crate does not enable either
+values. D29 records this alignment. This crate does not enable either
 projected family in any service route.
 
 Tests own analytic origins, published spherical equations, inverse/forward and
