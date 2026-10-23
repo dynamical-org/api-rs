@@ -97,5 +97,5 @@ until its deadline. Capacity exhaustion fails closed with retryable 503.
 Once a gated product is identified, every later response uses
 `Cache-Control: private, no-store`, including canonical responses and errors.
 Successful bodies retain ETags. Earlier authentication, rate and schema failures
-retain their existing policy. See D-geo-1 through D-geo-4 in
+retain their existing policy. See D36 through D39 in
 [DEVIATIONS.md](../DEVIATIONS.md).

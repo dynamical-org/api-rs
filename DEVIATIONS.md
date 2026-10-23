@@ -457,7 +457,7 @@ metadata policy. The library alone enables no service route.
   result conversion and distinguish peak live requests from cumulative allocations.
   They do not establish shared-pool, native/RSS or whole-process bounds.
 
-## D-geo-1 — Container identity in repository and dataset cache keys
+## D36 — Container identity in repository and dataset cache keys
 
 Cache keys include the sorted virtual-container type/prefix tuples as well as
 product, repository location and profile (and snapshot for datasets). A container
@@ -468,7 +468,7 @@ service and prevents a caller-location check from being bypassed by a handle
 opened under an older recipe. Reordering identical declarations keeps the same
 identity. Rust-owned fixtures cover dataset/repository misses and byte bounds.
 
-## D-geo-2 — Viewer trust and gate placement
+## D37 — Viewer trust and gate placement
 
 Location is trusted only when both origin authentication and viewer authentication
 match the configured origin secret, matching the reference Python service's
@@ -482,7 +482,7 @@ before its stub, and hidden forecast products skip the check and return 404
 without the gated privacy override, unlike the reference's refusal/unavailable
 response for gated hidden products; no data is served in these cases.
 
-## D-geo-3 — Bounded and coalesced location checks
+## D38 — Bounded and coalesced location checks
 
 The reference Python service has no refusal-body or byte-cache ceiling and does
 not coalesce concurrent checks. Rust limits encoded and decoded refusal text to
@@ -494,7 +494,7 @@ deadline. Oversize, capacity, timeout and transport failures return retryable 50
 and are never cached. Redirects are never followed. Only 204/451 are cached for
 300 seconds from check start; expiry also uses the injected monotonic clock.
 
-## D-geo-4 — Response privacy and secret handling
+## D39 — Response privacy and secret handling
 
 After identifying a gated product, all subsequent responses override cache policy
 with `private, no-store`, including canonical responses and query/read failures.
