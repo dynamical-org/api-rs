@@ -90,8 +90,12 @@ an attested int64 epoch dimension coordinate can use sequential batches of at mo
 262,144 selectors. Its checked reservation is `N * 8 + min(N, 262144) * 160 +
 G * 512 + name.len() + 64`: exact retained i64 slots plus one reusable batch's
 selector/CF staging and a conservative full-axis group allowance. Choose the plan
-before charging or allocating. Complete decoded axes remain eager and ordered;
-no regular spacing is inferred. One 90-second deadline covers the entire axis.
+before charging or allocating. Planning is greedy per axis, in coordinate-name
+order, against the remaining budget: a full read that fits keeps its original
+charge. There is no global replanning of earlier axes if a later stored or implicit
+axis exceeds the cap, even when batching an earlier axis could have made room.
+Complete decoded axes remain eager and ordered; no regular spacing is inferred.
+One 90-second deadline covers the entire axis.
 Dropping its future releases the axis and in-flight selectors/buffers. Other
 encodings keep the full-read plan; float-duration conversion still requires its
 full-axis context. Existing output, chunk and selector cardinality bounds stay

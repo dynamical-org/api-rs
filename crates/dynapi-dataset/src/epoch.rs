@@ -151,6 +151,45 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn malformed_decoded_epoch_batches_fail_before_appending() {
+        // The first batch is valid; corrupt only the final single-element batch.
+        for (dtype, shape, bytes) in [
+            ("int64", vec![1], vec![0; 8]),
+            ("datetime64[ns]", vec![2], vec![0; 8]),
+            ("datetime64[ns]", vec![1], vec![0; 7]),
+            ("datetime64[ns]", vec![1], vec![0; 9]),
+            ("datetime64[ns]", vec![1], vec![0; 16]),
+        ] {
+            let calls = AtomicUsize::new(0);
+            let result = read(BATCH + 1, |_| {
+                let call = calls.fetch_add(1, SeqCst);
+                let (shape, bytes) = (shape.clone(), bytes.clone());
+                async move {
+                    Ok(if call == 0 {
+                        TypedBuffer {
+                            dtype: "datetime64[ns]".into(),
+                            shape: vec![BATCH],
+                            bytes: vec![0; BATCH * 8],
+                        }
+                    } else {
+                        TypedBuffer {
+                            dtype: dtype.into(),
+                            shape,
+                            bytes,
+                        }
+                    })
+                }
+            })
+            .await;
+            assert!(
+                matches!(result, Err(OpenError::Metadata(message)) if message == "Invalid decoded epoch coordinate"),
+                "invalid {dtype} batch must fail"
+            );
+            assert_eq!(calls.load(SeqCst), 2);
+        }
+    }
+
     struct Active(Arc<AtomicUsize>);
     impl Active {
         fn new(count: &Arc<AtomicUsize>) -> Self {

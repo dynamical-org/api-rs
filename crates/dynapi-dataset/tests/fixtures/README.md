@@ -173,3 +173,9 @@ The `bounds` allocator test uses missing Blosc chunks filled with epoch zero at
 262,143/262,144/262,145/524,287/524,288/524,289/1,048,576 elements, chunk 4096,
 exact/one-over admission and the default cap. An unsupported calendar is refused
 before large selector allocation. These fixtures require no network or Python.
+
+The unaligned-chunk epoch variant stores 524,289 values across six physical chunks
+of 100,000 int64 elements, with the final chunk padded to that size. Each stored
+second is its absolute array index minus 250,000. Both selector-batch boundaries
+fall inside physical chunks. Every decoded value and the complete axis must match
+the full-read path, retaining exactly N slots.
