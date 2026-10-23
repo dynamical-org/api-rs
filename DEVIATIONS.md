@@ -582,3 +582,19 @@ until virtual GRIB support is implemented. No new public status is introduced.
   byte/f32/f64 buffers, fixed RSI scratch, bitmap/order/scale and byte conversion
   with X. Source phase accounting and owned-input peak witnesses are separate
   evidence from pool/cancellation conservation, allocator fragmentation or RSS.
+
+## D-vwire-1 — One retry authority for virtual HTTP ranges
+
+- Trigger: the virtual HTTP range transport sends a request through reqwest and
+  object_store.
+- Rust: disables reqwest's protocol-level inner retries; object_store retains
+  its existing maximum of one retry. Physical-attempt ownership spans send,
+  response body EOF/error and early drop. Attempt counters measure actual sends
+  at that boundary and observed body bytes, not upstream quiescence or wire bytes.
+- Existing HTTP authorization, conditional formatting, proxy configuration and
+  error mapping remain in the adapter. Private provider-policy primitives are
+  opt-in and do not enable catalog sources or GRIB serving. Their typed terminal
+  errors are not synthesized into legacy diagnostic strings.
+- Tests: loopback HTTP/2 refused streams, connection failure retry counts, body
+  lifetime/cancellation, terminal-attempt transitions, conditions and bounded XML.
+  Expectations derive from constructed HTTP responses and ownership invariants.
