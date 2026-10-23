@@ -10,6 +10,7 @@ use dynapi_reader::{ErrorKind, ReadSession, ReaderError, Selector, TypedBuffer, 
 use serde_json::Value as Json;
 use tokio::runtime::Handle;
 
+mod epoch;
 mod metadata;
 use metadata::{Budget, attributes, cf_request, coordinate, variable};
 
@@ -229,21 +230,42 @@ impl OpenedDataset {
                 } else {
                     0
                 };
-            budget.add(
-                size.checked_mul(per_value)
-                    .and_then(|n| n.checked_add(groups.checked_mul(512)?))
-                    .and_then(|n| n.checked_add(name.len() + 64))
-                    .ok_or(OpenError::MetadataLimit { limit })?,
-            )?;
+            let full_charge = size
+                .checked_mul(per_value)
+                .and_then(|n| n.checked_add(groups.checked_mul(512)?))
+                .and_then(|n| n.checked_add(name.len() + 64))
+                .ok_or(OpenError::MetadataLimit { limit })?;
+            let cf = cf_request(meta)?;
+            // Select a complete plan before charging or allocating any selectors.
+            // Duration dimensions require full-axis CF context and stay on the old path.
+            let batched = !budget.fits(full_charge)
+                && name != "ensemble_member"
+                && epoch::eligible(meta, cf.as_ref());
+            let charge = if batched {
+                epoch::charge(size, groups, name.len()).ok_or(OpenError::MetadataLimit { limit })?
+            } else {
+                full_charge
+            };
+            budget.add(charge)?;
             i64::try_from(size.saturating_sub(1))
                 .map_err(|_| OpenError::MetadataLimit { limit })?;
-            let selectors = vec![Selector::Indices((0..size).map(|i| i as i64).collect())];
-            let cf = cf_request(meta)?;
-            let buffer = session
-                .read_dataset_selection(name, &selectors, cf.as_ref())
-                .await?;
-            view.coordinates
-                .insert(name.clone(), coordinate(buffer, name == "ensemble_member")?);
+            let coord = if batched {
+                let cf = cf.as_ref().expect("epoch plan requires CF encoding");
+                let session = &session;
+                epoch::read(size, |selectors| async move {
+                    session
+                        .read_dataset_selection(name, &selectors, Some(cf))
+                        .await
+                })
+                .await?
+            } else {
+                let selectors = vec![Selector::Indices((0..size).map(|i| i as i64).collect())];
+                let buffer = session
+                    .read_dataset_selection(name, &selectors, cf.as_ref())
+                    .await?;
+                coordinate(buffer, name == "ensemble_member")?
+            };
+            view.coordinates.insert(name.clone(), coord);
         }
         // xarray dataset[dimension] supplies a virtual integer index only when
         // there is no stored same-name variable. Keep stored invalid axes distinct.

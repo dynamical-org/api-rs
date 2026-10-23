@@ -85,7 +85,22 @@ Before any selector/group allocation, full-axis chunk cardinality must fit the
 reader limit. Per eager coordinate of length N and G inner chunks, the charge is
 N * (4 * stored_width + 128) + G * 512, plus member Value/BigInt storage and map
 keys. This reserves simultaneous selector/group capacities and CF decode staging,
-including the duration decoder's full-axis read. Implicit indexes validate their
+including the duration decoder's full-axis read. When that full read does not fit,
+an attested int64 epoch dimension coordinate can use sequential batches of at most
+262,144 selectors. Its checked reservation is `N * 8 + min(N, 262144) * 160 +
+G * 512 + name.len() + 64`: exact retained i64 slots plus one reusable batch's
+selector/CF staging and a conservative full-axis group allowance. Choose the plan
+before charging or allocating. Planning is greedy per axis, in coordinate-name
+order, against the remaining budget: a full read that fits keeps its original
+charge. There is no global replanning of earlier axes if a later stored or implicit
+axis exceeds the cap, even when batching an earlier axis could have made room.
+Complete decoded axes remain eager and ordered; no regular spacing is inferred.
+One 90-second deadline covers the entire axis.
+Dropping its future releases the axis and in-flight selectors/buffers. Other
+encodings keep the full-read plan; float-duration conversion still requires its
+full-axis context. Existing output, chunk and selector cardinality bounds stay
+independent. Cache and active-handle weights include the complete conservative
+charge, even after transient batch staging is freed. Implicit indexes validate their
 endpoint and allocate exactly N integer slots, charged at N * 8 bytes (plus
 member Value/BigInt storage when applicable). Dimension, chunk and selector
 vectors also reserve their exact element counts before fallible conversion.

@@ -185,6 +185,35 @@ mod tests {
     }
 
     #[test]
+    fn epoch_conversion_is_independent_of_selection_context() {
+        // Pin the reader contract used by the dataset's bounded epoch staging:
+        // selecting before decode must preserve every bit, order and duplicate.
+        let seconds = [i64::MIN, -9_223_372_036, -1, 0, 1, 9_223_372_036, 7];
+        let make = |values: &[i64]| TypedBuffer {
+            dtype: "int64".into(),
+            shape: vec![values.len()],
+            bytes: values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        };
+        let request = epoch();
+        assert!(matches!(
+            attested_encoding("int64", &request.attributes),
+            Ok(Encoding::EpochSeconds)
+        ));
+        let full = decode(make(&seconds), &request).unwrap();
+        for indices in [vec![], vec![0], vec![5, 2, 0, 5], vec![6, 4, 3, 1]] {
+            let selected: Vec<_> = indices.iter().map(|&i| seconds[i]).collect();
+            let decoded = decode(make(&selected), &request).unwrap();
+            let expected: Vec<_> = indices
+                .iter()
+                .flat_map(|&i| full.bytes[i * 8..(i + 1) * 8].iter().copied())
+                .collect();
+            assert_eq!(decoded.dtype, "datetime64[ns]");
+            assert_eq!(decoded.shape, vec![indices.len()]);
+            assert_eq!(decoded.bytes, expected);
+        }
+    }
+
+    #[test]
     fn epoch_zero_nat_and_checked_overflow() {
         let make = |values: &[i64]| TypedBuffer {
             dtype: "int64".into(),

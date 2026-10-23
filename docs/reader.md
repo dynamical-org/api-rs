@@ -356,8 +356,12 @@ services and outside the reference dataset root. Historical transposed pressure
 arrays need 215,953,920 decoded bytes each and return SizeLimit before constructing
 a codec. Transpose remains unadmitted. Operational pressure arrays may fit the
 byte ceiling but require unsupported pressure dimensions at the query layer.
-IMERG's eager coordinate metadata staging exceeds the unchanged 64 MiB dataset
-open budget; increasing the decode ceiling does not change that separate limit.
+IMERG's full-axis selector staging exceeds the separate 64 MiB dataset-open
+budget. The dataset adapter can instead retain exact eager integer-epoch axes
+using sequential batches of at most 262,144 selectors under that unchanged cap;
+see [dataset accounting](dataset.md). This does not change physical chunk decode
+units: multiple batches selecting the same inner chunk decode it again. Float
+duration dimensions retain their required full-axis CF context.
 
 ## Explicit CF time decoding
 

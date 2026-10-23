@@ -242,6 +242,11 @@ impl Budget {
     pub fn used(&self) -> usize {
         self.used
     }
+    pub fn fits(&self, bytes: usize) -> bool {
+        self.used
+            .checked_add(bytes)
+            .is_some_and(|total| total <= self.limit)
+    }
     pub fn add(&mut self, bytes: usize) -> Result<(), OpenError> {
         if let Some(total) = self.used.checked_add(bytes).filter(|v| *v <= self.limit) {
             self.used = total;
