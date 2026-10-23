@@ -184,6 +184,11 @@ boundaries. No external service, policy file or captured response is required.
 See the [generic ingress contract](../../../docs/ingress.md) for regeneration,
 header trust and deployment reachability ownership.
 
+`historical_families.rs` extends main-advance HTTP coverage to analyses, stable
+and changed ensemble member axes, attested Lambert forecasts and run discovery.
+Its private A/B construction, arithmetic, cache-expiry/eviction sequence and
+independent expectations are specified in [support/history_families.md](support/history_families.md).
+
 ## Integer encoding and detail lifecycle recipes
 
 `integer_encoding_breadth.rs` constructs fresh Icechunk repositories from the
