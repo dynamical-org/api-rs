@@ -69,12 +69,12 @@ Dataset ensemble compatibility is covered in `crates/dynapi-dataset/tests/fixtur
 
 ## D8 — Compiled robots metadata and limited file-response surface
 
-- Trigger: a robots request after its source file has changed since compilation, or with a Range header.
+- Trigger: a robots request after its source file has changed since compilation, or independently packaged builds with different source-file metadata.
 - Python: FileResponse uses the installed file's current mtime/size for Last-Modified and an MD5 metadata ETag, and supports byte ranges.
-- Rust: embeds the exact file bytes and the build input's metadata/ETag, so the standalone binary requires no Python checkout. It currently serves the full file for Range requests.
-- Consequence: bytes, cache policy, media type, length and metadata match when built from the same file. Metadata can differ across independently packaged artifacts; range requests are not yet FileResponse-compatible.
-- Rationale: make the native artifact self-contained; file-range compatibility can land before the whole-service cutover.
-- Tests: `robots_get_head_and_packaged_metadata` checks complete GET bytes, empty HEAD body and mtime/size-derived ETag and Last-Modified; `documented_robots_range_difference_is_explicit` checks status 200, the complete packaged asset and no Content-Range. Expected metadata is computed from the build input; no saved answer file is used.
+- Rust: embeds the exact file bytes and the build input's metadata/ETag, so the standalone binary requires no Python checkout. Range handling for this asset follows the pinned Starlette 1.3.1 FileResponse: single/suffix/open-ended ranges, sorted/merged overlapping or adjacent ranges, multipart responses, malformed 400 and unsatisfiable 416 responses, exact If-Range validator equality and HEAD headers/body suppression. It preserves that source's accepted empty slices and integer grammar rather than silently imposing a different range policy.
+- Consequence: bytes, cache policy, media type, length and metadata match when built from the same file. Metadata can differ across independently packaged artifacts; runtime changes to the source file do not affect the embedded asset. The earlier full-file Range difference is retired.
+- Rationale: make the native artifact self-contained while retaining the file-response range contract for the embedded asset only. Multipart responses use fresh 26-hex-digit boundaries; their generated boundary bytes are not stable response content.
+- Tests: `robots_get_head_and_packaged_metadata` owns the build-input metadata contract. `robots_single_range_has_exact_bytes_and_headers`, `robots_suffix_open_empty_and_merged_ranges_preserve_file_metadata`, `robots_invalid_ranges_have_exact_plain_text_errors_without_file_headers`, `robots_multipart_ranges_have_exact_framing_lengths_and_head_headers`, `robots_if_range_uses_exact_validators_and_bypasses_invalid_ranges_on_mismatch` and `robots_range_integer_grammar_keeps_huge_operands_and_digit_guard_explicit` in `crates/dynapi-server/tests/server.rs` own explicit ranges, literal error envelopes, byte slices, multipart framing, cache/metadata headers and HEAD behavior. No saved service answers are used.
 
 ## D9 — Startup configuration validation
 

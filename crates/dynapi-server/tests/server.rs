@@ -829,19 +829,26 @@ async fn task_cancellation_claims_one_terminal_record_without_analytics() {
 }
 
 #[tokio::test]
-async fn documented_robots_range_difference_is_explicit() {
+async fn robots_single_range_has_exact_bytes_and_headers() {
     let server = Server::start(&[]).await;
+    let full = server.request("GET", "/robots.txt", "", b"").await;
+    let (full_headers, _) = response_parts(&full);
     let response = server
         .request("GET", "/robots.txt", "Range: bytes=0-9\r\n", b"")
         .await;
-    assert_eq!(status(&response), 200);
-    let body = response
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|end| &response[end + 4..])
-        .unwrap();
-    assert_eq!(body, include_bytes!("../robots.txt"));
-    assert!(!String::from_utf8_lossy(&response).contains("content-range:"));
+    assert_eq!(status(&response), 206);
+    let (headers, body) = response_parts(&response);
+    assert_eq!(body, &include_bytes!("../robots.txt")[..10]);
+    assert_eq!(
+        headers["content-range"],
+        format!("bytes 0-9/{}", dynapi_server::ROBOTS.len())
+    );
+    assert_eq!(headers["content-length"], "10");
+    assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(headers["accept-ranges"], "bytes");
+    assert_eq!(headers["cache-control"], "public, max-age=300");
+    assert_eq!(headers["etag"], full_headers["etag"]);
+    assert_eq!(headers["last-modified"], full_headers["last-modified"]);
 }
 
 fn response_parts(response: &[u8]) -> (BTreeMap<String, String>, &[u8]) {
@@ -861,6 +868,257 @@ fn response_parts(response: &[u8]) -> (BTreeMap<String, String>, &[u8]) {
         })
         .collect();
     (fields, &response[end..])
+}
+
+#[tokio::test]
+async fn robots_suffix_open_empty_and_merged_ranges_preserve_file_metadata() {
+    let server = Server::start(&[]).await;
+    let asset = include_bytes!("../robots.txt");
+    let size = asset.len();
+    let full = server.request("GET", "/robots.txt", "", b"").await;
+    let (metadata, _) = response_parts(&full);
+    for (range, start, end) in [
+        ("bytes=0-9", 0, 10),
+        ("bytes=-9", size - 9, size),
+        ("bytes=10-", 10, size),
+        ("bytes=0-9999", 0, size),
+        ("bytes=-9999", 0, size),
+        ("bytes=5-4", 5, 5),
+        ("bytes=0--1", 0, 0),
+        ("Bytes \t= +0_0 - +0_9", 0, 10),
+        ("bytes=junk,, -, 0-9,bad", 0, 10),
+        ("bytes=8-9,0-4,3-7", 0, 10),
+        ("bytes=4-5,4-5", 4, 6),
+        ("bytes=0-0,1-1", 0, 2),
+    ] {
+        for method in ["GET", "HEAD"] {
+            let response = server
+                .request(method, "/robots.txt", &format!("Range: {range}\r\n"), b"")
+                .await;
+            assert_eq!(status(&response), 206, "{method} {range}");
+            let (headers, body) = response_parts(&response);
+            assert_eq!(
+                headers["content-range"],
+                format!("bytes {start}-{}/{size}", end as i64 - 1)
+            );
+            assert_eq!(headers["content-length"], (end - start).to_string());
+            assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
+            for field in ["accept-ranges", "etag", "last-modified", "cache-control"] {
+                assert_eq!(headers[field], metadata[field]);
+            }
+            assert_eq!(
+                body,
+                if method == "HEAD" {
+                    b""
+                } else {
+                    &asset[start..end]
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn robots_invalid_ranges_have_exact_plain_text_errors_without_file_headers() {
+    let server = Server::start(&[]).await;
+    let size = dynapi_server::ROBOTS.len();
+    for (range, expected, message) in [
+        ("items=0-9".to_owned(), 400, "Only support bytes range"),
+        ("bytes0-9".to_owned(), 400, "Malformed range header."),
+        (
+            "bytes=".to_owned(),
+            400,
+            "Range header: range must be requested",
+        ),
+        (
+            "bytes=, -, nonsense".to_owned(),
+            400,
+            "Range header: range must be requested",
+        ),
+        (
+            "bytes=0-bad".to_owned(),
+            400,
+            "Range header: range must be requested",
+        ),
+        (
+            "bytes=3-1".to_owned(),
+            400,
+            "Range header: start must be less than end",
+        ),
+        (
+            "bytes=0--2".to_owned(),
+            400,
+            "Range header: start must be less than end",
+        ),
+        ("bytes=-0".to_owned(), 416, ""),
+        ("bytes=--1".to_owned(), 416, ""),
+        (format!("bytes={size}-"), 416, ""),
+        (format!("bytes={size}-1"), 416, ""),
+        (format!("bytes=3-1,{size}-"), 416, ""),
+    ] {
+        for method in ["GET", "HEAD"] {
+            let response = server
+                .request(
+                    method,
+                    "/robots.txt",
+                    &format!("Range: {range}\r\nOrigin: https://example.test\r\n"),
+                    b"",
+                )
+                .await;
+            assert_eq!(status(&response), expected, "{method} {range}");
+            let (headers, body) = response_parts(&response);
+            assert_eq!(
+                body,
+                if method == "HEAD" {
+                    b""
+                } else {
+                    message.as_bytes()
+                }
+            );
+            assert_eq!(headers["content-type"], "text/plain; charset=utf-8");
+            assert_eq!(headers["content-length"], message.len().to_string());
+            assert_eq!(
+                headers.get("content-range"),
+                (expected == 416)
+                    .then(|| format!("bytes */{size}"))
+                    .as_ref()
+            );
+            for absent in ["accept-ranges", "etag", "last-modified", "cache-control"] {
+                assert!(!headers.contains_key(absent), "{range}: {absent}");
+            }
+            assert_eq!(headers["access-control-allow-origin"], "*");
+            assert!(headers["access-control-expose-headers"].contains("X-Request-Id"));
+            assert_eq!(
+                uuid::Uuid::parse_str(&headers["x-request-id"])
+                    .unwrap()
+                    .get_version_num(),
+                4
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn robots_multipart_ranges_have_exact_framing_lengths_and_head_headers() {
+    let server = Server::start(&[]).await;
+    let asset = include_bytes!("../robots.txt");
+    let full = server.request("GET", "/robots.txt", "", b"").await;
+    let (metadata, _) = response_parts(&full);
+    let mut boundaries = std::collections::BTreeSet::new();
+    for (value, ranges) in [
+        ("bytes=0-1,5-7", [(0, 2), (5, 8)]),
+        ("bytes=5-7,0-1,5-7,bad", [(0, 2), (5, 8)]),
+        ("bytes=0--1,5-7", [(0, 0), (5, 8)]),
+    ] {
+        for method in ["GET", "HEAD"] {
+            let response = server
+                .request(method, "/robots.txt", &format!("Range: {value}\r\n"), b"")
+                .await;
+            assert_eq!(status(&response), 206);
+            let (headers, body) = response_parts(&response);
+            let boundary = headers["content-type"]
+                .strip_prefix("multipart/byteranges; boundary=")
+                .unwrap();
+            assert_eq!(boundary.len(), 26);
+            assert!(
+                boundary
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            );
+            assert!(boundaries.insert(boundary.to_owned()));
+            let mut expected = Vec::new();
+            for (start, end) in ranges {
+                expected.extend_from_slice(format!("--{boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Range: bytes {start}-{}/{}\r\n\r\n", end as i64 - 1, asset.len()).as_bytes());
+                expected.extend_from_slice(&asset[start..end]);
+                expected.extend_from_slice(b"\r\n");
+            }
+            expected.extend_from_slice(format!("--{boundary}--").as_bytes());
+            assert_eq!(headers["content-length"], expected.len().to_string());
+            assert_eq!(
+                body,
+                if method == "HEAD" {
+                    b""
+                } else {
+                    expected.as_slice()
+                }
+            );
+            assert!(!headers.contains_key("content-range"));
+            for field in ["accept-ranges", "etag", "last-modified", "cache-control"] {
+                assert_eq!(headers[field], metadata[field]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn robots_if_range_uses_exact_validators_and_bypasses_invalid_ranges_on_mismatch() {
+    let server = Server::start(&[]).await;
+    let full = server.request("GET", "/robots.txt", "", b"").await;
+    let (metadata, _) = response_parts(&full);
+    for validator in [
+        metadata["etag"].clone(),
+        metadata["last-modified"].clone(),
+        format!("W/{}", metadata["etag"]),
+        "unknown".into(),
+        "Fri, 01 Jan 2100 00:00:00 GMT".into(),
+    ] {
+        let matching = validator == metadata["etag"] || validator == metadata["last-modified"];
+        for method in ["GET", "HEAD"] {
+            let response = server
+                .request(
+                    method,
+                    "/robots.txt",
+                    &format!(
+                        "Range: bytes=0-9\r\nIf-Range: {validator}\r\nIf-None-Match: {}\r\n",
+                        metadata["etag"]
+                    ),
+                    b"",
+                )
+                .await;
+            assert_eq!(status(&response), if matching { 206 } else { 200 });
+            let (headers, body) = response_parts(&response);
+            let expected = if matching {
+                &dynapi_server::ROBOTS[..10]
+            } else {
+                dynapi_server::ROBOTS
+            };
+            assert_eq!(body, if method == "HEAD" { b"" } else { expected });
+            assert_eq!(headers["content-length"], expected.len().to_string());
+            assert_eq!(headers["etag"], metadata["etag"]);
+            assert_eq!(headers.contains_key("content-range"), matching);
+        }
+    }
+    let bypass = server
+        .request(
+            "GET",
+            "/robots.txt",
+            "Range: malformed\r\nIf-Range: unknown\r\n",
+            b"",
+        )
+        .await;
+    assert_eq!(status(&bypass), 200);
+    assert_eq!(response_parts(&bypass).1, dynapi_server::ROBOTS);
+}
+
+#[tokio::test]
+async fn robots_range_integer_grammar_keeps_huge_operands_and_digit_guard_explicit() {
+    let server = Server::start(&[]).await;
+    for (range, expected) in [
+        (format!("bytes={}-", "9".repeat(4300)), 416),
+        (format!("bytes=-{}", "9".repeat(4300)), 206),
+        (format!("bytes=0-{}", "9".repeat(4300)), 206),
+        (format!("bytes=0-{}", "9".repeat(4301)), 400),
+        ("bytes=0_-9".into(), 400),
+        ("bytes=0__0-9".into(), 400),
+    ] {
+        let response = server
+            .request("GET", "/robots.txt", &format!("Range: {range}\r\n"), b"")
+            .await;
+        assert_eq!(status(&response), expected);
+        if expected == 206 {
+            assert_eq!(response_parts(&response).1, dynapi_server::ROBOTS);
+        }
+    }
 }
 
 #[tokio::test]
