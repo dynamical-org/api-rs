@@ -105,16 +105,21 @@ pub(super) fn validate(p: &[u8], data: &[u8], points: usize, bitmap: bool) -> Re
     }
     // The pinned byte-to-f32 intermediate is exact for these integer widths.
     // Its four-byte path interprets bit patterns as f32, not integer samples.
-    if !(8..=16).contains(&width) {
-        return Err(Error::Unsupported("CCSDS integer width 8 through 16"));
+    if !(2..=16).contains(&width) {
+        return Err(Error::Unsupported("CCSDS integer width 2 through 16"));
     }
     if cfg!(target_endian = "big") && width > 8 {
         return Err(Error::Unsupported("CCSDS little-endian integer conversion"));
     }
-    if points == 0 || !points.is_multiple_of(BLOCK) {
-        return Err(Error::Unsupported("CCSDS complete 32-sample blocks"));
+    if points == 0 {
+        return Err(Error::Malformed("CCSDS empty packed field"));
     }
-    let id_width = if width == 8 { 3 } else { 4 };
+    let id_width = match width {
+        2..=3 => 1,
+        4 => 2,
+        5..=8 => 3,
+        _ => 4,
+    };
     let uncompressed = (1 << id_width) - 1;
     let input_margin = (BLOCK * width + id_width) / 8 + 16;
     let maximum = (1u32 << width) - 1;
@@ -127,9 +132,13 @@ pub(super) fn validate(p: &[u8], data: &[u8], points: usize, bitmap: bool) -> Re
     while done < points {
         let block = (done / BLOCK) % RSI;
         let reference = usize::from(block == 0);
+        let remaining = points - done;
         let id = reader.read(id_width, reader.available() >= input_margin)?;
         if id == uncompressed {
-            let fast = reader.available() >= input_margin;
+            let fast = remaining >= BLOCK && reader.available() >= input_margin;
+            // UncompCopy emits only r samples in a partial final block. Check
+            // its unused encoded sample fields too, with slow reads: they may
+            // not turn into another block or arbitrary trailing bytes.
             for _ in 0..BLOCK {
                 reader.read(width, fast)?;
             }
@@ -142,15 +151,26 @@ pub(super) fn validate(p: &[u8], data: &[u8], points: usize, bitmap: bool) -> Re
                 let fast = reader.available() >= input_margin && points - done - reference >= BLOCK;
                 let mut sample = reference;
                 while sample < BLOCK {
-                    // All second-extension pairs in the pinned table (0..=90)
-                    // produce values <=12, safely inside the admitted widths.
-                    reader.unary(90, fast).map_err(|error| {
+                    let m = reader.unary(90, fast).map_err(|error| {
                         if error == Error::Malformed("CCSDS unary value exceeds profile") {
                             Error::Unsupported("CCSDS second-extension table")
                         } else {
                             error
                         }
                     })?;
+                    // Invert the format's triangular pair index. Narrow
+                    // widths also need each emitted mapped value in range.
+                    let mut beta = 0;
+                    while (beta + 1) * (beta + 2) / 2 <= m {
+                        beta += 1;
+                    }
+                    let second = m - beta * (beta + 1) / 2;
+                    if second > maximum || (sample.is_multiple_of(2) && beta - second > maximum) {
+                        return Err(Error::Malformed("CCSDS mapped sample exceeds width"));
+                    }
+                    // SEIncremental stops at r outputs, possibly between the
+                    // pair's two values. The remaining unary fields are a
+                    // checked suffix of this block, not decoder output.
                     sample += if sample.is_multiple_of(2) { 2 } else { 1 };
                 }
             } else {
@@ -163,17 +183,17 @@ pub(super) fn validate(p: &[u8], data: &[u8], points: usize, bitmap: bool) -> Re
                 } else {
                     code as usize
                 };
-                if blocks > RSI - block || (!ros && blocks > (points - done) / BLOCK) {
+                if blocks > RSI - block || (!ros && blocks > remaining.div_ceil(BLOCK)) {
                     return Err(Error::Malformed("CCSDS zero run exceeds count or RSI"));
                 }
                 // ROS also means the remaining segment at end of sequence.
                 // The pinned ZeroOutput path stops at the attested output count.
-                done += blocks.min((points - done) / BLOCK) * BLOCK;
+                done += (blocks * BLOCK).min(remaining);
                 continue;
             }
         } else {
             let k = id as usize - 1;
-            let fast = reader.available() >= input_margin;
+            let fast = remaining >= BLOCK && reader.available() >= input_margin;
             if reference != 0 {
                 reader.read(width, fast)?;
             }
@@ -185,6 +205,9 @@ pub(super) fn validate(p: &[u8], data: &[u8], points: usize, bitmap: bool) -> Re
             if fast && k != 0 && reader.available() < k * count / 8 + 9 {
                 return Err(Error::Unsupported("CCSDS pinned binary input margin"));
             }
+            // SplitFs reads all 32-reference unary codes even for r outputs.
+            // SplitOutput consumes only r-reference remainders; validate the
+            // remaining fixed-width fields as this final block's suffix.
             for base in &bases[..count] {
                 let remainder = if k == 0 { 0 } else { reader.read(k, fast)? };
                 if base + remainder > maximum {
@@ -192,7 +215,7 @@ pub(super) fn validate(p: &[u8], data: &[u8], points: usize, bitmap: bool) -> Re
                 }
             }
         }
-        done += BLOCK;
+        done += BLOCK.min(remaining);
     }
     reader.finish()
 }

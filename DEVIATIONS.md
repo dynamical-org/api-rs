@@ -559,16 +559,23 @@ until virtual GRIB support is implemented. No new public status is introduced.
 
 ## D-virt-2 — Private CCSDS qualification has an explicit bounded profile
 
+## D36 — Private CCSDS qualification has an explicit bounded profile
+
 - The unwired native GRIB module admits 5.42 only with options 14, block 32,
   RSI 128 and the checked integer/stream profile in
   [the qualification contract](docs/reader-grib.md). It retains the 32 MiB encoded
   and 56 MiB f64 plane limits. It adds no codec backend, public API, reader wiring
   or product eligibility, and does not qualify WASM runtime or endpoint behavior.
-- Nonzero widths 8–16 have exact f32 integer intermediates. Wider widths,
-  incomplete 32-sample blocks, big-endian multi-byte conversion, second-extension
-  indices above the pinned table and insufficient pinned fast-read margins remain
+- Nonzero widths 2–16 have exact f32 integer intermediates and use the pinned
+  code-ID width table. Width 1, wider widths, big-endian multi-byte conversion,
+  second-extension indices above the pinned table and insufficient pinned fast-read margins remain
   unsupported. These are deliberate qualification limits, including for some
   otherwise valid CCSDS streams; no Python exception/HTTP status parity is claimed.
+- Partial final blocks are qualified through the four pinned incremental branches,
+  with the complete final block's unused encoded fields validated separately and
+  followed by at most seven zero padding bits. Omitted suffix fields and arbitrary
+  trailing bytes are rejected. This extends the earlier whole-block qualification;
+  the source-lifetime and count bounds still use the attested padded plane.
 - Zero-bit fields are admitted only with a positive-zero reference, no bitmap and
   an empty payload, where format-derived values and the pinned resize path agree.
   Nonzero/negative-zero references and masked zero-bit fields remain typed constant

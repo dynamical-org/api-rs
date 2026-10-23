@@ -1,7 +1,7 @@
 use super::*;
 
 fn zero_run(bits: &mut Bits, width: u8, reference: Option<u32>, code: usize) {
-    bits.push(0, if width == 8 { 3 } else { 4 });
+    bits.push(0, ccsds_id_width(width));
     bits.push(0, 1);
     if let Some(value) = reference {
         bits.push(value, width);
@@ -10,7 +10,7 @@ fn zero_run(bits: &mut Bits, width: u8, reference: Option<u32>, code: usize) {
 }
 
 fn split_block(bits: &mut Bits, width: u8, reference: Option<u32>, k: u8, value: u32) {
-    bits.push(u32::from(k + 1), if width == 8 { 3 } else { 4 });
+    bits.push(u32::from(k + 1), ccsds_id_width(width));
     if let Some(value) = reference {
         bits.push(value, width);
     }
@@ -26,10 +26,15 @@ fn split_block(bits: &mut Bits, width: u8, reference: Option<u32>, k: u8, value:
 
 #[test]
 fn uncompressed_integer_widths_and_f64_scaling() {
-    for width in 8..=16 {
-        let reference = if width == 8 { 100 } else { 300 };
+    for width in 2..=16 {
+        let reference = if width <= 8 {
+            (1 << width) / 2 - 1
+        } else {
+            300
+        };
         let mut mapped = vec![0; 32];
-        mapped[..4].copy_from_slice(&[reference, 2, 1, 4]);
+        let increment = if width == 2 { 2 } else { 4 };
+        mapped[..4].copy_from_slice(&[reference, 2, 1, increment]);
         let mut bytes = ccsds(1, 32, width, ccsds_uncompressed(width, &mapped));
         let p = section_range(&bytes, 5).start;
         bytes[p + 11..p + 15].copy_from_slice(&1.25f32.to_be_bytes());
@@ -43,7 +48,7 @@ fn uncompressed_integer_widths_and_f64_scaling() {
             let original = match index {
                 0 | 2 => reference,
                 1 => reference + 1,
-                _ => reference + 2,
+                _ => reference + increment / 2,
             };
             let grib = (f64::from(original) * 0.5 + 1.25) * 0.1;
             assert_eq!(value.to_bits(), (grib / 9.80665 - 273.15).to_bits());
@@ -191,20 +196,23 @@ fn header_and_stream_counts_are_rejected_before_decoder_allocation() {
         );
         assert_eq!(measurement.counts().total, 0);
     }
-    for points in [16, 64] {
-        let bad = ccsds(1, points, 9, ccsds_uncompressed(9, &[0; 32]));
-        assert!(decode(&bad, profile(&[1, points])).is_err());
-    }
+    let partial = ccsds(1, 16, 9, ccsds_uncompressed(9, &[0; 32]));
+    assert_eq!(
+        decode(&partial, profile(&[1, 16])).unwrap().values,
+        [0.; 16]
+    );
+    let bad = ccsds(1, 64, 9, ccsds_uncompressed(9, &[0; 32]));
+    assert!(decode(&bad, profile(&[1, 64])).is_err());
     let bad = ccsds(1, 32, 9, ccsds_uncompressed(9, &[0; 64]));
     assert_eq!(
         decode(&bad, profile(&[1, 32])).unwrap_err(),
         Error::Malformed("CCSDS trailing bytes")
     );
-    for width in [1, 7, 17, 24, 25, 32, 255] {
+    for width in [1, 17, 24, 25, 32, 255] {
         let bad = ccsds(1, 32, width, vec![]);
         assert_eq!(
             decode(&bad, profile(&[1, 32])).unwrap_err(),
-            Error::Unsupported("CCSDS integer width 8 through 16")
+            Error::Unsupported("CCSDS integer width 2 through 16")
         );
     }
 }
@@ -328,6 +336,9 @@ fn measured(bytes: &[u8], shape: &[usize]) -> crate::allocation_tests::Counts {
     // decoded bytes, f32/f64 vectors, bitmap/order/scale and final conversion.
     // This total-peak assertion is accompanied by the source phase ledger.
     assert!(counts.peak <= charge.fetch + charge.decode);
+    let retained = bytes.len();
+    let decoded = shape.iter().product::<usize>() * 8;
+    assert!(counts.peak - retained <= 2 * retained + 7 * decoded / 2 + 65536);
     eprintln!(
         "CCSDS E={} D={} peak={} cumulative={} F={} X={} preflight_s={} decode_convert_s={}",
         bytes.len(),
@@ -442,7 +453,10 @@ fn second_extension_fast_path_and_structured_payload_mutations() {
         }
         let result = std::panic::catch_unwind(|| decode(&bad, profile(&[1, 2048]))).unwrap();
         if let Ok(decoded) = result {
-            assert_eq!(decoded.values.len(), 2048);
+            assert_eq!(
+                decoded.values,
+                super::ccsds_oracle::decode(&bad[range.start + 5..range.end], 8, 2048)
+            );
             admitted += 1;
         }
     }
@@ -450,4 +464,294 @@ fn second_extension_fast_path_and_structured_payload_mutations() {
         "CCSDS payload mutations admitted={admitted}, rejected={}",
         10000 - admitted
     );
+}
+
+#[test]
+fn narrow_fields_and_partial_final_block_types_match_format_values() {
+    let mut mapped = [2; 32];
+    mapped[0] = 40;
+    let bytes = ccsds(1, 32, 7, ccsds_uncompressed(7, &mapped));
+    assert_eq!(
+        decode(&bytes, profile(&[1, 32])).unwrap().values,
+        (40..72).map(f64::from).collect::<Vec<_>>()
+    );
+    for width in 2..=16 {
+        for prefix in [0, 1, 128] {
+            for r in [1, 10, 31] {
+                for kind in 0..4 {
+                    if kind == 1 && width < 4 {
+                        continue;
+                    } // No split ID at widths2/3.
+                    let mut bits = Bits::default();
+                    let id = ccsds_id_width(width);
+                    for _ in 0..prefix {
+                        bits.push((1 << id) - 1, id);
+                        for _ in 0..32 {
+                            bits.push(0, width);
+                        }
+                    }
+                    let reference = (prefix % 128 == 0).then_some(1);
+                    match kind {
+                        0 => {
+                            bits.push((1 << id) - 1, id);
+                            for sample in 0..32 {
+                                bits.push(
+                                    if sample == 0 && reference.is_some() {
+                                        1
+                                    } else {
+                                        2
+                                    },
+                                    width,
+                                );
+                            }
+                        }
+                        1 => split_block(&mut bits, width, reference, 1, 3),
+                        2 => {
+                            bits.push(0, id);
+                            bits.push(1, 1);
+                            if let Some(value) = reference {
+                                bits.push(value, width);
+                            }
+                            for _ in 0..16 {
+                                bits.unary(3);
+                            } // Pair (2,0).
+                        }
+                        _ => zero_run(&mut bits, width, reference, 0),
+                    }
+                    let payload = bits.finish();
+                    let points = prefix * 32 + r;
+                    let expected = super::ccsds_oracle::decode(&payload, width, points);
+                    let bytes = ccsds(1, points, width, payload.clone());
+                    assert_eq!(
+                        decode(&bytes, profile(&[1, points])).unwrap().values,
+                        expected,
+                        "width={width} prefix={prefix} r={r} kind={kind}"
+                    );
+                    let mut excess = payload;
+                    excess.extend([0; 2]);
+                    assert_eq!(
+                        decode(&ccsds(1, points, width, excess), profile(&[1, points]))
+                            .unwrap_err(),
+                        Error::Malformed("CCSDS trailing bytes")
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_rsi_padding_and_single_se_output_margin_witnesses() {
+    let mut bits = Bits::default();
+    for _ in 0..120 {
+        bits.push(15, 4);
+        for _ in 0..32 {
+            bits.push(0, 9);
+        }
+    }
+    zero_run(&mut bits, 9, None, 16);
+    // Total count has room for the run; only the RSI boundary rejects it.
+    assert_eq!(
+        decode(
+            &ccsds(1, 160 * 32, 9, bits.finish()),
+            profile(&[1, 160 * 32])
+        )
+        .unwrap_err(),
+        Error::Malformed("CCSDS zero run exceeds count or RSI")
+    );
+    let mut payload = ccsds_uncompressed(9, &[0; 32]);
+    *payload.last_mut().unwrap() |= 1;
+    assert_eq!(
+        decode(&ccsds(1, 32, 9, payload), profile(&[1, 32])).unwrap_err(),
+        Error::Malformed("CCSDS nonzero padding")
+    );
+    let mut bits = Bits::default();
+    bits.push(0, 3);
+    bits.push(1, 1);
+    bits.push(40, 7);
+    for _ in 0..16 {
+        bits.unary(90);
+    }
+    let payload = bits.finish();
+    // At RSI start, only31 outputs remain after the reference. The slow SE
+    // branch is required despite a large input; the final unary has <7 bytes.
+    let expected = super::ccsds_oracle::decode(&payload, 7, 32);
+    assert_eq!(
+        decode(&ccsds(1, 32, 7, payload), profile(&[1, 32]))
+            .unwrap()
+            .values,
+        expected
+    );
+}
+
+#[test]
+fn combined_maximum_encoded_and_decoded_ccsds_phase_bound() {
+    let (ny, nx) = (1792, 4096);
+    let points = ny * nx;
+    let mut bits = Bits::default();
+    for block in 0..points / 32 - 1 {
+        split_block(&mut bits, 16, (block % 128 == 0).then_some(0), 0, 34);
+    }
+    bits.push(15, 4);
+    for _ in 0..32 {
+        bits.push(0, 16);
+    }
+    let mut bytes = ccsds(ny, nx, 16, bits.finish());
+    let padding = MAX_ENCODED_BYTES - bytes.len();
+    assert!(padding >= 5);
+    let insertion = section_range(&bytes, 3).start;
+    bytes.splice(insertion..insertion, section(2, padding));
+    let length = bytes.len() as u64;
+    bytes[8..16].copy_from_slice(&length.to_be_bytes());
+    assert_eq!(bytes.len(), MAX_ENCODED_BYTES);
+    measured(&bytes, &[ny, nx]);
+}
+
+struct Random(u64);
+impl Random {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: u64) -> usize {
+        (self.next() % n) as usize
+    }
+}
+
+fn mixed_blocks(random: &mut Random, width: u8, blocks: usize) -> Vec<u8> {
+    let id = ccsds_id_width(width);
+    let maximum = (1u32 << width) - 1;
+    let mut bits = Bits::default();
+    let mut block = 0;
+    while block < blocks {
+        let reference = (block % 128 == 0).then(|| random.next() as u32 & maximum);
+        match random.below(10) {
+            0..=1 => {
+                bits.push((1 << id) - 1, id);
+                for _ in 0..32 {
+                    bits.push(random.next() as u32 & maximum, width);
+                }
+                block += 1;
+            }
+            2..=5 if width >= 4 => {
+                let k = random.below((1 << id) - 2) as u8;
+                let cap = if random.below(20) == 0 {
+                    maximum
+                } else {
+                    maximum.min(64 << k)
+                };
+                let values: Vec<_> = (0..32 - usize::from(reference.is_some()))
+                    .map(|_| random.next() as u32 % (cap + 1))
+                    .collect();
+                bits.push(u32::from(k + 1), id);
+                if let Some(value) = reference {
+                    bits.push(value, width);
+                }
+                for value in &values {
+                    bits.unary((value >> k) as usize);
+                }
+                for value in values {
+                    bits.push(value & ((1 << k) - 1), k);
+                }
+                block += 1;
+            }
+            6..=7 => {
+                bits.push(0, id);
+                bits.push(1, 1);
+                if let Some(value) = reference {
+                    bits.push(value, width);
+                }
+                for _ in 0..16 {
+                    // Narrowest width admits pairs from sums0..3; wider
+                    // widths exercise every entry of the qualified table.
+                    bits.unary(random.below(if width == 2 {
+                        10
+                    } else if width == 3 {
+                        36
+                    } else {
+                        91
+                    }));
+                }
+                block += 1;
+            }
+            _ => {
+                let remaining = (blocks - block).min(128 - block % 128);
+                let ros = random.below(4) == 0;
+                let count = if ros {
+                    (64 - block % 64).min(remaining)
+                } else {
+                    1 + random.below(remaining as u64)
+                };
+                zero_run(
+                    &mut bits,
+                    width,
+                    reference,
+                    if ros {
+                        4
+                    } else if count < 5 {
+                        count - 1
+                    } else {
+                        count
+                    },
+                );
+                block += count;
+            }
+        }
+    }
+    bits.finish()
+}
+
+#[test]
+fn mixed_rsi_payload_mutations_match_independent_format_oracle() {
+    let mut random = Random(11);
+    let mut admitted = 0;
+    let mut rejected = 0;
+    for case in 0..512 {
+        let width = 2 + random.below(15) as u8;
+        let blocks = 1 + random.below(300);
+        let points = blocks * 32 - [0, 1, 22, 31][case % 4];
+        let payload = mixed_blocks(&mut random, width, blocks);
+        for mutation in 0..25 {
+            let mut data = payload.clone();
+            if mutation != 0 {
+                match random.below(5) {
+                    0 | 1 => {
+                        for _ in 0..1 + random.below(3) {
+                            let bit = random.below(data.len() as u64 * 8);
+                            data[bit / 8] ^= 1 << (bit % 8);
+                        }
+                    }
+                    2 => {
+                        let length = random.below(data.len() as u64 + 1);
+                        data.truncate(length);
+                    }
+                    3 => {
+                        for _ in 0..1 + random.below(16) {
+                            data.push(random.next() as u8);
+                        }
+                    }
+                    _ => {
+                        let index = random.below(data.len() as u64);
+                        data[index] = random.next() as u8;
+                    }
+                }
+            }
+            let bytes = ccsds(1, points, width, data.clone());
+            if preflight::validate(&bytes, profile(&[1, points])).is_err() {
+                rejected += 1;
+                continue;
+            }
+            let actual = decode(&bytes, profile(&[1, points])).unwrap().values;
+            let expected = super::ccsds_oracle::decode(&data, width, points);
+            assert_eq!(
+                actual, expected,
+                "case={case} mutation={mutation} width={width} blocks={blocks}"
+            );
+            admitted += 1;
+        }
+    }
+    assert!(admitted > 100);
+    eprintln!("CCSDS mixed oracle admitted={admitted} rejected={rejected}");
 }

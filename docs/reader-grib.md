@@ -67,22 +67,34 @@ Groups must have positive lengths and their sum must equal the packed count.
 Previous/predefined bitmap reuse is not admitted.
 
 Packing 5.42 admits only options 14, block size 32 and reference sample interval
-128. Integer widths 8–16 use the pinned decoder's exact f32 integer intermediate
-before f64 GRIB scaling. Wider samples remain unqualified: the pinned three-byte
-storage configuration disagrees with its output size, and its four-byte conversion
+128. Integer widths 2–16 use the pinned decoder's exact f32 integer intermediate
+before f64 GRIB scaling. Width 1 remains unsupported by the pinned decoder.
+Code-ID widths follow its table: 2–3 bits use one ID bit, 4 uses two,
+5–8 use three and 9–16 use four. Wider samples remain unqualified: the pinned
+three-byte storage configuration disagrees with its output size, and its four-byte conversion
 interprets bytes as f32 rather than integer samples. Multi-byte CCSDS samples on
-big-endian hosts are unsupported. Nonzero-width packed counts must be multiples
-of 32; a final reference interval may have fewer than 128 blocks.
+big-endian hosts are unsupported. A final reference interval may have fewer than
+128 blocks, and the last block may have 1–31 output samples.
 
 The CCSDS preflight walks code IDs, reference samples, Rice unary/remainder fields,
 second-extension pairs and zero runs without reconstructing or allocating a field.
 It checks exact output counts and byte padding, word ranges and RSI boundaries,
 including the end-of-sequence meaning of the remainder-of-segment zero code.
+Partial final blocks take the pinned incremental output branches: uncompressed
+copy emits r samples; split reads all 32-reference unary codes but emits only
+r-reference remainders; second extension can stop between a pair's values; zero
+output stops at the attested count. The qualified encoding retains that block's
+complete encoded fields. Preflight checks the unused suffix with slow reads:
+at most (32-r) uncompressed sample fields, the remaining split remainders, or
+the remaining bounded second-extension unary fields. Zero output has no such
+suffix. At most seven zero padding bits follow the complete final block;
+arbitrary trailing bytes or omitted encoded suffix fields are rejected.
 It also follows the pinned decoder's fast/incremental branch choices and byte
 read-ahead. Short seven-byte fast unary tails, insufficient fast remainder margins
 and second-extension table indices above 90 are explicitly unsupported, even when
 the abstract code stream could be valid. A header-only bound does not qualify
-these data-dependent paths. Uncompressed and Rice values fit the declared width;
+these data-dependent paths. Uncompressed, Rice and second-extension values fit
+the declared width;
 unsigned postprocessing therefore stays inside that width and nonnegative i32.
 
 Zero-bit 5.42 fields are qualified only for a positive-zero reference, no bitmap
@@ -131,7 +143,12 @@ Exact-error fixtures defend bitmap popcount in both directions, group totals
 before resize/bitmap expansion, ignored zero-bit multi-group length references,
 descriptor widths above four octets and oversized zero-width groups before value
 iteration. Deterministic truncation/byte mutations sample geographic, Lambert and
-bitmap specimens; they check for panics and do not prove exhaustive rejection.
+bitmap specimens, as well as CCSDS whole-message and mixed-block payload specimens.
+The CCSDS payload mutations also compare admitted values with a test-only format
+oracle using logical bits, triangular pairs and unsigned inverse differencing,
+independent of the pinned buffering and fast paths. Exact RSI-crossing, padding
+and short SE-output fixtures defend the implementation-specific guards. These
+checks do not prove exhaustive rejection.
 Catching a panic is only a test oracle.
 
 The test allocator records current-thread requested live bytes and their peak,
@@ -153,7 +170,9 @@ These are Rust allocation and source-lifetime witnesses, not allocator fragmenta
 RSS, upstream metadata/cache, shared pool, cancellation or transport proofs.
 External migration comparisons remain outside repository fixtures. Constant-profile
 rejection deliberately differs from the reference decoder's wrong values/panic;
-future HTTP error mapping is not established here. See D35 in DEVIATIONS.md.
+future HTTP error mapping is not established here. See D35 and D36 in
+DEVIATIONS.md. D35 describes the earlier 5.0/5.3 slice; the separate CCSDS
+qualification here and in D36 extends that private library profile.
 
 Format references: [NCEP 5.0](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-0.shtml),
 [NCEP 5.3](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-3.shtml),
@@ -182,6 +201,8 @@ final byte conversion are separate later phases with at most 3D backing. X =
 A peak minus only the retained input is therefore not an X-only bound for CCSDS.
 Tiny zero-bit units have bounded minimum Vec capacities covered by the fixed
 64 KiB term rather than these proportional nonzero-width bounds.
+The controlled peak tests also assert the source-derived combined phase bound
+`peak - retained_E <= 2E + 3.5D + 64 KiB`, independently of the looser F+X target.
 
 Native debug witnesses retain the complete input through reorder, f64 scale and
 LE conversion. At D = 58,720,256, the 16-bit uncompressed stream measured
@@ -190,5 +211,8 @@ qualified zero-bit field measured 117,440,711. A deliberately inefficient valid
 Rice stream with E = 33,554,432 and D = 1,048,576 measured 100,665,537 peak bytes
 against F = 136,314,880 and X = 8,454,144. The last case makes compressed copies
 visible independently of a large D allowance. Preflight requests zero heap bytes.
+A combined E = 33,554,432 and D = 58,720,256 Rice witness measured
+163,577,905 peak bytes against F+X = 606,142,464, and satisfies the source-derived
+phase bound above.
 These phase bounds and controlled requested-allocation witnesses retain the
 allocator ownership, process-memory and integration limitations stated above.

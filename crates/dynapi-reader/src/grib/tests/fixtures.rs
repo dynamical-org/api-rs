@@ -128,7 +128,7 @@ pub(super) fn ccsds(ny: usize, nx: usize, width: u8, payload: Vec<u8>) -> Vec<u8
 
 pub(super) fn ccsds_uncompressed(width: u8, values: &[u32]) -> Vec<u8> {
     assert!(values.len().is_multiple_of(32));
-    let id = if width == 8 { 3 } else { 4 };
+    let id = ccsds_id_width(width);
     let mut bits = Bits::default();
     for block in values.chunks_exact(32) {
         bits.push((1 << id) - 1, id);
@@ -137,6 +137,15 @@ pub(super) fn ccsds_uncompressed(width: u8, values: &[u32]) -> Vec<u8> {
         }
     }
     bits.finish()
+}
+
+pub(super) fn ccsds_id_width(width: u8) -> u8 {
+    match width {
+        2..=3 => 1,
+        4 => 2,
+        5..=8 => 3,
+        _ => 4,
+    }
 }
 pub(super) struct Group {
     pub(super) reference: u32,

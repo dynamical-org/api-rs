@@ -1,4 +1,5 @@
 use super::*;
+mod ccsds_oracle;
 mod ccsds_tests;
 mod fixtures;
 use fixtures::*;
