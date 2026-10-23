@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 dynapi-contract = { path = "../dynapi-contract" }
+dynapi-projection = { path = "../dynapi-projection" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 sha2 = "0.10"
 num-bigint = "0.4"

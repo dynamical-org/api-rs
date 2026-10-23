@@ -371,7 +371,7 @@ async fn product_variable_snapshot_and_canonical_validation_errors_are_public_on
 }
 
 #[tokio::test]
-async fn analysis_canonical_and_internal_failure_use_owned_http_contracts() {
+async fn analysis_canonical_and_projected_outside_use_owned_http_contracts() {
     let server = Server::start(&[]).await;
     let path = format!(
         "/v1/data/fixture-analysis/{}/points/0,0?variables=temperature_2m&startTime=2026-07-30T01:00:00Z&endTime=2026-07-30T02:00:00Z",
@@ -391,8 +391,11 @@ async fn analysis_canonical_and_internal_failure_use_owned_http_contracts() {
     let mut body = payload();
     body["queries"][0]["dataProductId"] = json!("fixture-projected");
     let reply = server.request("POST", "/v1/forecasts", &body).await;
-    assert_eq!(reply.status, 500);
-    assert_eq!(reply.body, b"Internal Server Error");
+    assert_eq!(reply.status, 422);
+    assert_eq!(
+        reply.json(),
+        json!({"detail":"Location is outside the data product grid"})
+    );
     assert!(!reply.headers.contains_key("etag"));
 }
 

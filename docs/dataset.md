@@ -39,9 +39,14 @@ supported time encodings are the reader's attested epoch seconds and float secon
 with the timedelta dtype hint; unfamiliar encodings fail explicitly.
 
 For x/y grids, CRS classification follows Python's `crs_wkt`/`spatial_ref` precedence
-on coordinates. Six exact, once-attested geographic WKT strings cover the current
-live catalog. Other nonempty values classify as projected. Deviation D12 documents
-this conservative behavior and the existing projected-query limitation.
+on coordinates. Exact HRRR Lambert conformal and HRDPS rotated-pole operations
+are selected before the five geographic identity WKT inputs. Other nonempty
+values remain unsupported projected CRSs; missing CRS remains distinct. Both
+forecast selection and canonical reconstruction use the same native operation
+and stored y/x indices. Projected axes require float64 storage and decoded
+values, dimension-coordinate membership, and the validated axis contract in D31.
+Supplied units must be metres for HRRR or `degrees` for HRDPS; missing units use
+the exact WKT's native units. Projected selection fails closed on WASM (D30).
 
 ## Async/sync execution and admission
 

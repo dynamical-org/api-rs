@@ -543,15 +543,27 @@ async fn coordinate_membership_and_crs_reach_query_validation() {
     )
     .await
     .unwrap();
-    assert_eq!(dataset.view().spatial_crs, Some(SpatialCrs::Projected));
+    assert_eq!(
+        dataset.view().spatial_crs,
+        Some(SpatialCrs::Attested(
+            dynapi_projection::ProjectionKind::HrrrLambertConformal
+        ))
+    );
     let c = collection(&spec);
     assert_eq!(spec["cases"].as_array().unwrap().len(), 5);
     for case in spec["cases"].as_array().unwrap() {
         let requests = inputs(case, &dataset, &c);
-        let error =
-            prepare_batch(c.kind, &requests, &mut QueryBudget::default(), true, 64).unwrap_err();
-        assert_eq!(error.status, 500);
-        assert_eq!(error.detail, "Projected-CRS grids are not yet supported");
+        let batch = prepare_batch(c.kind, &requests, &mut QueryBudget::default(), true, 64);
+        if case["name"] == "batch" {
+            let error = batch.unwrap_err();
+            assert_eq!(error.status, 422);
+            assert_eq!(error.detail, "Location is outside the data product grid");
+        } else {
+            assert!(batch.is_ok(), "{}: {batch:?}", case["name"]);
+            let point = select_nearest_point(dataset.view(), 38.5, -97.5).unwrap();
+            assert_eq!(point.indexers, [("y".into(), 0), ("x".into(), 0)]);
+            assert_eq!(point_from_indices(dataset.view(), 0, 0).unwrap(), point);
+        }
     }
 }
 

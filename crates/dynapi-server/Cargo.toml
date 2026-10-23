@@ -41,5 +41,7 @@ httpdate = "1"
 md-5 = "0.10"
 
 [dev-dependencies]
+icechunk.workspace = true
+tempfile = "3"
 httparse = "1"
 tokio = { workspace = true, features = ["test-util"] }

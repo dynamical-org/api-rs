@@ -162,6 +162,37 @@ impl OpenedDataset {
                 var.is_coordinate = true;
             }
         }
+        view.spatial_crs = if let Some(spatial_ref) = arrays
+            .get("spatial_ref")
+            .filter(|_| coordinate_names.contains("spatial_ref"))
+        {
+            let attrs = &spatial_ref["attributes"];
+            let wkt = attrs
+                .get("crs_wkt")
+                .filter(|v| metadata::truthy(v))
+                .or_else(|| attrs.get("spatial_ref"));
+            Some(match wkt.filter(|v| metadata::truthy(v)) {
+                Some(Json::String(wkt)) => classify_wkt(wkt),
+                Some(_) => SpatialCrs::Projected,
+                None => SpatialCrs::Missing,
+            })
+        } else {
+            None
+        };
+        if matches!(view.spatial_crs, Some(SpatialCrs::Attested(_)))
+            && view.dimensions.contains_key("x")
+            && view.dimensions.contains_key("y")
+            && !(view.dimensions.contains_key("latitude")
+                && view.dimensions.contains_key("longitude"))
+        {
+            for name in ["x", "y"] {
+                if arrays.get(name).and_then(|meta| meta["data_type"].as_str()) != Some("float64") {
+                    return Err(OpenError::Metadata(format!(
+                        "Projected coordinate {name} must have float64 storage"
+                    )));
+                }
+            }
+        }
         // Query needs eager dimension coordinates only. Auxiliary coordinates
         // (notably GFS valid_time) remain lazy just as xr.open_zarr(chunks=None).
         for name in &coordinate_names {
@@ -241,23 +272,6 @@ impl OpenedDataset {
                 view.coordinates.insert(name.clone(), coord);
             }
         }
-        view.spatial_crs = if let Some(spatial_ref) = arrays
-            .get("spatial_ref")
-            .filter(|_| coordinate_names.contains("spatial_ref"))
-        {
-            let attrs = &spatial_ref["attributes"];
-            let wkt = attrs
-                .get("crs_wkt")
-                .filter(|v| metadata::truthy(v))
-                .or_else(|| attrs.get("spatial_ref"));
-            Some(match wkt.filter(|v| metadata::truthy(v)) {
-                Some(Json::String(wkt)) => classify_wkt(wkt),
-                Some(_) => SpatialCrs::Projected,
-                None => SpatialCrs::Missing,
-            })
-        } else {
-            None
-        };
         Ok(Arc::new(Self {
             view,
             session,
@@ -284,9 +298,11 @@ impl OpenedDataset {
 }
 
 /// WKT classification is deliberately fail-closed; see deviation D12.
-/// Only exactly attested live geographic WKT strings are treated as degrees.
+/// Attested operations take precedence over geographic identity.
 pub fn classify_wkt(wkt: &str) -> SpatialCrs {
-    if metadata::GEOGRAPHIC_WKTS.contains(&wkt) {
+    if let Ok(projection) = dynapi_projection::Projection::from_wkt(wkt) {
+        SpatialCrs::Attested(projection.kind())
+    } else if metadata::GEOGRAPHIC_WKTS.contains(&wkt) {
         SpatialCrs::Geographic
     } else {
         SpatialCrs::Projected

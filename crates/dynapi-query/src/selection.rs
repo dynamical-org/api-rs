@@ -1,6 +1,7 @@
 use crate::*;
 use chrono::{DateTime, Utc};
 use dynapi_contract::output::python_repr;
+use dynapi_projection::{GeographicPoint, GridIndices, ProjectedGrid, Projection, ProjectionKind};
 use num_traits::ToPrimitive;
 use std::{borrow::Cow, collections::BTreeSet};
 
@@ -127,7 +128,7 @@ fn spatial(view: &DatasetView) -> Result<(&str, &str), QueryError> {
     }
     if view.dimensions.contains_key("y") && view.dimensions.contains_key("x") {
         match view.spatial_crs {
-            Some(SpatialCrs::Geographic) => return Ok(("y", "x")),
+            Some(SpatialCrs::Geographic | SpatialCrs::Attested(_)) => return Ok(("y", "x")),
             Some(SpatialCrs::Missing) => {
                 return Err(QueryError::invalid("Projected grid is missing its CRS"))
             }
@@ -142,6 +143,68 @@ fn spatial(view: &DatasetView) -> Result<(&str, &str), QueryError> {
     Err(QueryError::invalid(
         "Dataset has an unsupported spatial grid",
     ))
+}
+fn projection_error(error: dynapi_projection::Error) -> QueryError {
+    use dynapi_projection::Error;
+    match error {
+        Error::OutsideGrid | Error::OutsideProjectionDomain | Error::InvalidCoordinate => {
+            QueryError::invalid("Location is outside the data product grid")
+        }
+        _ => QueryError::internal(format!("Projected grid: {error}")),
+    }
+}
+fn projected_grid(view: &DatasetView) -> Result<Option<ProjectedGrid<'_>>, QueryError> {
+    let Some(SpatialCrs::Attested(kind)) = view.spatial_crs else {
+        return Ok(None);
+    };
+    let axis = |name: &str| {
+        let Coordinate::Numeric(values) = coordinate(view, name)? else {
+            return Err(QueryError::internal(format!(
+                "Projected coordinate {name} must be float64"
+            )));
+        };
+        if values.len() != view.dimensions[name] {
+            return Err(QueryError::internal("Coordinate size mismatch"));
+        }
+        let variable = view.variables.get(name).ok_or_else(|| {
+            QueryError::internal(format!(
+                "Projected grid is missing its {name} coordinate metadata"
+            ))
+        })?;
+        if !variable.is_coordinate || variable.dimensions.as_slice() != [name] {
+            return Err(QueryError::internal(format!(
+                "Projected coordinate {name} must be a dimension coordinate"
+            )));
+        }
+        if let Some(units) = variable.attributes.get("units") {
+            let valid = match (kind, units) {
+                (ProjectionKind::HrrrLambertConformal, Value::String(units)) => {
+                    matches!(
+                        units.as_str(),
+                        "m" | "metre" | "meter" | "metres" | "meters"
+                    )
+                }
+                (ProjectionKind::HrdpsRotatedPole, Value::String(units)) => units == "degrees",
+                _ => false,
+            };
+            if !valid {
+                return Err(QueryError::internal(format!(
+                    "Projected coordinate {name} has unsupported units"
+                )));
+            }
+        }
+        Ok(values.as_slice())
+    };
+    ProjectedGrid::new(Projection::from_kind(kind), axis("x")?, axis("y")?)
+        .map(Some)
+        .map_err(projection_error)
+}
+fn projected_point(point: dynapi_projection::SelectedPoint) -> SelectedPoint {
+    SelectedPoint {
+        latitude: point.geographic.latitude,
+        longitude: point.geographic.longitude,
+        indexers: vec![("y".into(), point.indices.y), ("x".into(), point.indices.x)],
+    }
 }
 fn finite_ordered(xs: &[f64]) -> Result<Vec<f64>, QueryError> {
     let mut xs: Vec<_> = xs.iter().copied().filter(|x| x.is_finite()).collect();
@@ -201,6 +264,17 @@ pub fn select_nearest_point(
     longitude: f64,
 ) -> Result<SelectedPoint, QueryError> {
     let (lat, lon) = spatial(view)?;
+    if lat == "y" {
+        if let Some(grid) = projected_grid(view)? {
+            return grid
+                .select_nearest(GeographicPoint {
+                    latitude,
+                    longitude,
+                })
+                .map(projected_point)
+                .map_err(projection_error);
+        }
+    }
     let latitudes = numeric(view, lat)?;
     let longitudes = numeric(view, lon)?;
     if longitudes.is_empty() {
@@ -282,6 +356,15 @@ pub fn point_from_indices(
     }
     if lat == "y" {
         spatial(view)?;
+        if let Some(grid) = projected_grid(view)? {
+            return grid
+                .point_from_indices(GridIndices {
+                    y: first as usize,
+                    x: second as usize,
+                })
+                .map(projected_point)
+                .map_err(projection_error);
+        }
     }
     let latitude = numeric(view, lat)?
         .get(first as usize)
