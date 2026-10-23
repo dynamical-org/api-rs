@@ -23,7 +23,14 @@ use zarrs_storage::{
     byte_range::{ByteRange, ByteRangeIterator},
 };
 
+#[cfg(test)]
+mod allocation_tests;
 pub mod cf_time;
+#[allow(
+    dead_code,
+    reason = "Private decoder qualification precedes reader integration"
+)]
+mod grib;
 mod http;
 mod repository_http;
 mod scale_offset;
