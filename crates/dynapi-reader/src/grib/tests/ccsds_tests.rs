@@ -102,6 +102,37 @@ fn split_fast_incremental_and_second_extension_values() {
     assert_eq!(decode(&bytes, profile(&[1, 32])).unwrap().values, [10.; 32]);
 }
 
+fn assert_second_extension_second_value_rejected(pair_index: usize) {
+    // A two-bit field has maximum 3. SE index 14 = 4 * 5 / 2 + 4
+    // encodes (0, 4): only the second value exceeds the field width.
+    let mut bits = Bits::default();
+    bits.push(0, 1); // Low-entropy ID for width 2.
+    bits.push(1, 1); // Second extension.
+    bits.push(1, 2); // RSI reference sample.
+    for pair in 0..16 {
+        bits.unary(if pair == pair_index { 14 } else { 0 });
+    }
+    let bytes = ccsds(1, 32, 2, bits.finish());
+    let measurement = crate::allocation_tests::Measurement::start();
+    assert_eq!(
+        decode(&bytes, profile(&[1, 32])).unwrap_err(),
+        Error::Malformed("CCSDS mapped sample exceeds width")
+    );
+    assert_eq!(measurement.counts().total, 0);
+}
+
+#[test]
+fn second_extension_rejects_second_value_after_reference() {
+    // The first pair supplies only its second value at odd sample 1.
+    assert_second_extension_second_value_rejected(0);
+}
+
+#[test]
+fn second_extension_rejects_second_value_at_even_pair() {
+    // Pair 0 emits an in-range zero; pair 1 emits both values at samples 2/3.
+    assert_second_extension_second_value_rejected(1);
+}
+
 #[test]
 fn zero_runs_reset_references_and_ros_handles_final_short_segment() {
     let mut bits = Bits::default();
