@@ -83,7 +83,7 @@ pub struct Heartbeat {
     resources: Arc<dyn ResourceSource>,
     loads: Arc<dyn LoadObserver>,
     previous: Mutex<(std::time::Instant, Resources)>,
-    preparation_previous: Mutex<Option<(dynapi_reader::PreparationState, u64)>>,
+    preparation_previous: Mutex<Option<(dynapi_reader::PreparationState, bool)>>,
 }
 impl Default for Heartbeat {
     fn default() -> Self {
@@ -102,8 +102,13 @@ impl Heartbeat {
         }
     }
     fn preparation_transition(&self) -> Option<Value> {
-        let snapshot = dynapi_reader::preparation_snapshot();
-        let current = (snapshot.state, snapshot.revision);
+        self.preparation_transition_for(dynapi_reader::preparation_snapshot())
+    }
+    fn preparation_transition_for(
+        &self,
+        snapshot: dynapi_reader::PreparationSnapshot,
+    ) -> Option<Value> {
+        let current = (snapshot.state, snapshot.admission_closed);
         let mut previous = self.preparation_previous.lock().unwrap();
         if previous.as_ref() == Some(&current) {
             return None;
@@ -257,6 +262,57 @@ mod tests {
             capacity_refusals: 3,
         }
     }
+    #[test]
+    fn preparation_events_follow_state_and_close_edges_without_revision_noise() {
+        use dynapi_reader::{PreparationSnapshot, PreparationStage, PreparationState};
+        let heartbeat = Heartbeat::default();
+        let snapshot = |state, revision, closed| PreparationSnapshot {
+            state,
+            stage: Some(PreparationStage::Bootstrap),
+            operation_age_seconds: Some(1.0),
+            aftermath_age_seconds: None,
+            refusals: 0,
+            timeouts: 0,
+            revision,
+            admission_closed: closed,
+            occupied: !matches!(
+                state,
+                PreparationState::Available | PreparationState::Closed
+            ),
+        };
+        for revision in [1, 9] {
+            assert!(
+                heartbeat
+                    .preparation_transition_for(snapshot(
+                        PreparationState::Available,
+                        revision,
+                        false
+                    ))
+                    .is_none()
+            );
+        }
+        for (state, revision, closed, emits) in [
+            (PreparationState::Active, 10, false, true),
+            (PreparationState::Active, 11, false, false),
+            (PreparationState::Aftermath, 12, false, true),
+            (PreparationState::Overdue, 12, false, true),
+            (PreparationState::Available, 13, false, true),
+            (PreparationState::Available, 99, false, false),
+            (PreparationState::Active, 100, false, true),
+            (PreparationState::Active, 101, true, true),
+            (PreparationState::Closed, 102, true, true),
+            (PreparationState::Faulted, 103, true, true),
+        ] {
+            assert_eq!(
+                heartbeat
+                    .preparation_transition_for(snapshot(state, revision, closed))
+                    .is_some(),
+                emits,
+                "{state:?}/{closed}"
+            );
+        }
+    }
+
     #[test]
     fn heartbeat_deltas_and_optional_measurements_are_explicit() {
         let heartbeat = Heartbeat::default();

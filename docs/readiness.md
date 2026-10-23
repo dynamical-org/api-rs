@@ -103,7 +103,11 @@ the process-wide source preparation owner. The nested snapshot contains only its
 bounded state/stage, operation/aftermath ages, refusal/timeout counts, revision and
 closed/occupied flags. Direct library callers can use `preparation_snapshot()`;
 optional heartbeat delivery does not own or reset that state. Best-effort
-`api_source_preparation` records report observed transitions, including recovery.
+`api_source_preparation` records report observed state/admission-close transitions,
+including recovery; stage/revision activity alone does not emit a transition.
+`s8PreparationReady` reports whether a slot is free now and is false during ordinary
+active preparation. For degradation alerts, use `s8Preparation.state` values
+`aftermath`, `overdue`, `faulted` or `closed`, or `admission_closed=true`.
 
 An abandoned operation remains occupied; after 90 seconds in aftermath its state
 is `overdue`. `faulted` means the supervisor ended unexpectedly with upstream
