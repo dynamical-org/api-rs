@@ -179,6 +179,37 @@ impl Timings {
         parts.join(", ")
     }
 }
+// Keep preparation saturation distinct until the HTTP boundary so it uses
+// the configured existing busy response, including its telemetry category.
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "Qualified S8 selection follows descriptor integration"
+)]
+enum SourceOpenError {
+    Busy,
+    Query(QueryError),
+}
+impl SourceOpenError {
+    fn reader(error: dynapi_reader::ReaderError) -> Self {
+        if error.virtual_failure == Some(dynapi_reader::VirtualFailureKind::PreparationUnavailable)
+        {
+            Self::Busy
+        } else {
+            Self::Query(dynapi_dataset::map_reader_error(error))
+        }
+    }
+    #[allow(
+        dead_code,
+        reason = "Qualified S8 selection follows descriptor integration"
+    )]
+    fn response(self, gate: &ComputeGate<SharedClock>) -> HttpResponse {
+        match self {
+            Self::Busy => busy(gate),
+            Self::Query(error) => query_error(error),
+        }
+    }
+}
 pub(crate) struct DataService {
     catalog: StacCatalog,
     cache: DatasetCache<SharedClock, Arc<OpenedDataset>>,
@@ -398,6 +429,63 @@ impl DataService {
                         &recipe.containers,
                     ))
                     .map_err(map_open)
+            },
+        )?;
+        Ok((opened.dataset.as_ref().clone(), opened.cache_status))
+    }
+    // Selection of qualified S8 products connects in the GRIB integration slice.
+    // Capture BEFORE every cache lookup, including pinned snapshots; the same
+    // opaque value supplies both identity and the session. Never cache a policy.
+    #[allow(
+        dead_code,
+        reason = "Qualified S8 selection follows descriptor integration"
+    )]
+    fn open_source_recipe(
+        &self,
+        key: DatasetKey,
+        recipe: dynapi_catalog::ReaderSourceConfig,
+        handle: &tokio::runtime::Handle,
+    ) -> Result<(Arc<OpenedDataset>, dynapi_catalog::cache::CacheStatus), SourceOpenError> {
+        if key.profile != Profile::Default {
+            return Err(SourceOpenError::Query(QueryError::internal(
+                "Source recipe requires the full profile",
+            )));
+        }
+        let prepared = handle
+            .block_on(dynapi_reader::prepare_sources(
+                &recipe.store,
+                &recipe.sources,
+            ))
+            .map_err(SourceOpenError::reader)?;
+        let snapshot = key.snapshot_id.clone();
+        let key = key.with_source_policy(prepared.policy_id());
+        let opened = self.cache.open(
+            key,
+            || {
+                let version = snapshot
+                    .as_deref()
+                    .map_or(DatasetVersion::Branch("main"), DatasetVersion::Snapshot);
+                let session = handle
+                    .block_on(ReadSession::open_prepared(&prepared, version))
+                    .map_err(|error| {
+                        if let Some(id) = snapshot.as_ref()
+                            && error.kind == dynapi_reader::ErrorKind::Snapshot
+                            && error.message.starts_with("Unknown snapshot ")
+                        {
+                            SourceOpenError::Query(map_open(OpenError::UnknownSnapshot(id.clone())))
+                        } else {
+                            SourceOpenError::reader(error)
+                        }
+                    })?;
+                Ok::<_, SourceOpenError>(Resolved {
+                    snapshot_id: session.snapshot_id().to_owned(),
+                    session,
+                })
+            },
+            |session| {
+                handle
+                    .block_on(OpenedDataset::from_read_session(session))
+                    .map_err(|error| SourceOpenError::Query(map_open(error)))
             },
         )?;
         Ok((opened.dataset.as_ref().clone(), opened.cache_status))
@@ -1101,7 +1189,7 @@ mod tests {
         assert_eq!(usage.counters["groupedReadValues"], 2);
     }
 
-    fn recipe_product(repository: &str, kind: &str) -> Product {
+    pub(super) fn recipe_product(repository: &str, kind: &str) -> Product {
         let prefix = if kind == "s3" {
             "s3://example-chunks/data/"
         } else {
@@ -1246,6 +1334,7 @@ mod tests {
                 kind,
                 message: "synthetic reader failure".into(),
                 virtual_chunk_fetch: false,
+                virtual_failure: None,
                 exception_class: None,
             }));
             assert_eq!(error.status, 500);
@@ -1257,8 +1346,12 @@ mod tests {
             kind: dynapi_reader::ErrorKind::Snapshot,
             message: "synthetic snapshot transport failure".into(),
             virtual_chunk_fetch: false,
+            virtual_failure: None,
             exception_class: None,
         }));
         assert_eq!(error.status, 500);
     }
 }
+
+#[cfg(test)]
+mod source_tests;

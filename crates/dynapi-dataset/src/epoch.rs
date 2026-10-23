@@ -66,6 +66,7 @@ where
             kind: ErrorKind::Storage,
             message: "Reader timed out after 90 seconds".into(),
             virtual_chunk_fetch: false,
+            virtual_failure: None,
             exception_class: None,
         })
     })?

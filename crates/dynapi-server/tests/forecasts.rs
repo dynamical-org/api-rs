@@ -472,6 +472,7 @@ async fn typed_storage_failures_reach_http_without_internal_diagnostics() {
             kind: dynapi_reader::ErrorKind::Storage,
             message: diagnostic.into(),
             virtual_chunk_fetch,
+            virtual_failure: None,
             exception_class: Some("StorageError"),
         });
         let reply = server.request("POST", "/v1/forecasts", &payload()).await;

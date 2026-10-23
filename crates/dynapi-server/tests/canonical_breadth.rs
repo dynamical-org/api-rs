@@ -390,6 +390,7 @@ async fn transient_reader_failure_table_is_identical_on_both_post_and_canonical_
                 message: message.into(),
                 virtual_chunk_fetch,
                 exception_class: Some("StorageError"),
+                virtual_failure: None,
             });
             let reply = server.request(method, &path, &body).await;
             assert_eq!(

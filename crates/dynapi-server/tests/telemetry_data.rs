@@ -259,6 +259,7 @@ async fn failed_loads_count_without_warming_and_catalog_busy_markers_are_distinc
         kind: dynapi_reader::ErrorKind::Storage,
         message: "fake-private-error".into(),
         virtual_chunk_fetch: false,
+        virtual_failure: None,
         exception_class: None,
     });
     let failure = server.request("POST", "/v1/forecasts", &payload()).await;

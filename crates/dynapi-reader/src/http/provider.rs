@@ -9,12 +9,12 @@ use std::{ops::Range, time::Duration};
 use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Provider {
+pub(crate) enum Provider {
     S3,
     Gcs,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(super) enum ProviderFailure {
+pub(crate) enum ProviderFailure {
     #[error("Provider range fetch failed")]
     Generic,
     #[error("Provider rate limited the terminal attempt")]
@@ -26,18 +26,24 @@ pub(super) enum ProviderFailure {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ProviderTransport {
+pub(crate) struct ProviderTransport {
     pub(super) inner: BoundedRangeTransport,
     provider: Provider,
 }
 impl ProviderTransport {
-    pub(super) fn new(provider: Provider) -> Result<Self, reqwest::Error> {
+    pub(crate) fn new(provider: Provider) -> Result<Self, reqwest::Error> {
         Ok(Self {
             inner: BoundedRangeTransport::new(true)?,
             provider,
         })
     }
-    pub(super) async fn fetch(
+    pub(crate) fn for_provider(&self, provider: Provider) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            provider,
+        }
+    }
+    pub(crate) async fn fetch(
         &self,
         url: &str,
         range: &Range<u64>,
@@ -113,6 +119,46 @@ fn valid_attributes(start: &BytesStart<'_>) -> bool {
     if !xml_name(start.name().as_ref()) {
         return false;
     }
+    // quick-xml accepts adjacent quoted attributes in unchecked iteration.
+    // Require XML whitespace at each attribute boundary before iterating.
+    let raw: &[u8] = start.as_ref();
+    let mut at = start.name().as_ref().len();
+    while at < raw.len() {
+        if !matches!(raw[at], b' ' | b'\t' | b'\r' | b'\n') {
+            return false;
+        }
+        while at < raw.len() && matches!(raw[at], b' ' | b'\t' | b'\r' | b'\n') {
+            at += 1;
+        }
+        if at == raw.len() {
+            break;
+        }
+        while at < raw.len() && raw[at] != b'=' && !matches!(raw[at], b' ' | b'\t' | b'\r' | b'\n')
+        {
+            at += 1;
+        }
+        while at < raw.len() && matches!(raw[at], b' ' | b'\t' | b'\r' | b'\n') {
+            at += 1;
+        }
+        if raw.get(at) != Some(&b'=') {
+            return false;
+        }
+        at += 1;
+        while at < raw.len() && matches!(raw[at], b' ' | b'\t' | b'\r' | b'\n') {
+            at += 1;
+        }
+        let Some(&quote) = raw.get(at).filter(|q| matches!(q, b'\'' | b'"')) else {
+            return false;
+        };
+        at += 1;
+        while at < raw.len() && raw[at] != quote {
+            at += 1;
+        }
+        if at == raw.len() {
+            return false;
+        }
+        at += 1;
+    }
     // A fixed duplicate-key set bounds scratch even for a densely packed tag.
     // quick-xml still checks attribute syntax; its growing duplicate-key Vec is disabled.
     let mut names: [&[u8]; 32] = [&[]; 32];
@@ -135,7 +181,7 @@ fn valid_attributes(start: &BytesStart<'_>) -> bool {
 /// Borrow events from a bounded UTF-8 body, with a fixed borrowed-name stack.
 /// Duplicate checks use a fixed set of 32 borrowed keys; parser errors can allocate bounded scratch.
 /// No entity expansion, DOM, Serde or read_text/read_to_end is used.
-pub(super) fn slow_down(body: &[u8]) -> bool {
+pub(crate) fn slow_down(body: &[u8]) -> bool {
     if body.len() > 4096
         || std::str::from_utf8(body).map_or(true, |text| {
             text.chars().any(|c| matches!(c, '\u{fffe}' | '\u{ffff}'))

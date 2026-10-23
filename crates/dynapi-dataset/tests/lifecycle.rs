@@ -192,6 +192,7 @@ fn storage_error_mapping_only_retries_typed_virtual_fetches() {
                 kind: ErrorKind::Storage,
                 message: message.into(),
                 virtual_chunk_fetch: virtual_fetch,
+                virtual_failure: None,
                 exception_class: None,
             });
             assert_eq!(error.status, if virtual_fetch { 503 } else { 500 });
@@ -211,6 +212,7 @@ fn storage_error_mapping_only_retries_typed_virtual_fetches() {
             kind: ErrorKind::Storage,
             message: message.into(),
             virtual_chunk_fetch: true,
+            virtual_failure: None,
             exception_class: None,
         });
         assert_eq!(error.status, 500);
@@ -220,6 +222,7 @@ fn storage_error_mapping_only_retries_typed_virtual_fetches() {
         kind: ErrorKind::Unsupported,
         message: "unsupported codec".into(),
         virtual_chunk_fetch: false,
+        virtual_failure: None,
         exception_class: None,
     });
     assert_eq!(error.status, 500);
@@ -437,4 +440,38 @@ fn runtime_shutdown_during_compute_contains_reader_panics_and_releases_permit() 
         .block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), worker).await });
     assert_eq!(result.unwrap().unwrap_err().status, 500);
     assert_eq!(slots.available_permits(), 1);
+}
+
+#[test]
+fn source_aware_failures_use_types_before_legacy_diagnostics() {
+    use dynapi_reader::{ErrorKind, ReaderError, VirtualFailureKind};
+    for (kind, status) in [
+        (VirtualFailureKind::Generic, 500),
+        (VirtualFailureKind::ObjectModified, 500),
+        (VirtualFailureKind::SlowDown, 503),
+        (VirtualFailureKind::OperationTimeout, 503),
+        (VirtualFailureKind::PreparationUnavailable, 503),
+    ] {
+        for message in [
+            "unfamiliar",
+            "Error { code: \"SlowDown\",",
+            "operation timeout (all attempts including retries) occurred after 90s",
+        ] {
+            let error = ReaderError {
+                kind: ErrorKind::Storage,
+                message: message.into(),
+                virtual_chunk_fetch: true,
+                virtual_failure: Some(kind),
+                exception_class: None,
+            };
+            let serialized = serde_json::to_value(&error).unwrap();
+            assert!(serialized.get("virtual_failure").is_none());
+            let query = map_reader_error(error);
+            assert_eq!(query.status, status);
+            assert_eq!(query.retry_after, (status == 503).then_some(5));
+            if kind == VirtualFailureKind::PreparationUnavailable {
+                assert_eq!(query.detail, "Server busy; retry after 5 seconds");
+            }
+        }
+    }
 }
