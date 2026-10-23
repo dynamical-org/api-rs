@@ -293,7 +293,16 @@ impl Server {
         }
     }
     pub async fn request(&self, method: &str, path: &str, body: &Value) -> Reply {
-        let mut socket = self.socket(method, path, body).await;
+        self.request_with_headers(method, path, &[], body).await
+    }
+    pub async fn request_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &Value,
+    ) -> Reply {
+        let mut socket = self.socket_with_headers(method, path, headers, body).await;
         let mut raw = Vec::new();
         tokio::time::timeout(
             std::time::Duration::from_secs(20),
@@ -320,14 +329,27 @@ impl Server {
         }
     }
     pub async fn socket(&self, method: &str, path: &str, body: &Value) -> TcpStream {
+        self.socket_with_headers(method, path, &[], body).await
+    }
+    async fn socket_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &Value,
+    ) -> TcpStream {
         let mut socket = TcpStream::connect(self.address).await.unwrap();
         let body = if method == "POST" {
             body.to_string()
         } else {
             String::new()
         };
+        let extra_headers: String = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
         let header = format!(
-            "{method} {path} HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra_headers}\r\n{body}",
             body.len()
         );
         socket.write_all(header.as_bytes()).await.unwrap();
