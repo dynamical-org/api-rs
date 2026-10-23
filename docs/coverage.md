@@ -122,10 +122,12 @@ does not establish that the edge allows that request.
 | Query validation | Missing/empty variables, bad datetime, negative/unparseable lead limit: 422 kind/location | covered | [forecasts.rs::product_variable_snapshot_and_canonical_validation_errors_are_public_only][forecasts] |
 | Handler validation | Missing/naive initTime, invalid/out-of-range grid indices; absent immutable snapshot: exact detail | covered | [forecasts.rs::product_variable_snapshot_and_canonical_validation_errors_are_public_only][forecasts] |
 | Snapshot transport failure | Upstream snapshot read failure stays generic 500 instead of unknown-snapshot 404 | covered | [forecasts.rs::upstream_snapshot_failure_is_not_an_unknown_snapshot][forecasts] |
-| Snapshot identifier component | Malformed/absent immutable ID vs missing branch error | covered | [fixtures.rs::unknown_snapshots_have_typed_errors_and_missing_branches_remain_reader_errors][dataset-fixtures] |
+| Snapshot identifiers | Malformed/unknown immutable ID and canonical branch-name rejection over HTTP; typed missing-branch component error | covered | [historical_snapshots.rs::malformed_unknown_and_branch_snapshot_ids_have_exact_public_404_errors][historical]; [fixtures.rs::unknown_snapshots_have_typed_errors_and_missing_branches_remain_reader_errors][dataset-fixtures] |
 | Canonical admission | Exact busy 503/Retry-After 5 and data-limiter 429 envelope; simple CORS/request ID; rate debit before compute with distinct query/data buckets and no catalog/store read | covered | [public_contract.rs::canonical_admission_returns_exact_busy_and_data_rate_limit_responses][public-contract] |
-| Historical immutable snapshots | Serve a prior snapshot after main advances, with old values/metadata/links and immutable caching; missing historical arrays/variables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); current-snapshot canonical tests do not establish history |
-| Canonical error breadth | Invalid branch-name URL, variable sorting/dedup/25-variable bound, analysis window validation, encoded identifiers and transient failure HTTP tables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10) |
+| Historical deterministic forecast snapshots | POST A link retains exact original body/ETag, values, schema, links and immutable caching after main advances to B; TTL, separate pinned keys, LRU eviction/reopen and unchanged-main revalidation | covered | [historical_snapshots.rs::historical_canonical_links_survive_main_advance_and_cache_eviction][historical] |
+| Historical schema and times | A rejects B's added variable/run/lead window; B exposes changed values, new variable metadata and appended run/lead times over POST and canonical GET | covered | [historical_snapshots.rs::historical_schema_and_appended_times_are_snapshot_specific][historical] |
+| Historical analysis, ensemble and projected snapshots | Main-advance HTTP history across these additional families | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10); the deterministic forecast history above does not establish these families |
+| Canonical error breadth | Variable sorting/dedup/25-variable bound, analysis window validation, encoded identifiers and transient failure HTTP tables | gap | [#4](https://github.com/dynamical-org/api/issues/4), [#10](https://github.com/dynamical-org/api/issues/10) |
 | Projected forecast | HRRR/HRDPS synthetic values/indices/location, independent SHA-256 ETag, repeat stability, immutable cache and out-of-grid 422 | covered | [projected.rs::projected_forecasts_and_canonical_get_share_cells_values_locations_and_etags][server-projected] |
 | HEAD, POST, PUT, PATCH, DELETE; plain OPTIONS; slash forms | 405 method/Allow/body/type/length/CORS, plain OPTIONS 204 and slash redirects for GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE without catalog or compute | covered | [public_contract.rs::data_route_methods_plain_options_and_slash_redirects_need_no_catalog_or_compute][public-contract]; public edge reachability remains [#33](https://github.com/dynamical-org/api/issues/33) |
 
@@ -280,6 +282,7 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [catalog-life]: ../crates/dynapi-server/tests/catalog_lifecycle.rs
 [openapi]: ../crates/dynapi-server/src/openapi.rs
 [forecasts]: ../crates/dynapi-server/tests/forecasts.rs
+[historical]: ../crates/dynapi-server/tests/historical_snapshots.rs
 [server-projected]: ../crates/dynapi-server/tests/projected.rs
 [readiness]: ../crates/dynapi-server/tests/readiness.rs
 [telemetry]: ../crates/dynapi-server/tests/telemetry.rs
