@@ -410,3 +410,26 @@ metadata policy. The library alone enables no service route.
 - Tests use synthetic Rust-owned byte recipes, explicit decoded values and dtype
   precision invariants; no captured reference output is committed. See
   `catalog_encodings.rs` and `docs/reader.md` for codec and frame cases.
+
+## D-projw-1 — Attested projected operations in native point routes
+
+- Supersedes D12's historical classification/unsupported status for the two exact
+  operation WKT inputs only. `SpatialCrs::Attested(ProjectionKind)` selects HRRR
+  Lambert conformal or HRDPS rotation before the five geographic identities.
+  Unknown WKT stays `Projected`, missing/false CRS stays `Missing`, coordinate
+  membership and `crs_wkt` truthy precedence remain unchanged.
+- POST forecasts and canonical GET share validated `ProjectedGrid` construction,
+  preserve stored y/x indices, and return inverse-transformed geographic points.
+  Out-of-grid/projection-domain requests return the existing 422 location detail.
+  Canonical index bounds are checked before CRS/grid validation.
+- Beyond D31's axis requirements, projected coordinates require actual float64
+  storage and decoded float64 dimension coordinates. Supplied HRRR units must be
+  `m`, `metre`, `meter`, `metres`, or `meters`; HRDPS uses `degrees`. Absent unit
+  attributes retain the attested WKT's native units. Other units/types fail closed
+  as metadata errors (500), without conversion. The reference service does not
+  impose these metadata guards; the attested catalog products satisfy them.
+- D30 is unchanged: valid projected query/canonical paths fail closed on WASM.
+  Rust-owned tests cover both operations, stored-value selection, canonical and
+  ETag invariants, out-of-domain errors, dtype/units/membership, identity/CRS/index
+  precedence and the unsupported-target path. No service captures supply expected
+  public test results.

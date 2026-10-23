@@ -75,6 +75,9 @@ impl Drop for FixtureHost {
 }
 impl FixtureHost {
     pub async fn start() -> Self {
+        Self::start_with_root(None).await
+    }
+    pub async fn start_with_root(root: Option<PathBuf>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let reads = Arc::new(Reads {
@@ -87,7 +90,7 @@ impl FixtureHost {
             let mut tasks = JoinSet::new();
             loop {
                 tokio::select! {
-                    accepted = listener.accept() => { let (socket, _) = accepted.unwrap(); let state = state.clone(); let base = base.clone(); tasks.spawn(async move { let _ = serve_fixture(socket, &base, state).await; }); },
+                    accepted = listener.accept() => { let (socket, _) = accepted.unwrap(); let state = state.clone(); let base = base.clone(); let root = root.clone(); tasks.spawn(async move { let _ = serve_fixture(socket, &base, state, root.as_deref()).await; }); },
                     Some(result) = tasks.join_next() => { result.unwrap(); }
                 }
             }
@@ -99,6 +102,7 @@ async fn serve_fixture(
     mut socket: TcpStream,
     _base: &str,
     reads: Arc<Reads>,
+    root: Option<&Path>,
 ) -> std::io::Result<()> {
     let mut raw = Vec::new();
     let mut buf = [0; 4096];
@@ -154,7 +158,13 @@ async fn serve_fixture(
             return Ok(());
         }
     }
-    let body = if path == "/catalog.json" {
+    let body = if let Some(root) = root {
+        if path.split('/').any(|s| s == "..") {
+            None
+        } else {
+            std::fs::read(root.join(path.trim_start_matches('/'))).ok()
+        }
+    } else if path == "/catalog.json" {
         Some(json!({"links": (["forecast","ensemble","analysis","projected"].map(|n| json!({"rel":"child","href":format!("/{n}/collection.json")})))}).to_string().into_bytes())
     } else if let Some(name) = path
         .strip_prefix('/')
@@ -238,7 +248,14 @@ impl Server {
         values: &[(&str, &str)],
         catalog: Option<dynapi_catalog::native::StacCatalog>,
     ) -> Self {
-        let host = FixtureHost::start().await;
+        Self::start_with_catalog_and_root(values, catalog, None).await
+    }
+    pub async fn start_with_catalog_and_root(
+        values: &[(&str, &str)],
+        catalog: Option<dynapi_catalog::native::StacCatalog>,
+        root: Option<PathBuf>,
+    ) -> Self {
+        let host = FixtureHost::start_with_root(root).await;
         let mut env: BTreeMap<String, String> = values
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))

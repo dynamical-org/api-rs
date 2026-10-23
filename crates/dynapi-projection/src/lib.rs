@@ -94,6 +94,15 @@ pub struct Projection {
 }
 
 impl Projection {
+    /// Construct an operation already attested by the metadata adapter.
+    pub fn from_kind(kind: ProjectionKind) -> Self {
+        Self::from_wkt(match kind {
+            ProjectionKind::HrrrLambertConformal => HRRR_WKT,
+            ProjectionKind::HrdpsRotatedPole => HRDPS_WKT,
+        })
+        .expect("attested projection kind")
+    }
+
     /// Accept only the two exact catalog inputs. Unknown or reformatted WKT
     /// cannot fall back to identity or supply arbitrary projection parameters.
     pub fn from_wkt(wkt: &str) -> Result<Self, Error> {

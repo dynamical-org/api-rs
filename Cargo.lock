@@ -1306,6 +1306,7 @@ name = "dynapi-dataset"
 version = "0.1.0"
 dependencies = [
  "dynapi-contract",
+ "dynapi-projection",
  "dynapi-query",
  "dynapi-reader",
  "icechunk",
@@ -1330,6 +1331,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dynapi-contract",
+ "dynapi-projection",
  "num-bigint",
  "num-traits",
  "serde_json",
@@ -1391,6 +1393,7 @@ dependencies = [
  "httpdate",
  "hyper 1.12.0",
  "hyper-util",
+ "icechunk",
  "libc",
  "md-5 0.10.6",
  "percent-encoding",
@@ -1400,6 +1403,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "subtle",
+ "tempfile",
  "tokio",
  "uuid",
 ]

@@ -2,7 +2,8 @@
 
 Dependency-free spherical transforms and native nearest-point selection for the
 catalog's exact HRRR Lambert conformal conic and HRDPS rotated-pole WKT inputs.
-This is a library; query/dataset adapter and server integration remain separate.
+The dataset/query adapters use these operations for native forecast selection
+and canonical point reconstruction.
 
 `Projection::from_wkt` attests a coordinate **operation**, not a general CRS
 classification. Unknown, malformed, altered or reformatted WKT fails closed.
@@ -55,8 +56,8 @@ alone does not establish universal bit-for-bit parity.
 
 Both the reference Python service and this library use HRDPS rotation for
 geographic selection and canonical locations while preserving stored indices and
-values. D29 records this alignment. This crate does not enable either
-projected family in any service route.
+values. D29 records this alignment. The native server uses both operations
+through the dataset/query adapters.
 
 Tests own analytic origins, published spherical equations, inverse/forward and
 rotation invariants, exact WKT rejection, pole/dateline behavior, explicit axis

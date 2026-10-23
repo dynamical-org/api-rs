@@ -229,16 +229,21 @@ fn storage_error_mapping_only_retries_typed_virtual_fetches() {
 #[test]
 fn classifier_uses_explicit_geographic_policy_and_fails_closed() {
     let inputs: Json = serde_json::from_slice(include_bytes!("fixtures/live-crs.json")).unwrap();
-    // These geographic systems use angular axes on an ellipsoid/sphere. The
-    // derived geographic system rotates its pole; it has no planar projection.
+    // Exact operations take precedence over the five geographic identities.
     for (name, expected) in [
         ("grib-sphere", SpatialCrs::Geographic),
-        ("rotated-sphere", SpatialCrs::Geographic),
+        (
+            "rotated-sphere",
+            SpatialCrs::Attested(dynapi_projection::ProjectionKind::HrdpsRotatedPole),
+        ),
         ("sphere-6371229", SpatialCrs::Geographic),
         ("sphere-6367470", SpatialCrs::Geographic),
         ("wgs84", SpatialCrs::Geographic),
         ("grib-spheroid", SpatialCrs::Geographic),
-        ("lambert-conformal", SpatialCrs::Projected),
+        (
+            "lambert-conformal",
+            SpatialCrs::Attested(dynapi_projection::ProjectionKind::HrrrLambertConformal),
+        ),
     ] {
         let wkt = inputs[name].as_str().unwrap();
         assert_eq!(classify_wkt(wkt), expected, "{name}");

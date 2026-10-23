@@ -3,8 +3,11 @@
 `dynapi-server` serves forecast batches and canonical point links for materialized
 rectilinear products. Both deterministic and ensemble values use the portable
 query engine's ordered JSON and SHA-256 ETags. Analysis data can be read through
-canonical GET; `POST /v1/analyses` remains a stub. Projected transformations,
-virtual GRIB, representation routing, discovery and run listing remain later work.
+canonical GET; `POST /v1/analyses` remains a stub. Native HRRR Lambert conformal
+and HRDPS rotated-pole grids use the same operation for geographic selection and
+canonical locations, preserving stored y/x indices. Projected selection remains
+unsupported on WASM. Virtual GRIB, representation routing, discovery and run
+listing remain later work.
 
 The native catalog service warms at process startup and shares its refresh,
 freshness and failure-backoff state across requests. Schema validation precedes

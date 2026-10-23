@@ -33,6 +33,7 @@ pub enum Coordinate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpatialCrs {
     Geographic,
+    Attested(dynapi_projection::ProjectionKind),
     Projected,
     Missing,
 }

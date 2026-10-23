@@ -38,8 +38,11 @@ bounds directly to decoded time coordinates; it performs no run-plus-lead sum.
 An empty longitude axis raises the earlier internal `ValueError` from longitude
 normalization; a nonempty all-NaN axis remains a 422 grid error.
 For x/y grids, the adapter classifies `spatial_ref`: geographic grids use x/y as
-longitude/latitude; missing CRS is a query error; projected CRS is explicitly
-unsupported (500) until projected-grid support is implemented.
+longitude/latitude; missing CRS is a query error. `SpatialCrs::Attested` carries
+the projection library's operation kind for native HRRR/HRDPS selection and
+canonical reconstruction. Both paths validate float64 dimension coordinates,
+supplied units, and axes before using the same `ProjectedGrid`. Unknown projected
+CRSs remain unsupported (500). WASM projected selection fails closed (D30).
 
 The server validates request schemas, resolves catalog products/snapshots, and
 constructs `QueryInput`s. `prepare_batch` selects each query/run and charges

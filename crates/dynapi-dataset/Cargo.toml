@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 dynapi-reader = { path = "../dynapi-reader" }
 dynapi-query = { path = "../dynapi-query" }
+dynapi-projection = { path = "../dynapi-projection" }
 dynapi-contract = { path = "../dynapi-contract" }
 tokio = { workspace = true, features = ["sync"] }
 serde_json = { workspace = true, features = ["arbitrary_precision", "preserve_order", "float_roundtrip"] }
