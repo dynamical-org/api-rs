@@ -456,3 +456,13 @@ metadata policy. The library alone enables no service route.
   behavior and constant rejections. Allocation tests include retained input through
   result conversion and distinguish peak live requests from cumulative allocations.
   They do not establish shared-pool, native/RSS or whole-process bounds.
+## D-geo-1 — Container identity in repository and dataset cache keys
+
+Cache keys include the sorted virtual-container type/prefix tuples as well as
+product, repository location and profile (and snapshot for datasets). A container
+recipe change, including proxy-backed to direct access, opens a new handle even
+when product, location and snapshot are unchanged. Container key storage is
+included in the dataset cache's byte charge. This matches the reference Python
+service and prevents a caller-location check from being bypassed by a handle
+opened under an older recipe. Reordering identical declarations keeps the same
+identity. Rust-owned fixtures cover dataset/repository misses and byte bounds.
