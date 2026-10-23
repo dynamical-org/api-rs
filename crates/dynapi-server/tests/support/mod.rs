@@ -262,16 +262,23 @@ impl Server {
         catalog: Option<dynapi_catalog::native::StacCatalog>,
         root: Option<PathBuf>,
     ) -> Self {
-        Self::start_with_peer(values, catalog, root, true).await
+        Self::start_with_components(values, catalog, root, true, None).await
     }
     pub async fn start_without_peer(values: &[(&str, &str)]) -> Self {
-        Self::start_with_peer(values, None, None, false).await
+        Self::start_with_components(values, None, None, false, None).await
     }
-    async fn start_with_peer(
+    pub async fn start_with_sampler(
+        values: &[(&str, &str)],
+        sampler: Arc<dyn dynapi_server::telemetry::sampling::Sampling>,
+    ) -> Self {
+        Self::start_with_components(values, None, None, true, Some(sampler)).await
+    }
+    async fn start_with_components(
         values: &[(&str, &str)],
         catalog: Option<dynapi_catalog::native::StacCatalog>,
         root: Option<PathBuf>,
         with_peer: bool,
+        sampler: Option<Arc<dyn dynapi_server::telemetry::sampling::Sampling>>,
     ) -> Self {
         let host = FixtureHost::start_with_root(root).await;
         let mut env: BTreeMap<String, String> = values
@@ -288,13 +295,16 @@ impl Server {
         let config = Config::from_values(&env).unwrap();
         let sink = Arc::new(RecordingSink::default());
         let clock = Arc::new(TestClock::default());
-        let app = Arc::new(
-            match catalog {
-                Some(catalog) => App::with_catalog(config, clock.clone(), sink.clone(), catalog),
-                None => App::new(config, clock.clone(), sink.clone()),
-            }
-            .unwrap(),
-        );
+        let app = match catalog {
+            Some(catalog) => App::with_catalog(config, clock.clone(), sink.clone(), catalog),
+            None => App::new(config, clock.clone(), sink.clone()),
+        }
+        .unwrap();
+        let app = Arc::new(if let Some(sampler) = sampler {
+            app.with_analytics_sampler(sampler)
+        } else {
+            app
+        });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let serve = app.clone();

@@ -146,7 +146,7 @@ async fn telemetry_condition_fixture_preserves_nulls_routes_and_event_counts() {
             assert!((duration * 10.0 - (duration * 10.0).round()).abs() < 1e-6);
             assert_eq!(
                 record,
-                json!({"event":"api_request","distinct_id":"anonymous", "properties":{"$process_person_profile":false,"route":case["analytics_route"],"method":method,"status":status,"client_kind":"unlabeled","user_agent":"","country":null,"data_product_ids":[],"query_count":null,"work_units":null,"dataset_cache":null}}),
+                json!({"event":"api_request","distinct_id":"anonymous", "properties":{"$process_person_profile":false,"route":case["analytics_route"],"method":method,"status":status,"client_kind":"unlabeled","user_agent":"","country":null,"data_product_ids":[],"query_count":null,"work_units":null,"dataset_cache":null,"sample_weight":1}}),
                 "{}",
                 case["name"]
             );

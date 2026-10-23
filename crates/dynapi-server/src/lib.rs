@@ -113,6 +113,7 @@ pub struct App {
     rate: Mutex<RateLimiter<SharedClock>>,
     query_rate: Mutex<RateLimiter<SharedClock>>,
     sink: Arc<dyn Telemetry>,
+    analytics_sampler: Arc<dyn telemetry::sampling::Sampling>,
     started: Instant,
     data: Arc<data::DataService>,
     geo_gate: geo_gate::GeoGate,
@@ -154,9 +155,13 @@ impl App {
                 .with_load_observer(loads.clone()),
         );
         let geo_gate = geo_gate::GeoGate::new(&config, clock.clone())?;
+        let analytics_sampler = Arc::new(telemetry::sampling::AnalyticsSampler::production(
+            config.analytics_sampling,
+        )?);
         Ok(Self {
             data,
             geo_gate,
+            analytics_sampler,
             catalog,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?
                 .with_fair_share(config.fair_share)?,
@@ -171,6 +176,14 @@ impl App {
             started: Instant::now(),
             robots_headers,
         })
+    }
+    /// Override the per-container analytics policy, including its clock and draw inputs.
+    pub fn with_analytics_sampler(
+        mut self,
+        sampler: Arc<dyn telemetry::sampling::Sampling>,
+    ) -> Self {
+        self.analytics_sampler = sampler;
+        self
     }
     pub async fn serve(
         self: Arc<Self>,
@@ -941,12 +954,19 @@ impl App {
             && analytics
             && middleware_url_path(path).starts_with("/v1/")
         {
+            let Some(sample_weight) = telemetry::sampling::weight(
+                self.analytics_sampler.as_ref(),
+                caller.as_deref().unwrap_or("anonymous"),
+                status.unwrap_or(500),
+            ) else {
+                return;
+            };
             self.emit(Stream::Analytics, json!({"event": "api_request", "distinct_id": caller.as_deref().unwrap_or("anonymous"), "properties": {
                 "$process_person_profile": false, "route": if usage.pre_routing_rejection && status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
                 "method": method, "status": status, "duration_ms": telemetry::round_decimal(duration_ms, 1),
                 "client_kind": kind, "user_agent": ua.chars().take(120).collect::<String>(),
                 "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": usage.query_count,
-                "work_units": usage.work_units, "dataset_cache": usage.dataset_cache
+                "work_units": usage.work_units, "dataset_cache": usage.dataset_cache, "sample_weight":sample_weight
             }}));
         }
     }

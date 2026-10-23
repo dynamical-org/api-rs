@@ -33,6 +33,7 @@ pub struct Config {
     pub main_dataset_ttl_seconds: f64,
     pub stac_url: String,
     pub analytics_enabled: bool,
+    pub analytics_sampling: crate::telemetry::sampling::Settings,
     pub error_reporting_enabled: bool,
     pub container: String,
     #[cfg(feature = "harness")]
@@ -226,6 +227,15 @@ impl Config {
                 "DYNAMICAL_API_STAC_URL",
                 "https://stac.dynamical.org/catalog.json",
             ),
+            analytics_sampling: crate::telemetry::sampling::Settings {
+                enabled: get("DYNAMICAL_API_ANALYTICS_SAMPLING", "0") == "1",
+                threshold: positive("DYNAMICAL_API_ANALYTICS_SAMPLING_THRESHOLD", "100")?,
+                window_seconds: positive(
+                    "DYNAMICAL_API_ANALYTICS_SAMPLING_WINDOW_SECONDS",
+                    "3600",
+                )?,
+                weight: positive("DYNAMICAL_API_ANALYTICS_SAMPLING_WEIGHT", "10")?,
+            },
             analytics_enabled: values
                 .get("POSTHOG_PROJECT_TOKEN")
                 .is_some_and(|v| !v.is_empty()),
