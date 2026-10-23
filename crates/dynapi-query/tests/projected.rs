@@ -102,56 +102,73 @@ fn malformed_projected_coordinates_fail_closed_on_both_paths() {
         ProjectionKind::HrrrLambertConformal,
         ProjectionKind::HrdpsRotatedPole,
     ] {
-        for invalid in 0..8 {
-            let mut view = grid(kind);
-            match invalid {
-                0 => {
-                    view.coordinates
-                        .insert("x".into(), Coordinate::Float32(vec![-1., 0., 1.]));
+        for axis_name in ["x", "y"] {
+            for invalid in 0..9 {
+                let mut view = grid(kind);
+                match invalid {
+                    0 => {
+                        view.coordinates
+                            .insert(axis_name.into(), Coordinate::Float32(vec![-1., 0., 1.]));
+                    }
+                    1 => {
+                        view.coordinates
+                            .insert(axis_name.into(), Coordinate::Int64(vec![-1, 0, 1]));
+                    }
+                    2 => {
+                        view.variables
+                            .get_mut(axis_name)
+                            .unwrap()
+                            .attributes
+                            .insert("units".into(), Value::from("km"));
+                    }
+                    3 => {
+                        view.variables
+                            .get_mut(axis_name)
+                            .unwrap()
+                            .attributes
+                            .insert("units".into(), Value::Null);
+                    }
+                    4 => {
+                        view.coordinates
+                            .insert(axis_name.into(), Coordinate::Numeric(vec![0.]));
+                    }
+                    5 => {
+                        view.variables.get_mut(axis_name).unwrap().is_coordinate = false;
+                    }
+                    6 => {
+                        view.variables.get_mut(axis_name).unwrap().dimensions =
+                            vec!["other".into()];
+                    }
+                    7 => {
+                        view.variables.remove(axis_name);
+                    }
+                    8 => {
+                        view.variables
+                            .get_mut(axis_name)
+                            .unwrap()
+                            .attributes
+                            .insert(
+                                "units".into(),
+                                Value::from(if kind == ProjectionKind::HrrrLambertConformal {
+                                    "degrees"
+                                } else {
+                                    "m"
+                                }),
+                            );
+                    }
+                    _ => unreachable!(),
                 }
-                1 => {
-                    view.coordinates
-                        .insert("x".into(), Coordinate::Int64(vec![-1, 0, 1]));
-                }
-                2 => {
-                    view.variables
-                        .get_mut("x")
-                        .unwrap()
-                        .attributes
-                        .insert("units".into(), Value::from("km"));
-                }
-                3 => {
-                    view.variables
-                        .get_mut("x")
-                        .unwrap()
-                        .attributes
-                        .insert("units".into(), Value::Null);
-                }
-                4 => {
-                    view.coordinates
-                        .insert("x".into(), Coordinate::Numeric(vec![0.]));
-                }
-                5 => {
-                    view.variables.get_mut("x").unwrap().is_coordinate = false;
-                }
-                6 => {
-                    view.variables.get_mut("x").unwrap().dimensions = vec!["other".into()];
-                }
-                7 => {
-                    view.variables.remove("x");
-                }
-                _ => unreachable!(),
+                assert_eq!(
+                    select_nearest_point(&view, 38.5, -97.5).unwrap_err().status,
+                    500,
+                    "{kind:?}/{axis_name}/{invalid}"
+                );
+                assert_eq!(
+                    point_from_indices(&view, 1, 1).unwrap_err().status,
+                    500,
+                    "{kind:?}/{axis_name}/{invalid}"
+                );
             }
-            assert_eq!(
-                select_nearest_point(&view, 38.5, -97.5).unwrap_err().status,
-                500,
-                "{kind:?}/{invalid}"
-            );
-            assert_eq!(
-                point_from_indices(&view, 1, 1).unwrap_err().status,
-                500,
-                "{kind:?}/{invalid}"
-            );
         }
     }
 }

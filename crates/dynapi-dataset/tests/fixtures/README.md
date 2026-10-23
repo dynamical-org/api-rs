@@ -144,11 +144,11 @@ metadata remain bounded separately from the adapter's metadata charge.
 
 ## CRS and metadata inputs
 
-`live-crs.json` contains seven public WKT inputs only. Six have angular geographic
-axes on spheres/ellipsoids, including one derived geographic pole rotation. One
-uses a Lambert conformal projection. The Rust policy table explicitly chooses
-Geographic for the six named spellings, Projected for Lambert and every unknown
-or changed spelling. It also checks empty, malformed and identifier-only inputs.
+`live-crs.json` contains seven public WKT inputs only. The Rust policy table
+chooses `Geographic` for five exact geographic spellings and `Attested` operations
+for the rotated-pole and Lambert conformal inputs. Every unknown or changed
+spelling remains `Projected`. The table also checks empty, malformed and
+identifier-only inputs.
 These are policy choices, not loaded service classifications.
 
 `live-coordinate-dtypes.json` retains public metadata dtype/shape/identifier
