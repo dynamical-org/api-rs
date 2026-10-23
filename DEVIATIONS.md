@@ -605,3 +605,41 @@ until virtual GRIB support is implemented. No new public status is introduced.
   Provider XML classification additionally caps attributes at 32 per element with
   a fixed borrowed-key duplicate check. Missing/invalid required validators and
   a complete 412 status are ObjectModified, independent of error-body framing.
+
+## D-encb-1 — Enforce the scalar Zstd window bound before decoding
+
+- Reference Python service: its general Zstd codec accepts valid frames whose
+  declared window exceeds 1 KiB, including tiny scalar outputs.
+- Rust: the small scalar int64 decoder requires a known eight-byte output and at
+  most 64 encoded bytes. It now checks the non-single-segment window descriptor
+  before native decoding, allowing descriptor zero (1 KiB) and rejecting larger
+  windows. Single-segment frames have their window bounded by the eight-byte
+  content size. The existing `WindowLogMax(10)` parameter alone did not enforce
+  the declared-window bound when the native decoder used a fixed destination.
+- Judgement: enforce the documented small-window policy independently of the
+  native decoder's execution path. Scalar frames within that policy retain their
+  values; no dependency, public API or allocation limit is added or increased.
+- Tests: `scalar_zstd_window_descriptor_cannot_bypass_the_one_kib_decode_bound`
+  accepts descriptor zero and rejects descriptors 1 (1,152 bytes) and 0xa0
+  (1 GiB). Removing the header check makes this regression fail. The scalar
+  value, frame-fault and exact encoded-limit tables also cover this path.
+
+## D-encb-2 — Reject an out-of-range CF duration decoding unit
+
+- Reference Python service: xarray can convert an out-of-nanosecond-range float64
+  duration to per-element NaT during fractional resolution promotion. For the
+  full dimension coordinate `[9223372037.0, 1e-9, NaN]` seconds, it produces
+  `[NaT, 1 ns, NaT]`; selecting the second cell or an empty list succeeds.
+- Rust: retains the existing checked conversion. Any out-of-range value rejects
+  the entire decoding unit with typed `Decode` before scalar/list/empty selection,
+  using `CF time outside datetime64[ns]/timedelta64[ns] range`. Dimension coordinates
+  decode their complete axis, so an unselected bad value also rejects the read.
+  Auxiliary durations decode only selected values and can still read the tiny
+  value or an empty selection without decoding the overflowing cell.
+- Judgement: retain explicit failure rather than silently treating an out-of-range
+  coordinate as missing. This records existing behavior; no production change is
+  made for this deviation. No live catalog array is currently known to contain
+  such values; the synthetic regression is not an exhaustive catalog-value scan.
+- Tests: `fractional_nat_and_overflow_tables_respect_dimension_versus_auxiliary_decoding_units`
+  owns the typed rejection and unaffected selected auxiliary values. Other duration
+  precision, NaT and selection assertions remain covered by the same fixture family.

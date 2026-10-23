@@ -139,7 +139,9 @@ outside this allowlist:
   a fixed eight-byte destination through the same readonly Icechunk store. Frames
   must be one ordinary Zstd frame, have a known content size of exactly 8, no
   dictionary/checksum/reserved flags, and no trailing bytes. Encoded input is at
-  most 64 bytes; the decoder also sets WindowLogMax(10). Other standalone Zstd
+  most 64 bytes; the header independently limits non-single-segment windows to
+  1 KiB, and the decoder also sets WindowLogMax(10). See D-encb-1 for the explicit
+  header check, since fixed-buffer decoding can bypass that decoder parameter. Other standalone Zstd
   layouts remain excluded. The existing C-backed Zstd dependency is now direct;
   this adds no package versions to the lockfile.
 - The dataset entry point additionally admits rank-one int16 `bytes` little-endian
@@ -396,7 +398,8 @@ attribute object. Output preserves
 shape and contains little-endian int64 bits tagged `datetime64[ns]` or
 `timedelta64[ns]`. Integer i64::MIN and floating NaNs become NaT (i64::MIN).
 Integer epoch zero is valid, not missing. Checked conversion rejects out-of-ns-range
-values and infinities. Fractional seconds follow xarray's successive s→ms→us→ns
+values and infinities (D-encb-2 records xarray's per-element NaT difference for
+overflowing float durations). Fractional seconds follow xarray's successive s→ms→us→ns
 multiplications and integer truncation. This operation decodes the supplied buffer;
 for float time data, xarray's resolution choice can depend on other values in the
 same decoded buffer, so callers of the pure function must supply the complete
