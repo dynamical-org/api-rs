@@ -57,6 +57,9 @@ suite. During migration, maintainers verify outputs against the reference Python
 service outside this repository; intentional differences are recorded in
 [DEVIATIONS.md](DEVIATIONS.md).
 
+See the [public contract coverage matrix](docs/coverage.md) for route, product
+and capability coverage status and remaining gaps.
+
 ## Verification policy
 
 During migration, maintainers check status, complete body bytes and meaningful
