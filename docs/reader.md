@@ -283,11 +283,13 @@ The header audit uses the pinned c-blosc bundled by blosc-src 0.3.8:
   bits is rejected. LZ4, zlib and blosclz frames cannot reach those decoders through
   Zstd metadata; Zstd frames likewise cannot reach that decoder through LZ4 metadata.
 - Byte 3 typesize must match the admitted metadata for **both compressed
-  and memcpy** frames. Float layouts require the stored numeric width; dataset
-  integer layouts can declare a different shuffle item size (for example int16
-  with typesize 4). It affects zarrs' partial-read item alignment even when no
-  compressor/filter is invoked. A merely valid but metadata-mismatched typesize is
-  rejected before decode.
+  and memcpy** frames, with one exception: header typesize 1 is accepted when
+  metadata typesize equals the stored dtype width. The decoder uses the header
+  typesize for unshuffling and partial-read alignment. Byte shuffle with item size
+  1 is an identity transform, and header typesize 1 aligns every numeric read. Dataset integer layouts
+  can declare a different shuffle item size (for example int16 with typesize 4);
+  that case still requires an exact header match. All other mismatches are
+  rejected before decode. Size, compressor, version and shuffle checks remain.
 - Memcpy frames (bit 1 set) copy raw bytes and bypass compressor dispatch and both
   shuffle transforms in the pinned C decoder. Their compressor/version/shuffle bits
   are therefore ignored, rather than requiring zstd/shuffle bits that do not execute.
