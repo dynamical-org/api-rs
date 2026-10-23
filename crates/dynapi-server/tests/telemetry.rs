@@ -428,7 +428,7 @@ async fn stalled_resolver_cannot_keep_the_server_process_alive_after_shutdown() 
         "{stderr}"
     );
     assert!(
-        stderr.contains("Telemetry shutdown deadline exceeded; pending events may be lost"),
+        stderr.contains("Shutdown deadline exceeded; pending responses and telemetry may be lost"),
         "{stderr}"
     );
     assert!(!stderr.contains("errors.example.invalid"));

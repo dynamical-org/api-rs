@@ -18,7 +18,7 @@ const QUEUE_CAPACITY: usize = 256;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 use super::shutdown::SDK_SHUTDOWN_RESERVE;
-pub use super::shutdown::{ProcessDeadline, SHUTDOWN_TIMEOUT};
+pub use super::shutdown::SHUTDOWN_TIMEOUT;
 
 type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
 trait Delivery: Send + Sync {
@@ -122,27 +122,6 @@ impl DeliverySink {
                 super::error_record(super::ErrorKind::Startup, json!({})).unwrap(),
             );
         }
-    }
-    /// Arm this before dropping server tasks or capturing startup errors; keep
-    /// it until main-runtime cleanup and diagnostics have finished.
-    pub fn process_deadline(
-        &self,
-        started: tokio::time::Instant,
-        budget: Duration,
-        code: i32,
-    ) -> ProcessDeadline {
-        if self.backend.is_none() {
-            return ProcessDeadline(None);
-        }
-        let reserve = if self.errors {
-            SDK_SHUTDOWN_RESERVE
-        } else {
-            Duration::ZERO
-        };
-        let counters = self.counters.clone();
-        ProcessDeadline::with_expiry(started, budget + reserve, code, move || {
-            increment(&counters.failed);
-        })
     }
     pub fn total_shutdown_budget(&self, budget: Duration) -> Duration {
         budget
@@ -750,11 +729,6 @@ mod tests {
         let sink = DeliverySink::from_values(&BTreeMap::new()).unwrap();
         assert!(sink.sender.lock().unwrap().is_none());
         assert!(sink.worker.lock().await.is_none());
-        assert!(
-            sink.process_deadline(tokio::time::Instant::now(), Duration::ZERO, 99)
-                .0
-                .is_none()
-        );
         for stream in [Stream::Analytics, Stream::Error] {
             sink.emit(stream, json!({}));
         }

@@ -53,7 +53,7 @@ pub(super) fn diagnostic(message: &[u8]) {
     WRITING.store(false, Ordering::Release);
 }
 fn exit_at_deadline(code: i32) -> ! {
-    diagnostic(b"Telemetry shutdown deadline exceeded; pending events may be lost\n");
+    diagnostic(b"Shutdown deadline exceeded; pending responses and telemetry may be lost\n");
     #[cfg(unix)]
     unsafe {
         // Unlike exit(), _exit cannot wait for a C atexit hook or stdio lock.
