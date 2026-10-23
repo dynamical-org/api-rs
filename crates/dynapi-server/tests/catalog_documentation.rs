@@ -45,7 +45,7 @@ impl Fetcher for FixtureFetcher {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.delay {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                std::future::pending::<()>().await;
             }
             if self.failure {
                 return Err(FetchError::Status(404));
@@ -95,7 +95,9 @@ impl Server {
         let catalog = StacCatalog::with_dependencies(
             "https://catalog.example.test/catalog.json",
             CatalogConfig {
-                cold_wait_seconds: 0.02,
+                // Only stalled-fetch cases need a short timeout; fixture loads
+                // must tolerate parser-worker scheduling on a busy host.
+                cold_wait_seconds: if delay { 0.02 } else { 10.0 },
                 ..CatalogConfig::default()
             },
             Arc::new(MonotonicClock::default()),
