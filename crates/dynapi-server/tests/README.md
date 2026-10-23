@@ -125,3 +125,44 @@ then evicts and reopens A while main remains B. Later revalidation must preserve
 B and never expire pinned A. Snapshot errors, missing A humidity/run/lead bounds,
 and B's added schema/time values have explicit assertions. No saved service
 outputs, Python or external network are needed.
+
+## Temporal and request breadth recipes
+
+`temporal_breadth.rs` constructs two fresh temporary Icechunk repositories with
+one latitude (44), one longitude (0), and one int64 `count` variable. No committed
+repository is changed. The epoch is 2026-07-30T00:00:00Z. Epoch coordinates use
+attested int64 seconds, with `i64::MIN` for NaT; duration coordinates use attested
+float64 seconds with NaN fill and timedelta metadata.
+
+- Forecast source runs in hours: `[2, NaT, 0, 1, 2]`. Leads in stored seconds:
+  `[-1800, 0, 1800, 3600, 3600.000001, 7200, NaN]`. At source indices `(r,l)`,
+  `count = 100*r + l`. Latest is hour 2 and exact duplicate selection takes the
+  last source row (4). Run bounds are strict and preserve source order and
+  duplicates. Lead caps are inclusive; valid-time windows are half-open.
+- The stored float `3600.000001` becomes `3600s + 999ns` under the attested
+  successive float64 resolution conversion and integer truncation. Its lead
+  hours are `1 + 999/3_600_000_000_000`. Filtering retains the nanoseconds even
+  when the displayed valid time rounds to one microsecond. Therefore it belongs
+  to `[01:00:00, 01:00:00.000001)` and not to a window starting at the latter.
+- Analysis source times: `[01:00, NaT, 00:00, 01:00, 02:00, 01:00:01]` on that
+  date. At source index `t`, `count = 1000+t`. Windows retain source order and
+  duplicates, exclude NaT and the upper bound, and include the lower bound.
+  Canonical GET with no bounds selects source index 5, independently of the
+  maximum timestamp at index 4. Successful POST selections replay through their
+  generated immutable canonical links.
+
+`request_breadth.rs` owns JSON media families and a cross product of UTF-8,
+UTF-16 and UTF-32, BOM presence and byte order, using both BMP and supplementary
+Unicode scalars. Both POST routes assert complete error envelopes without
+catalog I/O. Schema tables own normalized coercions, required/null/alias cases,
+ordered nested/union errors, datetime grammar and raw/string integer limits.
+The mixed-batch and required-field HTTP cases hold all compute capacity to
+prove validation precedes admission. D1–D4 remain explicit deviations; the
+surrogate cases include the D2 early rejection policy.
+
+`canonical_breadth.rs` owns CSV normalization and the unique-variable bound,
+analysis windows (including canonical versus POST rules), once-decoded route
+identifiers, and the reader-error table across both POST and both canonical
+routes. Typed one-shot reader faults assert exact public responses and successful
+recovery, without leaking fixture diagnostics. These assertions are independent
+of any reference-service output and require no Python or external network.
