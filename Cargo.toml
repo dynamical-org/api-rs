@@ -3,7 +3,7 @@ members = ["crates/dynapi-catalog", "crates/dynapi-reader", "crates/dynapi-read"
 resolver = "2"
 
 [workspace.dependencies]
-icechunk = { version = "=2.2.2", default-features = false, features = ["object-store-fs", "object-store-s3", "object-store-http"] }
+icechunk = { version = "=2.2.2", default-features = false, features = ["object-store-fs", "object-store-s3", "object-store-http", "object-store-gcs", "object-store-azure"] }
 icechunk-types = { version = "=2.2.2", default-features = false }
 icechunk-storage = { version = "=2.2.2", default-features = false }
 icechunk-format = { version = "=2.2.2", default-features = false }

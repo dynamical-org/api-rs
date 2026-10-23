@@ -20,6 +20,8 @@ serde_json.workspace = true
 async-trait = "0.1"
 futures = "0.3"
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream"] }
+# Preserve the existing TLS key-exchange preference when removing SDK defaults.
+rustls = { version = "0.23", default-features = false, features = ["prefer-post-quantum"] }
 
 zstd = "=0.14.3"
 bytes = "1"
