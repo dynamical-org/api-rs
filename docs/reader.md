@@ -73,8 +73,12 @@ before copying each frame, including unframed and chunked bodies. No allocation
 size comes from response headers. Missing or truncated bytes fail; object_store
 retains its one retry (including remaining-range retries), 100 ms–1 s backoff,
 5 s connect / 20 s read and request timeouts, and the outer 90 s deadline.
-Reqwest inner retries are explicitly disabled, so object_store is the sole retry
-scheduler. A physical-attempt guard spans send through body EOF, error or drop.
+Reqwest protocol retries are explicitly disabled; object_store owns the retry
+budget for requests and remaining-range body recovery. hyper-util can still
+redispatch a request that was never written on a canceled pooled connection;
+that adds no origin-side request. The GOAWAY witness uses fresh connections,
+so it does not qualify pooled-connection cancellation. A physical-attempt guard
+spans the client send through body EOF, error or drop.
 Icechunk still checks recorded ETags/modification times. Legacy error bodies are
 discarded before object_store can collect them. Tests measure early connection closure from
 the server: inconsistent Content-Length closes before any body bytes, while
@@ -436,6 +440,9 @@ error mapping, proxy configuration and outer deadline.
 Provider policy uses a proxy-free client, identity encoding and a 30-second
 absolute deadline across attempts, backoff and body collection. It verifies
 required ETag/Last-Modified responses and exact range lengths after collection.
+A missing or unparseable required validator is classified as an object change
+before object_store erases the header error. A complete 412 status has that same
+classification regardless of its ignored body.
 Only a terminal S3 503 with a complete valid bounded Error/Code=SlowDown document
 has that typed transient classification. Earlier attempts cannot promote a final
 404, generic error, changed validator or interrupted body. Whole-operation expiry
@@ -444,7 +451,9 @@ legacy mapper.
 
 The quick-xml slice parser borrows a UTF-8 error buffer capped at 4096 bytes,
 uses a fixed eight-element tag stack and admits at most 256 events and one direct
-Code child of at most 64 ASCII bytes. It rejects malformed documents/attributes,
+Code child of at most 64 ASCII bytes. Each element admits at most 32 attributes;
+a fixed 512-byte borrowed-key set detects duplicates without quick-xml's growing
+attribute-tracking allocation. It rejects malformed documents/attributes,
 entities, DTD, CDATA, nested/duplicate/attributed Code, unsupported encoding,
 multiple roots and trailing data. Attribute checks and parser errors can allocate
 bounded scratch; opaque HTTP/TLS buffers are outside the retained-error cap.

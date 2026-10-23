@@ -588,7 +588,11 @@ until virtual GRIB support is implemented. No new public status is introduced.
 - Trigger: the virtual HTTP range transport sends a request through reqwest and
   object_store.
 - Rust: disables reqwest's protocol-level inner retries; object_store retains
-  its existing maximum of one retry. Physical-attempt ownership spans send,
+  its existing maximum of one retry across requests and remaining-range body
+  recovery. hyper-util may redispatch an unwritten request from a canceled
+  pooled connection; that adds no origin-side request. The GOAWAY witness uses
+  fresh connections and does not qualify that pooled-connection case.
+  Physical-attempt ownership spans send,
   response body EOF/error and early drop. Attempt counters measure actual sends
   at that boundary and observed body bytes, not upstream quiescence or wire bytes.
 - Existing HTTP authorization, conditional formatting, proxy configuration and
@@ -598,3 +602,6 @@ until virtual GRIB support is implemented. No new public status is introduced.
 - Tests: loopback HTTP/2 refused streams, connection failure retry counts, body
   lifetime/cancellation, terminal-attempt transitions, conditions and bounded XML.
   Expectations derive from constructed HTTP responses and ownership invariants.
+  Provider XML classification additionally caps attributes at 32 per element with
+  a fixed borrowed-key duplicate check. Missing/invalid required validators and
+  a complete 412 status are ObjectModified, independent of error-body framing.

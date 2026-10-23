@@ -115,16 +115,25 @@ pub(super) enum Policy {
     Provider(Provider),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RequiredValidator {
+    None,
+    ETag,
+    LastModified,
+}
+
 /// This state belongs to one logical range, never a shared client or origin.
 #[derive(Debug, Clone)]
 pub(super) struct FetchContext {
     pub policy: Policy,
     terminal: Arc<Mutex<ProviderFailure>>,
+    required: RequiredValidator,
 }
 impl FetchContext {
     pub(super) fn new(policy: Policy) -> Self {
         Self {
             policy,
+            required: RequiredValidator::None,
             terminal: Arc::new(Mutex::new(ProviderFailure::Generic)),
         }
     }
@@ -178,9 +187,16 @@ impl BoundedRangeTransport {
         url: &reqwest::Url,
         range: &Range<u64>,
         checksum: Option<&Checksum>,
-        context: FetchContext,
+        mut context: FetchContext,
     ) -> Result<HttpVirtualChunkResponse, VirtualReferenceError> {
         let expected = expected_length(range)?;
+        if matches!(context.policy, Policy::Provider(_)) {
+            context.required = match checksum {
+                Some(Checksum::ETag(_)) => RequiredValidator::ETag,
+                Some(Checksum::LastModified(_)) => RequiredValidator::LastModified,
+                None => RequiredValidator::None,
+            };
+        }
         let path = Path::from_url_path(url.path()).map_err(fetch_error)?;
         let client = HttpBuilder::new()
             .with_url(url.origin().ascii_serialization())
@@ -276,6 +292,8 @@ impl HttpConnector for Connector {
 #[async_trait::async_trait]
 impl HttpService for Connector {
     async fn call(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+        // Reset even if request validation fails before a physical send.
+        self.context.set_failure(ProviderFailure::Generic);
         let range = request
             .headers()
             .get("range")
@@ -290,9 +308,6 @@ impl HttpService for Connector {
             })
             .filter(|(first, end)| first < end)
             .ok_or_else(|| invalid_response("Expected a bounded HTTP byte range"))?;
-        // Reset before EVERY physical send; intermediate errors cannot leak into
-        // the terminal response, connection error or success-body failure.
-        self.context.set_failure(ProviderFailure::Generic);
         let guard = AttemptGuard::start(self.transport.attempts.clone());
         let response = HttpService::call(&self.transport.client, request).await?;
         let (parts, body) = response.into_parts();
@@ -307,6 +322,10 @@ impl HttpService for Connector {
             if let Policy::Provider(provider) = self.context.policy {
                 if response.status().as_u16() == 412 {
                     self.context.set_failure(ProviderFailure::ObjectModified);
+                    // The complete precondition-failed status is authoritative;
+                    // ignore its body regardless of framing or availability.
+                    *response.body_mut() = Vec::<u8>::new().into();
+                    return Ok(response);
                 }
                 let body = std::mem::replace(response.body_mut(), Vec::<u8>::new().into());
                 let mut stream = body.bytes_stream();
@@ -315,10 +334,8 @@ impl HttpService for Connector {
                 let mut complete = true;
                 while let Some(bytes) = stream.next().await {
                     // A failed error-body read must not restart a range fetch.
-                    let bytes = bytes.map_err(|_| {
-                        self.context.set_failure(ProviderFailure::Generic);
-                        invalid_response("Provider error body interrupted")
-                    })?;
+                    let bytes =
+                        bytes.map_err(|_| invalid_response("Provider error body interrupted"))?;
                     if bytes.len() > buffer.len() - used {
                         complete = false;
                         break;
@@ -386,6 +403,25 @@ impl HttpService for Connector {
         {
             return Err(invalid_response("Unsupported provider Content-Encoding"));
         }
+        // header_meta parses these before the facade can perform postchecks.
+        // Preserve the validator failure kind rather than losing it in erasure.
+        let valid = match self.context.required {
+            RequiredValidator::None => true,
+            RequiredValidator::ETag => response
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .is_some(),
+            RequiredValidator::LastModified => response
+                .headers()
+                .get("last-modified")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| chrono::DateTime::parse_from_rfc2822(v).is_ok()),
+        };
+        if !valid {
+            self.context.set_failure(ProviderFailure::ObjectModified);
+            return Err(invalid_response("Invalid required provider validator"));
+        }
         let present = response.headers().contains_key("last-modified");
         response
             .extensions_mut()
@@ -403,5 +439,25 @@ impl Attempts {
             self.finished.load(Ordering::Relaxed),
             self.body_bytes.load(Ordering::Relaxed),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn invalid_range_request_clears_terminal_state_before_any_send() {
+        let context = FetchContext::new(Policy::Provider(Provider::S3));
+        context.set_failure(ProviderFailure::SlowDown);
+        let transport = BoundedRangeTransport::new(true).unwrap();
+        let connector = Connector {
+            transport: transport.clone(),
+            context: context.clone(),
+        };
+        let request = HttpRequest::new(Vec::<u8>::new().into());
+        assert!(connector.call(request).await.is_err());
+        assert_eq!(context.failure(), ProviderFailure::Generic);
+        assert_eq!(transport.attempts.counts(), (0, 0, 0, 0));
     }
 }

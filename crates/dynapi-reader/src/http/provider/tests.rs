@@ -76,7 +76,7 @@ fn only_complete_bounded_error_documents_are_slow_down() {
 
 #[test]
 fn parser_scratch_is_bounded_with_borrowed_input_and_attribute_checks() {
-    let attrs = (0..250).map(|i| format!(" a{i}=\"x\"")).collect::<String>();
+    let attrs = (0..32).map(|i| format!(" a{i}=\"x\"")).collect::<String>();
     let xml = format!("<Error{attrs}><Code>SlowDown</Code></Error>");
     assert!(xml.len() < 4096);
     let framing = "<Error><Code>SlowDown</Code><Message></Message></Error>";
@@ -118,12 +118,22 @@ fn parser_scratch_is_bounded_with_borrowed_input_and_attribute_checks() {
         assert_eq!(accepted, expected, "{label}");
         assert_eq!(counts.live, 0, "{label}");
         assert!(!counts.foreign_deallocation, "{label}");
-        assert!(counts.peak <= 32768, "{label}: {counts:?}");
+        assert!(counts.peak <= 8192, "{label}: {counts:?}");
         eprintln!(
             "parser scratch {label}: {counts:?}; fixed tag stack={} bytes",
             std::mem::size_of::<[Option<BytesStart<'_>>; 8]>()
         );
     }
+}
+
+#[derive(Clone)]
+enum AfterBody {
+    Close,
+    Stall,
+    Reset {
+        attempts: Arc<super::super::transport::Attempts>,
+        observed: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -133,6 +143,7 @@ struct Reply {
     headers: Vec<(&'static str, String)>,
     length: usize,
     pause: Option<Arc<Notify>>,
+    after: AfterBody,
 }
 impl Reply {
     fn new(status: u16, body: &[u8]) -> Self {
@@ -142,6 +153,7 @@ impl Reply {
             headers: vec![],
             length: body.len(),
             pause: None,
+            after: AfterBody::Close,
         }
     }
     fn success() -> Self {
@@ -170,6 +182,7 @@ impl Origin {
         let signal = notified.clone();
         let task = tokio::spawn(async move {
             let mut replies = VecDeque::from(replies);
+            let mut stalled = Vec::new();
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
@@ -207,6 +220,19 @@ impl Origin {
                     pause.notified().await;
                 }
                 let _ = socket.write_all(&reply.body).await;
+                match reply.after {
+                    AfterBody::Close => {}
+                    AfterBody::Stall => stalled.push(socket),
+                    AfterBody::Reset { attempts, observed } => {
+                        // Wait for the client to observe the partial body, then
+                        // reset. No timing assumption about when bytes arrived.
+                        while attempts.counts().3 < observed {
+                            tokio::task::yield_now().await;
+                        }
+                        #[allow(deprecated)]
+                        socket.set_linger(Some(Duration::ZERO)).unwrap();
+                    }
+                }
             }
         });
         Self {
@@ -383,6 +409,11 @@ async fn provider_checks_required_conditions_and_framing_after_fetch() {
             &etag,
             Err(ProviderFailure::ObjectModified),
         ),
+        (
+            Some(("ETag", "\"é\"")),
+            &etag,
+            Err(ProviderFailure::ObjectModified),
+        ),
         (None, &etag, Err(ProviderFailure::ObjectModified)),
         (None, &modified, Err(ProviderFailure::ObjectModified)),
         (
@@ -398,7 +429,7 @@ async fn provider_checks_required_conditions_and_framing_after_fetch() {
         (
             Some(("Last-Modified", "invalid")),
             &modified,
-            Err(ProviderFailure::Generic),
+            Err(ProviderFailure::ObjectModified),
         ),
         (
             Some(("Content-Encoding", "gzip")),
@@ -700,4 +731,309 @@ async fn rejected_provider_ranges_and_conditions_start_no_attempt() {
     }
     assert_eq!(origin.count(), 0);
     drained(&transport, 0);
+}
+
+fn dense_attributes(count: usize) -> String {
+    const FIRST: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const REST: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    (0..count)
+        .map(|i| {
+            let name = if i < FIRST.len() {
+                (FIRST[i] as char).to_string()
+            } else {
+                let index = i - FIRST.len();
+                format!(
+                    "{}{}",
+                    FIRST[index % FIRST.len()] as char,
+                    REST[index / FIRST.len()] as char
+                )
+            };
+            format!(" {name}=\"\"")
+        })
+        .collect()
+}
+
+#[test]
+fn attribute_limits_cover_the_densest_document_and_fixed_duplicate_scratch() {
+    for count in [32, 33, 580, 654, 661, 685] {
+        let xml = format!(
+            "<Error{}><Code>SlowDown</Code></Error>",
+            dense_attributes(count)
+        );
+        assert!(xml.len() <= 4096, "{count}: {}", xml.len());
+        let measurement = crate::allocation_tests::Measurement::start();
+        let accepted = slow_down(xml.as_bytes());
+        let counts = measurement.counts();
+        drop(measurement);
+        eprintln!("attribute count={count}, bytes={}, {counts:?}", xml.len());
+        assert!(counts.peak <= 8192, "{count}: {counts:?}");
+        assert_eq!(counts.live, 0);
+        assert!(!counts.foreign_deallocation);
+        assert_eq!(accepted, count <= 32);
+    }
+    let attrs = dense_attributes(32);
+    let long_attr_frame = "<Error =''><Code>SlowDown</Code></Error>";
+    let long_attr = format!(
+        "<Error {}=''><Code>SlowDown</Code></Error>",
+        "a".repeat(4096 - long_attr_frame.len())
+    );
+    let decl_frame = "<?xml =''?><Error><Code>SlowDown</Code></Error>";
+    let malformed_decl = format!(
+        "<?xml {}=''?><Error><Code>SlowDown</Code></Error>",
+        "a".repeat(4096 - decl_frame.len())
+    );
+    for (label, xml, expected) in [
+        ("full-name", long_attr, true),
+        ("full-decl-error", malformed_decl, false),
+        (
+            "many-tags",
+            format!(
+                "<Error><Code>SlowDown</Code>{}</Error>",
+                format!("<M{attrs}/>").repeat(20)
+            ),
+            true,
+        ),
+        (
+            "depth-and-attrs",
+            format!(
+                "<Error{attrs}><Code>SlowDown</Code>{}{}</Error>",
+                format!("<M{attrs}>").repeat(7),
+                "</M>".repeat(7)
+            ),
+            true,
+        ),
+        (
+            "duplicate-last",
+            format!(
+                "<Error{} a=''><Code>SlowDown</Code></Error>",
+                dense_attributes(31)
+            ),
+            false,
+        ),
+        (
+            "child-over-limit",
+            format!(
+                "<Error><Code>SlowDown</Code><M{}/></Error>",
+                dense_attributes(33)
+            ),
+            false,
+        ),
+    ] {
+        assert!(xml.len() <= 4096, "{label}");
+        let measurement = crate::allocation_tests::Measurement::start();
+        let accepted = slow_down(xml.as_bytes());
+        let counts = measurement.counts();
+        drop(measurement);
+        eprintln!(
+            "attribute edge={label}, bytes={}, {counts:?}; duplicate stack={} bytes",
+            xml.len(),
+            std::mem::size_of::<[&[u8]; 32]>()
+        );
+        assert!(counts.peak <= 8192, "{label}: {counts:?}");
+        assert_eq!(counts.live, 0);
+        assert!(!counts.foreign_deallocation);
+        assert_eq!(accepted, expected, "{label}");
+    }
+}
+
+#[tokio::test]
+async fn collection_stops_at_the_first_frame_past_4096_before_eof() {
+    // The XML document is valid at4097bytes; the parser cap alone could mask
+    // a larger collector. Withheld HTTP EOF additionally proves early drop.
+    let document = [SLOW, &vec![b' '; 4097 - SLOW.len()]].concat();
+    assert_eq!(document.len(), 4097);
+    for withhold_eof in [false, true] {
+        let mut reply = Reply::new(503, &document);
+        if withhold_eof {
+            reply.length += 1;
+            reply.after = AfterBody::Stall;
+        }
+        let origin = Origin::new(vec![reply.clone(), reply]).await;
+        let mut transport = ProviderTransport::new(Provider::S3).unwrap();
+        transport.inner.client = super::super::transport::BoundedRangeTransport::builder(true)
+            .read_timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        assert_eq!(
+            transport
+                .fetch(&origin.url, &(7..11), None)
+                .await
+                .unwrap_err(),
+            ProviderFailure::Generic
+        );
+        assert_eq!(origin.count(), 2, "EOF withheld={withhold_eof}");
+        drained(&transport, 2);
+        assert_eq!(transport.inner.attempts.counts().3, 2 * 4097);
+    }
+}
+
+#[tokio::test]
+async fn precondition_failed_status_is_independent_of_its_body() {
+    for (body, length, stalled) in [
+        (b"changed".to_vec(), 7, false),
+        (b"short".to_vec(), 90, false),
+        (vec![b'x'; 4097], 4097, false),
+        (vec![], 90, true),
+    ] {
+        let mut reply = Reply::new(412, &body);
+        reply.length = length;
+        if stalled {
+            reply.after = AfterBody::Stall;
+        }
+        let origin = Origin::new(vec![reply]).await;
+        let transport = ProviderTransport::new(Provider::S3).unwrap();
+        assert_eq!(
+            transport
+                .fetch(&origin.url, &(7..11), None)
+                .await
+                .unwrap_err(),
+            ProviderFailure::ObjectModified
+        );
+        assert_eq!(origin.count(), 1);
+        drained(&transport, 1);
+        assert_eq!(transport.inner.attempts.counts().3, 0);
+    }
+}
+
+fn ranged_reply(body: &[u8], remainder: bool) -> Reply {
+    let mut reply = Reply::new(206, body);
+    reply.length = if remainder { 3 } else { 4 };
+    reply.headers = vec![
+        (
+            "Content-Range",
+            if remainder {
+                "bytes 8-10/20"
+            } else {
+                "bytes 7-10/20"
+            }
+            .into(),
+        ),
+        ("ETag", "\"e1\"".into()),
+    ];
+    reply
+}
+
+#[tokio::test]
+async fn etag_body_retries_share_the_header_attempt_budget_and_terminal_state() {
+    // Include success, repeated EOF, RST and stall; mixed header/body failures
+    // must share the same one-retry budget. Queue a third reply to detect leaks.
+    for legacy_mode in [false, true] {
+        for case in [
+            "eof-ok",
+            "eof-eof",
+            "rst-rst",
+            "stall-stall",
+            "slow-eof",
+            "eof-slow",
+        ] {
+            let mut transport = ProviderTransport::new(Provider::S3).unwrap();
+            transport.inner.client =
+                super::super::transport::BoundedRangeTransport::builder(!legacy_mode)
+                    .read_timeout(Duration::from_secs(1))
+                    .timeout(Duration::from_secs(3))
+                    .build()
+                    .unwrap();
+            let mut first = ranged_reply(b"d", false);
+            let mut last = ranged_reply(if case == "eof-ok" { b"ata" } else { b"a" }, true);
+            match case {
+                "rst-rst" => {
+                    first.after = AfterBody::Reset {
+                        attempts: transport.inner.attempts.clone(),
+                        observed: 1,
+                    };
+                    last.after = AfterBody::Reset {
+                        attempts: transport.inner.attempts.clone(),
+                        observed: 2,
+                    };
+                }
+                "stall-stall" => {
+                    first.after = AfterBody::Stall;
+                    last.after = AfterBody::Stall;
+                }
+                "slow-eof" => {
+                    first = Reply::new(503, SLOW);
+                    last = ranged_reply(b"d", false);
+                }
+                "eof-slow" => {
+                    last = Reply::new(503, SLOW);
+                }
+                _ => {}
+            }
+            let origin = Origin::new(vec![first, last, ranged_reply(b"ata", true)]).await;
+            let checksum = Checksum::ETag(ETag("e1".into()));
+            if legacy_mode {
+                let mut legacy =
+                    crate::http::BoundedHttpFetcher::new(vec![origin.url.clone()]).unwrap();
+                legacy.transport = transport.inner.clone();
+                let result = legacy
+                    .fetch(
+                        &origin.url,
+                        &(7..11),
+                        Some(&checksum),
+                        &HttpConfig::default(),
+                    )
+                    .await;
+                if case == "eof-ok" {
+                    assert_eq!(result.unwrap().data.as_ref(), b"data");
+                } else {
+                    let text = result.unwrap_err().to_string();
+                    assert!(!text.contains("SlowDown"));
+                }
+            } else {
+                let result = transport
+                    .fetch(&origin.url, &(7..11), Some(&checksum))
+                    .await;
+                let expected = match case {
+                    "eof-ok" => Ok(()),
+                    "eof-slow" => Err(ProviderFailure::SlowDown),
+                    _ => Err(ProviderFailure::Generic),
+                };
+                assert_eq!(
+                    result.map(|response| assert_eq!(response.data.as_ref(), b"data")),
+                    expected,
+                    "{case}"
+                );
+            }
+            assert_eq!(origin.count(), 2, "{case}, legacy={legacy_mode}");
+            drained(&transport, 2);
+            if case != "slow-eof" {
+                let request = origin.requests.lock().unwrap()[1].to_ascii_lowercase();
+                assert!(
+                    request.contains("range: bytes=8-10\r\n"),
+                    "{case}: {request}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_required_validator_on_body_retry_keeps_its_own_class() {
+    for last_modified in [false, true] {
+        let mut first = ranged_reply(b"d", false);
+        first
+            .headers
+            .push(("Last-Modified", "Thu, 01 Jan 1970 00:16:40 GMT".into()));
+        let mut last = ranged_reply(b"ata", true);
+        let checksum = if last_modified {
+            last.headers.push(("Last-Modified", "invalid".into()));
+            Checksum::LastModified(SecondsSinceEpoch(1000))
+        } else {
+            last.headers.retain(|(key, _)| *key != "ETag");
+            last.headers.push(("ETag", "\"é\"".into()));
+            Checksum::ETag(ETag("e1".into()))
+        };
+        let origin = Origin::new(vec![first, last, ranged_reply(b"ata", true)]).await;
+        let transport = ProviderTransport::new(Provider::S3).unwrap();
+        assert_eq!(
+            transport
+                .fetch(&origin.url, &(7..11), Some(&checksum))
+                .await
+                .unwrap_err(),
+            ProviderFailure::ObjectModified
+        );
+        assert_eq!(origin.count(), 2);
+        drained(&transport, 2);
+    }
 }

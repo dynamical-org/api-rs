@@ -113,13 +113,27 @@ fn valid_attributes(start: &BytesStart<'_>) -> bool {
     if !xml_name(start.name().as_ref()) {
         return false;
     }
-    start
-        .attributes()
-        .all(|attr| attr.is_ok_and(|a| xml_name(a.key.as_ref()) && !a.value.contains(&b'<')))
+    // A fixed duplicate-key set bounds scratch even for a densely packed tag.
+    // quick-xml still checks attribute syntax; its growing duplicate-key Vec is disabled.
+    let mut names: [&[u8]; 32] = [&[]; 32];
+    for (index, attr) in start.attributes().with_checks(false).enumerate() {
+        if index == names.len() {
+            return false;
+        }
+        let Ok(attr) = attr else {
+            return false;
+        };
+        let name = attr.key.into_inner();
+        if !xml_name(name) || attr.value.contains(&b'<') || names[..index].contains(&name) {
+            return false;
+        }
+        names[index] = name;
+    }
+    true
 }
 
 /// Borrow events from a bounded UTF-8 body, with a fixed borrowed-name stack.
-/// Attribute duplicate checking/error construction may allocate bounded scratch.
+/// Duplicate checks use a fixed set of 32 borrowed keys; parser errors can allocate bounded scratch.
 /// No entity expansion, DOM, Serde or read_text/read_to_end is used.
 pub(super) fn slow_down(body: &[u8]) -> bool {
     if body.len() > 4096
@@ -230,7 +244,7 @@ pub(super) fn slow_down(body: &[u8]) -> bool {
                 {
                     return false;
                 }
-                for attr in attrs.attributes() {
+                for attr in attrs.attributes().with_checks(false) {
                     let Ok(attr) = attr else {
                         return false;
                     };
