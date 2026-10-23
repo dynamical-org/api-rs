@@ -47,24 +47,27 @@ on overflow. Events larger than 64 KiB are rejected before enqueue. Counters
 saturate at `u64::MAX`; network calls have a two-second timeout. Failed analytics
 delivery is dropped without retry. The Sentry SDK also maintains its own bounded
 30-envelope transport queue and respects server rate limits. Errors are never
-sampled by the application. Shutdown uses one ten-second drain/flush budget plus
-a four-second Sentry reserve for its bounded blocking enqueue and HTTP-thread
-join: the total process shutdown bound with Sentry is fourteen seconds. Without
-Sentry the bound is ten seconds, including builds without network delivery.
-Stdout and network draining run concurrently under that same ten-second deadline;
-the stdout drain receives no additional budget or SDK reserve. A stalled OS write
-is abandoned at the drain deadline and its pending records are counted as dropped.
+sampled by the application. The telemetry shutdown phase gets at most ten seconds
+for drain/flush, plus a four-second Sentry reserve for its bounded blocking enqueue
+and HTTP-thread join: at most fourteen seconds with Sentry, ten without, including
+builds without network delivery. This phase fits inside the remaining shared
+process deadline; it does not extend it. Signal shutdown bounds the whole process
+at request drain plus finalization (45 seconds by default), as described in
+[startup and shutdown](readiness.md).
+Stdout and network draining run concurrently under that same telemetry drain
+deadline; the stdout drain receives no additional budget or SDK reserve. A stalled
+OS write is abandoned at the drain deadline and its pending records are counted as dropped.
 The dedicated writer is detached until process exit, which ends it even if the
 consumer never resumes; an in-flight record may have been partially written.
-Application draining stops before consuming the
+Telemetry queue draining stops before consuming the
 reserve; the remaining budget is passed to SDK close. Cleanup is awaited until
-the total deadline. If DNS/NSS or another blocking operation stalls SDK close,
+the telemetry deadline. If DNS/NSS or another blocking operation stalls SDK close,
 the server stops waiting, increments its failure counter, logs a static loss
 diagnostic to stderr, shuts down the main runtime without waiting for blocking
 tasks, and exits. Process exit terminates remaining SDK/resolver threads; pending
 SDK events may be lost and their exact number is unavailable. Drain expiry drops
 remaining application records and counts them; SDK close may also discard pending
-envelopes. An independent process deadline also covers synchronous cleanup and
+envelopes. The single shared process watchdog also covers synchronous cleanup and
 runtime destruction; its final diagnostic uses a nonblocking stderr write on Unix
 before immediate process termination. Queue
 overflow, transport failures or drain expiry cannot change an HTTP response.

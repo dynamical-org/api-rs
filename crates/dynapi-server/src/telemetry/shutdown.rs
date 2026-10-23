@@ -2,6 +2,17 @@
 use std::time::Duration;
 
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+pub const SDK_SHUTDOWN_RESERVE: Duration = Duration::from_secs(4);
+
+/// Stdout always drains; a configured Sentry SDK also needs its join reserve.
+pub fn minimum_finalization_reserve(error_reporting: bool) -> Duration {
+    SHUTDOWN_TIMEOUT
+        + if cfg!(feature = "telemetry-delivery") && error_reporting {
+            SDK_SHUTDOWN_RESERVE
+        } else {
+            Duration::ZERO
+        }
+}
 
 /// A process-owned deadline also covers synchronous cleanup and runtime drops.
 pub struct ProcessDeadline(
@@ -42,7 +53,7 @@ pub(super) fn diagnostic(message: &[u8]) {
     WRITING.store(false, Ordering::Release);
 }
 fn exit_at_deadline(code: i32) -> ! {
-    diagnostic(b"Telemetry shutdown deadline exceeded; pending events may be lost\n");
+    diagnostic(b"Shutdown deadline exceeded; pending responses and telemetry may be lost\n");
     #[cfg(unix)]
     unsafe {
         // Unlike exit(), _exit cannot wait for a C atexit hook or stdio lock.
@@ -58,7 +69,7 @@ impl ProcessDeadline {
         started: tokio::time::Instant,
         budget: Duration,
         code: i32,
-        expired: impl FnOnce() + Send + 'static,
+        expired: impl Fn() + Send + 'static,
     ) -> Self {
         let deadline = (started + budget).into_std();
         let (cancel, cancelled) = std::sync::mpsc::channel();
@@ -69,6 +80,9 @@ impl ProcessDeadline {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
             ) {
                 expired();
+                // Captured Arcs may be the last owners during runtime teardown.
+                // Do not run their allocator/destructor paths before _exit.
+                std::mem::forget(expired);
                 exit_at_deadline(code);
             }
         });

@@ -17,8 +17,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 const QUEUE_CAPACITY: usize = 256;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-pub use super::shutdown::{ProcessDeadline, SHUTDOWN_TIMEOUT};
-const SDK_SHUTDOWN_RESERVE: Duration = Duration::from_secs(4);
+use super::shutdown::SDK_SHUTDOWN_RESERVE;
+pub use super::shutdown::SHUTDOWN_TIMEOUT;
 
 type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
 trait Delivery: Send + Sync {
@@ -115,26 +115,13 @@ pub struct DeliverySink {
     stdout: Arc<super::StdoutSink>,
 }
 impl DeliverySink {
-    /// Arm this before dropping server tasks or capturing startup errors; keep
-    /// it until main-runtime cleanup and diagnostics have finished.
-    pub fn process_deadline(
-        &self,
-        started: tokio::time::Instant,
-        budget: Duration,
-        code: i32,
-    ) -> ProcessDeadline {
-        if self.backend.is_none() {
-            return ProcessDeadline(None);
+    pub fn capture_startup_error(&self) {
+        if self.errors {
+            self.emit(
+                Stream::Error,
+                super::error_record(super::ErrorKind::Startup, json!({})).unwrap(),
+            );
         }
-        let reserve = if self.errors {
-            SDK_SHUTDOWN_RESERVE
-        } else {
-            Duration::ZERO
-        };
-        let counters = self.counters.clone();
-        ProcessDeadline::with_expiry(started, budget + reserve, code, move || {
-            increment(&counters.failed);
-        })
     }
     pub fn total_shutdown_budget(&self, budget: Duration) -> Duration {
         budget
@@ -268,10 +255,6 @@ impl DeliverySink {
         started: tokio::time::Instant,
         budget: Duration,
     ) -> bool {
-        let mut worker_guard = self.worker.lock().await;
-        let Some(mut worker) = worker_guard.take() else {
-            return true;
-        };
         let reserve = if self.errors {
             SDK_SHUTDOWN_RESERVE
         } else {
@@ -281,6 +264,25 @@ impl DeliverySink {
         let deadline = drain_deadline
             .checked_add(reserve)
             .unwrap_or(drain_deadline);
+        self.shutdown_until(drain_deadline, deadline).await
+    }
+    /// Both deadlines belong to the process owner. The SDK reserve is already
+    /// included in `deadline`; it must never extend the process budget.
+    pub async fn shutdown_until(
+        &self,
+        drain_deadline: tokio::time::Instant,
+        deadline: tokio::time::Instant,
+    ) -> bool {
+        let mut worker_guard = self.worker.lock().await;
+        let Some(mut worker) = worker_guard.take() else {
+            return true;
+        };
+        let reserve = if self.errors {
+            SDK_SHUTDOWN_RESERVE
+        } else {
+            Duration::ZERO
+        };
+        let drain_deadline = drain_deadline.min(deadline);
         self.sender.lock().unwrap().take();
         match tokio::time::timeout_at(drain_deadline, &mut worker).await {
             Ok(Ok(())) => {}
@@ -545,6 +547,31 @@ mod tests {
         }
     }
     #[tokio::test(start_paused = true)]
+    async fn absolute_sdk_deadline_does_not_restart_after_request_drain() {
+        struct StalledFlush;
+        impl Delivery for StalledFlush {
+            fn send(&self, _: Stream, _: Value) -> SendFuture<'_> {
+                Box::pin(async { Ok(()) })
+            }
+            fn flush(&self, _: Duration) -> SendFuture<'_> {
+                Box::pin(std::future::pending())
+            }
+        }
+        let sink = DeliverySink::start(Arc::new(StalledFlush), 1, false, true);
+        let signal = tokio::time::Instant::now();
+        let deadline = signal + Duration::from_secs(45);
+        // Prior cleanup has consumed all but two seconds of the process budget,
+        // less than even the SDK reserve. Cleanup cannot add four seconds.
+        tokio::time::advance(Duration::from_secs(43)).await;
+        assert!(
+            !sink
+                .shutdown_until(deadline - SDK_SHUTDOWN_RESERVE, deadline)
+                .await
+        );
+        assert_eq!(tokio::time::Instant::now(), deadline);
+        assert_eq!(sink.counters.failed(), 1);
+    }
+    #[tokio::test(start_paused = true)]
     async fn stdout_and_network_shutdown_share_one_drain_deadline() {
         let (entered, started) = std::sync::mpsc::channel();
         let (release, blocked) = std::sync::mpsc::channel();
@@ -702,11 +729,6 @@ mod tests {
         let sink = DeliverySink::from_values(&BTreeMap::new()).unwrap();
         assert!(sink.sender.lock().unwrap().is_none());
         assert!(sink.worker.lock().await.is_none());
-        assert!(
-            sink.process_deadline(tokio::time::Instant::now(), Duration::ZERO, 99)
-                .0
-                .is_none()
-        );
         for stream in [Stream::Analytics, Stream::Error] {
             sink.emit(stream, json!({}));
         }

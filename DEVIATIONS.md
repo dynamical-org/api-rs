@@ -257,7 +257,7 @@ surface; they do not qualify the pending execution handlers.
 
 - Trigger: the native server is built with `telemetry-delivery` and a PostHog project token or Sentry DSN is configured.
 - Reference Python service: uses its PostHog/Sentry SDK background transports and lifecycle shutdown.
-- Rust: sends PostHog capture JSON over reqwest and uses the selective native Sentry SDK. Application enqueue is immediate and bounded to 256 records of at most 64 KiB each. Overflow/oversize events are dropped; counters saturate at `u64::MAX`. HTTP requests have a two-second timeout, do not follow redirects and do not inherit proxy settings. Failed PostHog sends are dropped without retry. The SDK's separate bounded envelope queue and rate-limit handling remain active. Shutdown shares a ten-second drain/flush budget and reserves four additional seconds for SDK enqueue/join: fourteen seconds total with Sentry, ten without. Application draining stops before the reserve. Pending application events are counted as dropped when the drain budget expires; pending SDK envelopes may also be discarded on close. If SDK cleanup exceeds the total deadline (including blocking DNS/NSS), the failure counter increments and a static stderr diagnostic notes possible SDK event loss. The executable shuts down its main runtime without waiting for blocking tasks and explicitly exits, terminating stalled SDK/resolver threads. Exact SDK losses are unavailable. Configured stdout heartbeats add application `telemetryDropped` and `telemetryFailed` counters; SDK-internal loss accounting is separate.
+- Rust: sends PostHog capture JSON over reqwest and uses the selective native Sentry SDK. Application enqueue is immediate and bounded to 256 records of at most 64 KiB each. Overflow/oversize events are dropped; counters saturate at `u64::MAX`. HTTP requests have a two-second timeout, do not follow redirects and do not inherit proxy settings. Failed PostHog sends are dropped without retry. The SDK's separate bounded envelope queue and rate-limit handling remain active. The telemetry phase shares a ten-second drain/flush budget and includes a four-second reserve for SDK enqueue/join: at most fourteen seconds with Sentry, ten without, all within the remaining shared process deadline (D28; 45 seconds total by default). Application draining stops before the reserve. Pending application events are counted as dropped when the drain budget expires; pending SDK envelopes may also be discarded on close. If SDK cleanup exceeds its telemetry deadline (including blocking DNS/NSS), the failure counter increments and a static stderr diagnostic notes possible SDK event loss. The executable shuts down its main runtime without waiting for blocking tasks and explicitly exits, terminating stalled SDK/resolver threads. Exact SDK losses are unavailable. Configured stdout heartbeats add application `telemetryDropped` and `telemetryFailed` counters; SDK-internal loss accounting is separate.
 - Consequence: SDK-added analytics metadata, transport batching/retries and loss behavior differ. Core analytics event/properties, caller hash, nulls and capture conditions are preserved. No key/DSN means no network client, network worker or network activity; default builds omit delivery dependencies. Malformed sink configuration disables delivery using a static diagnostic, preserving stdout and request processing.
 - Rationale: bound observability work and memory independently of endpoint availability, keep native delivery opt-in, and preserve the portable crate dependency boundary. Startup configuration differences remain documented in D9.
 - Tests: `unconfigured_delivery_creates_no_worker_or_http_client`, `bounded_queue_drops_without_waiting_for_a_stalled_backend`, `oversized_events_are_dropped_before_the_queue`, `stalled_delivery_does_not_delay_an_http_response`, `loopback_wire_contract_and_shutdown_flush_both_destinations`, `saturated_sdk_and_stalled_endpoint_have_a_bounded_joined_shutdown`, `application_drain_and_sdk_flush_share_one_budget`, and `only_handler_success_records_are_sampled_and_all_fields_pass_through`.
@@ -274,7 +274,7 @@ surface; they do not qualify the pending execution handlers.
 
 - Trigger: a full or stalled stdout pipe, an oversized terminal record, or shutdown before stdout draining completes.
 - Reference Python service: synchronous flushed printing can block request completion indefinitely when the consumer stops reading.
-- Rust: immediate enqueue into a 256-record queue, with one dedicated native writer and a 64 KiB serialized-record limit including the newline. Overflow and oversize records are dropped; write failures are counted. Stdout drains concurrently with network delivery under the shared ten-second deadline, then pending records are counted as abandoned. Process exit ends a stalled writer; partially written in-flight records are possible.
+- Rust: immediate enqueue into a 256-record queue, with one dedicated native writer and a 64 KiB serialized-record limit including the newline. Overflow and oversize records are dropped; write failures are counted. Stdout drains concurrently with network delivery under the shared telemetry drain deadline (at most ten seconds within the remaining process deadline; see D28 and [startup and shutdown](docs/readiness.md)), then pending records are counted as abandoned. Process exit ends a stalled writer; partially written in-flight records are possible.
 - Observable difference: requests complete despite stdout backpressure, with bounded output loss. `telemetryDropped`/`telemetryFailed` heartbeats include stdout losses, even without network configuration once a loss occurs. A best-effort shutdown diagnostic reports stdout loss totals. Healthy terminal record fields and sampling rules are unchanged.
 - Rationale: logging backpressure must not stall HTTP responses or process shutdown. No per-record blocking task or extra shutdown budget is introduced.
 - Tests: `full_undrained_stdout_does_not_block_http_and_counts_loss_at_bounded_shutdown`, `overflow_size_limit_and_abandoned_records_are_counted_without_waiting_for_writer`, `heartbeat_exposes_stdout_losses_added_to_network_counters_and_drains`, and `stdout_and_network_shutdown_share_one_drain_deadline`.
@@ -292,3 +292,47 @@ surface; they do not qualify the pending execution handlers.
 - Rust: both single selections return the internal Storage timeout at the existing 90-second deadline. The reference read-path comparison completed the historical selection after more than 90 seconds. A separate one-off Rust diagnostic completed that workload as 60 member-slice reads through one shared session, matching all output bits; this does not qualify a single full selection under the shipped deadline.
 - Judgement: retain sequential decoding, per-chunk bounds and the reader deadline. Full ensemble latency qualification remains open. Coalescing does not avoid fetching and decoding the global planes. RSS was measured from actual processes; logical byte counts are not RSS or a general memory guarantee. Upstream metadata expansion still requires trusted repository contents (D24).
 - Verification: network/RSS measurements are one-off development checks outside the test suite. Durable Rust tests remain offline. Full geographic coordinates and northern/southern point reads pass for both products. This change adds no server wiring or HTTP timeout contract.
+
+## D26 — Bounded catalog wait before binding
+
+The reference Python service launches a best-effort catalog load and binds
+without waiting. Rust waits up to `DYNAMICAL_API_CATALOG_WAIT_SECONDS` (10 seconds
+by default) for that first flight, then binds on success, failure or timeout.
+Timeout leaves the shared load running. This improves initial readiness without
+making a catalog outage prevent health/documentation serving. Set zero for an
+immediate bind. Readiness logs report wait outcome and observed bind-to-ready
+time. Rust subprocess tests in `tests/readiness.rs` cover all three outcomes and
+a late successful load.
+
+## D27 — Optional deployment identity, authentication and redirect scheme
+
+`DYNAMICAL_API_RELEASE` adds an application response marker when configured,
+including errors and CORS preflight. The marker is omitted from CORS exposure
+and from Hyper parser errors. It is absent by default. The reference service at
+the comparison revision does not add this marker. Tests in `tests/server.rs`
+assert its scope and absence when unset.
+
+`DYNAMICAL_API_REQUIRE_ORIGIN_AUTH=1` adds startup validation for a missing or
+blank secret; local unauthenticated startup remains available by default.
+`DYNAMICAL_API_PUBLIC_SCHEME=https` makes slash redirects use HTTPS while
+preserving Host validation and ignoring forwarded headers. The default `http`
+retains local reference behavior; HTTPS deployments must opt in. Fixed root
+redirects and relative canonical links are unchanged. Configuration and
+subprocess tests cover these deliberate deployment controls.
+
+## D28 — Explicit bounded process drain
+
+On SIGTERM/SIGINT Rust closes the listener, drains current requests and detached
+compute permits, flushes telemetry, then closes the catalog and exits. The
+configurable defaults allow 30 seconds for requests and 15 additional seconds for finalization. A
+single independent watchdog enforces their sum through runtime/process teardown;
+telemetry shares the absolute deadline, and startup validates its 10/14-second
+minimum finalization reserve. Heartbeat/readiness work stops before drain.
+Unix expiry uses lock-free `_exit(1)`. Compute permits are never released on
+a caller's behalf. Forced exit may discard responses/telemetry and skip cleanup.
+This explicit total bound includes stuck native work rather than relying on
+runtime destruction or only an async timeout. See `docs/readiness.md` for the
+telemetry integration order and the requirement to qualify the budget against
+the deployment's actual shutdown grace. Rust subprocess tests verify completion,
+connection refusal, stuck-handler expiry and a worker retaining its permit
+through stuck synchronous cleanup.

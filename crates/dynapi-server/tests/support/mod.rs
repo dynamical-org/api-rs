@@ -38,6 +38,8 @@ pub struct Reads {
     pub release: Semaphore,
     pub fail_chunks: AtomicBool,
     pub fail_catalog: AtomicBool,
+    pub hold_catalog: AtomicBool,
+    pub catalog_started: Notify,
     pub fail_snapshots: AtomicBool,
     pub hold_snapshots: AtomicBool,
     pub snapshot_started: Notify,
@@ -52,6 +54,8 @@ impl Default for Reads {
             release: Semaphore::new(0),
             fail_chunks: AtomicBool::new(false),
             fail_catalog: AtomicBool::new(false),
+            hold_catalog: AtomicBool::new(false),
+            catalog_started: Notify::new(),
             fail_snapshots: AtomicBool::new(false),
             hold_snapshots: AtomicBool::new(false),
             snapshot_started: Notify::new(),
@@ -114,6 +118,10 @@ async fn serve_fixture(
         .map(|(k, v)| (k.to_lowercase(), v.trim().to_string()))
         .collect();
     reads.paths.lock().unwrap().push(path.into());
+    if path == "/catalog.json" && reads.hold_catalog.load(Ordering::SeqCst) {
+        reads.catalog_started.notify_one();
+        reads.release.acquire().await.unwrap().forget();
+    }
     if path == "/catalog.json" && reads.fail_catalog.load(Ordering::SeqCst) {
         socket
             .write_all(
