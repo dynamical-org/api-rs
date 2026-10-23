@@ -56,10 +56,32 @@ cache headers after a gated product is identified.
 | `DYNAMICAL_API_STAC_URL` | `https://stac.dynamical.org/catalog.json` |
 | `DYNAMICAL_API_COMPUTE_SLOTS` | `6` |
 | `DYNAMICAL_API_BUSY_RETRY_AFTER_SECONDS` | `5` |
+| `DYNAMICAL_API_FAIR_SHARE` | `1` (`0` disables) |
+| `DYNAMICAL_API_FAIR_SHARE_BUSY_SLOTS` | compute slots minus two |
+| `DYNAMICAL_API_FAIR_SHARE_CALLER_SLOTS` | `2` |
+| `DYNAMICAL_API_FAIR_SHARE_RETRY_AFTER_SECONDS` | `5` |
 | `DYNAMICAL_API_DATASET_CACHE_ENTRIES` | `32` |
 | `DYNAMICAL_API_MAIN_DATASET_TTL_SECONDS` | `30` |
 | `DYNAMICAL_API_MAX_RESPONSE_VALUES` | `100000` |
 | `DYNAMICAL_API_MAX_READ_VALUES` | `450000000` |
+
+Fair share uses the rate limiter's caller key across all four data routes. Once
+busy slots are in use, a caller already holding the caller threshold receives
+429 before the capacity 503. The decision and acquisition share one lock; the
+existing compute permit retains both counts until physical work finishes,
+including after disconnect once the dataset worker starts. Cancellation during
+the preceding async catalog or caller-location check releases the slot and
+caller count immediately; any detached location flight retains its separate
+bounded lifetime ([D42](../DEVIATIONS.md#d42--cancellation-before-the-dataset-worker-starts)). Origin-authenticated requests without a nonempty
+`CF-Connecting-IP` are unidentified and use capacity admission only. Without
+origin authentication, the socket host identifies the caller.
+
+With fewer than four compute slots, the default rule is inert unless either
+threshold is explicitly set. Empty threshold settings count as unset. Thresholds
+and retry delay must be positive; busy slots cannot exceed capacity. Caller slots
+may exceed either busy slots or capacity. Disabling the rule still validates its
+settings and tracks identified callers for heartbeat occupancy. The heartbeat's
+`maxCallerSlots` is the current maximum; refusal counters are cumulative.
 
 Cached metadata and key storage have a fixed 256 MiB budget. Unique active
 metadata in one batch also has a 256 MiB admission budget; a currently opening

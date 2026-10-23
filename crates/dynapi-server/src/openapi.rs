@@ -546,7 +546,11 @@ fn responses(schema: V, errors: bool, data: bool, post: bool, validation: bool) 
     if errors {
         responses.push((
             "429",
-            retryable(crate::RATE_DETAIL, "Seconds to wait before retrying", post),
+            retryable(
+                crate::LIMIT_DESCRIPTION,
+                "Seconds to wait before retrying",
+                post,
+            ),
         ));
         responses.push(("503", retryable(
             if data { "Server busy, catalog unavailable, or upstream data read timed out or was throttled" } else { "Server busy or catalog unavailable" },
@@ -1212,6 +1216,10 @@ mod tests {
                 "get",
             ),
         ] {
+            assert_eq!(
+                document["paths"][path][method]["responses"]["429"]["description"],
+                crate::LIMIT_DESCRIPTION
+            );
             for status in ["429", "503"] {
                 let response = &document["paths"][path][method]["responses"][status];
                 assert_eq!(

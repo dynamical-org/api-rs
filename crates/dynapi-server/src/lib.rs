@@ -13,8 +13,8 @@ use bytes::Bytes;
 use config::Config;
 use dynapi_contract::{ValidationResult, validate_forecast};
 use dynapi_policy::{
-    Clock, ComputeGate, RateLimiter, cache_control, cf_worker, client_key, preflight,
-    query_limited, simple_cors,
+    AdmissionRefusal, Clock, ComputeGate, RateLimiter, cache_control, caller_key, cf_worker,
+    preflight, query_limited, simple_cors,
 };
 use futures_util::FutureExt;
 use http_body_util::{BodyExt, Full};
@@ -37,6 +37,12 @@ pub const ROBOTS: &[u8] = include_bytes!("../robots.txt");
 include!(concat!(env!("OUT_DIR"), "/robots_metadata.rs"));
 const RATE_DETAIL: &str =
     "Request rate limit exceeded; contact feedback@dynamical.org if you need higher limits";
+
+const FAIR_SHARE_DETAIL: &str = "Too many concurrent requests from this caller while the server is busy; reduce concurrency or retry later, and contact feedback@dynamical.org if you need higher limits";
+const LIMIT_DESCRIPTION: &str = "Request rate limit exceeded, or too many concurrent requests from this caller while the server is busy; contact feedback@dynamical.org if you need higher limits";
+
+#[derive(Clone, Copy)]
+struct PreRoutingRejection;
 
 pub struct Monotonic(Instant);
 impl Default for Monotonic {
@@ -152,7 +158,8 @@ impl App {
             data,
             geo_gate,
             catalog,
-            gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
+            gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?
+                .with_fair_share(config.fair_share)?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
             query_rate: Mutex::new(RateLimiter::new(config.query_rate, clock)?),
             heartbeat: telemetry::heartbeat::Heartbeat::new(
@@ -168,7 +175,7 @@ impl App {
     pub async fn serve(
         self: Arc<Self>,
         request: Request<Incoming>,
-        peer: String,
+        peer: Option<String>,
         local: SocketAddr,
     ) -> Result<HttpResponse, RequestError> {
         let id = uuid::Uuid::new_v4().simple().to_string();
@@ -233,26 +240,29 @@ impl App {
             server_error()
         } else if self.config.origin_secret.is_some() && !authenticated {
             analytics = false;
-            detail(403, "Forbidden")
+            let mut response = detail(403, "Forbidden");
+            response.extensions_mut().insert(PreRoutingRejection);
+            response
         } else {
             let limited = query_limited(&policy_path) || policy_path.starts_with("/v1/data/");
+            let caller = caller_key(
+                peer.as_deref(),
+                authenticated,
+                header("cf-connecting-ip").as_deref(),
+                header("cf-worker").as_deref(),
+            );
             let retry = if limited {
-                let key = client_key(
-                    &peer,
-                    authenticated,
-                    header("cf-connecting-ip").as_deref(),
-                    header("cf-worker").as_deref(),
-                );
                 if query_limited(&policy_path) {
-                    self.query_rate.lock().unwrap().check(&key)
+                    self.query_rate.lock().unwrap().check(&caller.value)
                 } else {
-                    self.rate.lock().unwrap().check(&key)
+                    self.rate.lock().unwrap().check(&caller.value)
                 }
             } else {
                 None
             };
             if let Some(retry) = retry {
                 let mut result = detail(429, RATE_DETAIL);
+                result.extensions_mut().insert(PreRoutingRejection);
                 result
                     .headers_mut()
                     .insert("retry-after", retry.to_string().parse().unwrap());
@@ -264,6 +274,7 @@ impl App {
                     &path,
                     local,
                     usage.clone(),
+                    caller.identified.then_some(caller.value.as_str()),
                 ))
                 .catch_unwind()
                 .await
@@ -297,6 +308,8 @@ impl App {
         }
         {
             let mut usage = usage.lock().unwrap();
+            usage.pre_routing_rejection =
+                response.extensions().get::<PreRoutingRejection>().is_some();
             if let Some(kind) = response.extensions().get::<telemetry::ErrorKind>().copied() {
                 usage.error_kind = Some(kind);
             } else if let Some(kind) = usage.error_kind {
@@ -408,6 +421,7 @@ impl App {
         path: &str,
         local: SocketAddr,
         usage: data::SharedUsage,
+        caller: Option<&str>,
     ) -> Result<HttpResponse, RequestError> {
         // Hyper exposes scheme/authority, but not the original wire target.
         // Reject targets outside origin-form rather than routing their path alone.
@@ -547,8 +561,9 @@ impl App {
                             .iter()
                             .map(|q| q.data_product_id.as_str())
                             .collect();
-                        let Some(permit) = self.admit_data(&ids, &usage) else {
-                            return Ok(data::busy(&self.gate));
+                        let permit = match self.admit_data(&ids, &usage, caller) {
+                            Ok(permit) => permit,
+                            Err(reason) => return Ok(self.admission_failure(reason)),
                         };
                         match self
                             .checked_catalog(&ids, true, true, &geo_headers, viewer_trusted, &usage)
@@ -576,8 +591,9 @@ impl App {
                     ),
                     Ok(params) => {
                         let parts: Vec<_> = path.split('/').collect();
-                        let Some(permit) = self.admit_data(&[parts[3]], &usage) else {
-                            return Ok(data::busy(&self.gate));
+                        let permit = match self.admit_data(&[parts[3]], &usage, caller) {
+                            Ok(permit) => permit,
+                            Err(reason) => return Ok(self.admission_failure(reason)),
                         };
                         let catalog = match self
                             .checked_catalog(
@@ -627,8 +643,9 @@ impl App {
                             .iter()
                             .map(|q| q.data_product_id.as_str())
                             .collect();
-                        let Some(permit) = self.admit_data(&ids, &usage) else {
-                            return Ok(data::busy(&self.gate));
+                        let permit = match self.admit_data(&ids, &usage, caller) {
+                            Ok(permit) => permit,
+                            Err(reason) => return Ok(self.admission_failure(reason)),
                         };
                         let catalog = match self
                             .checked_catalog(
@@ -662,8 +679,9 @@ impl App {
                 match dynapi_contract::validate_forecast_runs(&params) {
                     Ok(params) => {
                         let ids = [params.data_product_id.as_str()];
-                        let Some(permit) = self.admit_data(&ids, &usage) else {
-                            return Ok(data::busy(&self.gate));
+                        let permit = match self.admit_data(&ids, &usage, caller) {
+                            Ok(permit) => permit,
+                            Err(reason) => return Ok(self.admission_failure(reason)),
                         };
                         let catalog = match self
                             .checked_catalog(
@@ -695,14 +713,31 @@ impl App {
             _ => unreachable!("registered route has no handler"),
         })
     }
-    fn admit_data(&self, ids: &[&str], usage: &data::SharedUsage) -> Option<dynapi_policy::Permit> {
+    fn admit_data(
+        &self,
+        ids: &[&str],
+        usage: &data::SharedUsage,
+        caller: Option<&str>,
+    ) -> Result<dynapi_policy::Permit, AdmissionRefusal> {
         {
             let mut state = usage.lock().unwrap();
             state.products = ids.iter().map(|id| (*id).to_owned()).collect();
             state.query_count = Some(ids.len());
             state.read_values = Some(0);
         }
-        self.gate.try_acquire()
+        self.gate.acquire(caller)
+    }
+    fn admission_failure(&self, reason: AdmissionRefusal) -> HttpResponse {
+        match reason {
+            AdmissionRefusal::Capacity => data::busy(&self.gate),
+            AdmissionRefusal::FairShare { retry_after } => {
+                let mut response = detail(429, FAIR_SHARE_DETAIL);
+                response
+                    .headers_mut()
+                    .insert("retry-after", retry_after.to_string().parse().unwrap());
+                response
+            }
+        }
     }
     async fn checked_catalog(
         &self,
@@ -811,7 +846,7 @@ impl App {
             {
                 return false;
             }
-            if !matches!(status, Some(403 | 429)) {
+            if !usage.pre_routing_rejection {
                 return true;
             }
             // FastAPI 0.141 wraps include_router routes in _IncludedRouter.
@@ -907,7 +942,7 @@ impl App {
             && middleware_url_path(path).starts_with("/v1/")
         {
             self.emit(Stream::Analytics, json!({"event": "api_request", "distinct_id": caller.as_deref().unwrap_or("anonymous"), "properties": {
-                "$process_person_profile": false, "route": if status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
+                "$process_person_profile": false, "route": if usage.pre_routing_rejection && status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
                 "method": method, "status": status, "duration_ms": telemetry::round_decimal(duration_ms, 1),
                 "client_kind": kind, "user_agent": ua.chars().take(120).collect::<String>(),
                 "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": usage.query_count,

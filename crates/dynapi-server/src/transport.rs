@@ -120,7 +120,7 @@ async fn serve_connection_until(
         let app = app.clone();
         let peer = peer.clone();
         async move {
-            let mut response = app.serve(request, peer, local).await?;
+            let mut response = app.serve(request, Some(peer), local).await?;
             response
                 .headers_mut()
                 .insert("server", "uvicorn".parse().unwrap());
