@@ -311,9 +311,9 @@ fn original_authorization_uses_longest_prefix_without_permission_union() {
     );
 }
 
-struct Fixture(std::path::PathBuf);
+pub(crate) struct Fixture(std::path::PathBuf);
 impl Fixture {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
@@ -339,10 +339,10 @@ impl Fixture {
         );
         Self(path)
     }
-    fn descriptor(&self) -> StoreDescriptor {
+    pub(crate) fn descriptor(&self) -> StoreDescriptor {
         StoreDescriptor::Local(self.0.to_str().unwrap().into())
     }
-    async fn reference(&self, location: Option<&str>, length: u64) -> String {
+    pub(crate) async fn reference(&self, location: Option<&str>, length: u64) -> String {
         use icechunk::{
             format::manifest::{VirtualChunkLocation, VirtualChunkRef},
             store::Store,
@@ -433,9 +433,13 @@ async fn public_source_apis_share_one_owner_preserve_deadlines_and_fail_before_p
     }
     // Named expansion cannot widen the original anonymous grant.
     for uri in [
-        "vcc://source/../outside",
+        "s3://other-bucket/a/file",
         "s3://example-bucket/ab/file",
+        "vcc://source/../outside",
+        "s3://example-bucket/a/%2Ffile",
         "gs://example-bucket/a/%2Ffile",
+        "gcs://example-bucket/a/file",
+        "vcc://unknown/file",
     ] {
         let snapshot = fixture.reference(Some(uri), 16).await;
         let session = ReadSession::open_with_sources(
@@ -445,12 +449,15 @@ async fn public_source_apis_share_one_owner_preserve_deadlines_and_fail_before_p
         )
         .await
         .unwrap();
-        assert!(
-            session
-                .read_dataset_selection("stored", &[Selector::Index(0)], None)
-                .await
-                .is_err()
-        );
+        let error = session
+            .read_dataset_selection("stored", &[Selector::Index(0)], None)
+            .await
+            .unwrap_err();
+        // Adapter erasure maps storage callbacks to Storage, but the bounded
+        // policy diagnostic must survive instead of a later numeric refusal.
+        assert_eq!(error.kind, ErrorKind::Storage, "{uri}: {error}");
+        assert_eq!(error.message, "Unsupported virtual source policy", "{uri}");
+        assert_eq!(error.virtual_failure, None, "{uri}");
     }
     {
         let length = u64::MAX;
@@ -562,7 +569,7 @@ fn known_buckets_require_the_captured_region_from_the_mapping_table() {
         ("noaa-gfs-bdp-pds", "eu-central-1"),
         ("noaa-gefs-pds", "eu-central-1"),
         ("noaa-hrrr-bdp-pds", "eu-central-1"),
-        ("noaa-rrfs-pds", "eu-central-1"),
+        ("noaa-rrfs-ops-pds", "eu-central-1"),
         ("ecmwf-forecasts", "us-east-1"),
     ] {
         let prefix = format!("s3://{bucket}/");

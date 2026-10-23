@@ -311,6 +311,9 @@ impl HttpService for Connector {
             })
             .filter(|(first, end)| first < end)
             .ok_or_else(|| invalid_response("Expected a bounded HTTP byte range"))?;
+        // object_store may resume an ETag-bearing partial body at a later
+        // start within the same logical range. The fixed end and original
+        // destination remain authoritative; resumption shares the retry budget.
         if let Some(expected) = &self.context.destination
             && (request.uri() != expected.0.as_str()
                 || request.method() != reqwest::Method::GET

@@ -166,7 +166,8 @@ impl Server {
         }
     }
     async fn reached(&self, path: &str, occurrence: usize) {
-        for _ in 0..100_000 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
             if self
                 .requests
                 .lock()
@@ -649,4 +650,111 @@ async fn repeated_actual_bootstrap_cancellation_has_no_growing_owned_aftermath()
         all_threads.live()
     );
     assert!(after.last().unwrap().saturating_sub(after[0]) < 64 * 1024);
+}
+
+#[tokio::test(start_paused = true)]
+async fn public_preparation_and_delayed_open_keep_the_original_absolute_deadline() {
+    let _serial = crate::preparation::SOURCE_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let server = Server::new(&fixture, &[("repo", 1), ("config.yaml", 1), ("repo", 2)]).await;
+    let t0 = Instant::now();
+    let descriptor = crate::StoreDescriptor::Http {
+        url: server.url.clone(),
+    };
+    let preparing = tokio::spawn(async move {
+        crate::prepare_sources(
+            &descriptor,
+            &[crate::VirtualSourceDeclaration::Http {
+                url_prefix: "https://example.test/granted/".into(),
+                name: None,
+            }],
+        )
+        .await
+    });
+    // Hold actual public bootstrap work below its separate 20s HTTP deadline.
+    // The rest of the original budget is consumed by retaining the real value.
+    server.reached("repo", 1).await;
+    server.reached("config.yaml", 1).await;
+    tokio::time::advance(Duration::from_secs(18)).await;
+    server.gates[0].release();
+    server.gates[1].release();
+    async fn finished<T>(job: &JoinHandle<T>) -> bool {
+        // Keep paused time fixed while real loopback I/O and task wakeups drain.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if job.is_finished() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+        false
+    }
+    assert!(finished(&preparing).await);
+    let prepared = preparing.await.unwrap().unwrap();
+    assert_eq!(Instant::now(), t0 + Duration::from_secs(18));
+    assert_eq!(prepared.preparation_deadline(), t0 + OPEN_TIMEOUT);
+    assert_eq!(
+        crate::preparation_snapshot().state,
+        PreparationState::Available
+    );
+    // Clone the actual opaque value, without assigning or editing its deadline.
+    tokio::time::advance(Duration::from_secs(65)).await;
+    let prepared = prepared.clone();
+    let opening = tokio::spawn(async move {
+        crate::ReadSession::open_prepared(&prepared, crate::DatasetVersion::Branch("main")).await
+    });
+    server.reached("repo", 2).await;
+    assert_eq!(
+        crate::preparation_snapshot().stage,
+        Some(PreparationStage::Session)
+    );
+    tokio::time::advance(Duration::from_secs(6)).await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!opening.is_finished(), "caller returned before T0+90s");
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let returned_at_deadline = finished(&opening).await;
+    let observed = crate::preparation_snapshot();
+    let observed_at = Instant::now();
+    let requests_before_drain = server.requests.lock().unwrap().len();
+    assert!(server.active.load(Ordering::SeqCst) > 0);
+    let refusal = crate::prepare_sources(
+        &crate::StoreDescriptor::Http {
+            url: server.url.clone(),
+        },
+        &[],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        refusal.virtual_failure,
+        Some(crate::VirtualFailureKind::PreparationUnavailable)
+    );
+    assert_eq!(server.requests.lock().unwrap().len(), requests_before_drain);
+    // Always drain before assertions, including a deadline-reset mutant, so a
+    // failing witness cannot poison the global owner for other tests.
+    server.gates[2].release();
+    settled(global(), PreparationState::Available).await;
+    let error = opening.await.unwrap().err().unwrap();
+    assert!(
+        returned_at_deadline,
+        "caller remained pending at the absolute deadline"
+    );
+    assert_eq!(observed_at, t0 + OPEN_TIMEOUT);
+    assert_eq!(error.message, "Reader timed out after 90 seconds");
+    assert_eq!(error.virtual_failure, None);
+    assert_eq!(observed.state, PreparationState::Aftermath);
+    assert_eq!(observed.stage, Some(PreparationStage::Session));
+    assert!(observed.occupied);
+    assert_eq!(server.active.load(Ordering::SeqCst), 0);
+    // Current-stage metadata may finish during drain; no detached preload starts.
+    assert!(
+        !server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|path| path.starts_with("manifests/"))
+    );
 }

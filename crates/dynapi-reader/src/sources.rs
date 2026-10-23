@@ -100,6 +100,10 @@ impl std::fmt::Debug for PreparedSources {
     }
 }
 impl PreparedSources {
+    #[cfg(test)]
+    pub(crate) fn preparation_deadline(&self) -> Instant {
+        self.deadline
+    }
     pub fn policy_id(&self) -> [u8; 32] {
         self.policy.id
     }
@@ -303,7 +307,7 @@ fn policy(
                 let (_, bucket, _) = original(declaration.prefix(), true)?;
                 let known_region = match bucket {
                     "noaa-gfs-bdp-pds" | "noaa-gefs-pds" | "noaa-hrrr-bdp-pds"
-                    | "noaa-rrfs-pds" => Some("us-east-1"),
+                    | "noaa-rrfs-ops-pds" => Some("us-east-1"),
                     "ecmwf-forecasts" => Some("eu-central-1"),
                     _ => None,
                 };

@@ -1,4 +1,5 @@
 use super::*;
+use zarrs_storage::AsyncReadableStorageTraits;
 async fn owner(prefix: &str, region: &str) -> Arc<SessionState> {
     let config = super::super::tests::captured(prefix, None, region);
     let (policy, _) = super::super::policy(
@@ -70,10 +71,10 @@ async fn mapped_ranges_preserve_opaque_identity_and_own_the_session() {
             "https://noaa-hrrr-bdp-pds.s3.us-east-1.amazonaws.com/file",
         ),
         (
-            "s3://noaa-rrfs-pds/",
+            "s3://noaa-rrfs-ops-pds/",
             "us-east-1",
-            "s3://noaa-rrfs-pds/file",
-            "https://noaa-rrfs-pds.s3.us-east-1.amazonaws.com/file",
+            "s3://noaa-rrfs-ops-pds/file",
+            "https://noaa-rrfs-ops-pds.s3.us-east-1.amazonaws.com/file",
         ),
         (
             "s3://ecmwf-forecasts/",
@@ -246,4 +247,161 @@ fn present_empty_references_are_errors_not_absent_fill() {
     assert_eq!(error.kind, ErrorKind::Decode);
     assert_eq!(error.message, "Empty encoded chunk");
     assert!(encoded_length(&ChunkPayload::Inline(bytes::Bytes::new())).is_err());
+}
+
+#[tokio::test]
+async fn resolve_entrypoint_authorizes_original_direct_and_named_references() {
+    let _serial = crate::preparation::SOURCE_TEST_LOCK.lock().await;
+    let fixture = super::super::tests::Fixture::new().await;
+    let declarations = vec![
+        super::super::tests::declaration("s3://example-bucket/a/"),
+        super::super::tests::declaration("gs://example-bucket/a/"),
+    ];
+    for (uri, expected) in [
+        ("s3://example-bucket/a/file", "s3://example-bucket/a/file"),
+        ("vcc://source/file", "s3://example-bucket/a/file"),
+        ("gs://example-bucket/a/file", "gs://example-bucket/a/file"),
+        ("vcc://gcs-source/file", "gs://example-bucket/a/file"),
+    ] {
+        let snapshot = fixture.reference(Some(uri), 16).await;
+        let session = crate::ReadSession::open_with_sources(
+            &fixture.descriptor(),
+            crate::DatasetVersion::Snapshot(&snapshot),
+            &declarations,
+        )
+        .await
+        .unwrap();
+        let raw = session
+            .store
+            .get(&zarrs_storage::StoreKey::new("stored/zarr.json").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata = serde_json::from_slice(&raw).unwrap();
+        let capability = crate::attest_with_mode(&metadata, "stored", true).unwrap();
+        let array = AttestedArray::new("stored", &capability, &metadata, &raw).unwrap();
+        let owner = session.sources.as_ref().unwrap();
+        let resolved = resolve(session.store.session(), Some(owner), &array, "stored/c/0")
+            .await
+            .unwrap();
+        let ResolvedPayload::Virtual(reference) = resolved else {
+            panic!("expected virtual reference for {uri}");
+        };
+        assert_eq!(reference.source.original.as_ref(), expected);
+        let expected_index = owner
+            .policy
+            .rules
+            .iter()
+            .position(|rule| expected.starts_with(rule.declaration.prefix()))
+            .unwrap();
+        assert_eq!(reference.source.declared_prefix_index, expected_index);
+        assert_eq!(reference.policy_id, owner.policy.id);
+        assert_eq!(reference.unit.snapshot_id.as_ref(), snapshot);
+        assert!(Arc::ptr_eq(&reference.owner, owner));
+    }
+    for uri in [
+        "s3://other-bucket/a/file",
+        "s3://example-bucket/ab/file",
+        "vcc://source/../outside",
+        "s3://example-bucket/a/%2Ffile",
+        "gcs://example-bucket/a/file",
+        "vcc://unknown/file",
+    ] {
+        let snapshot = fixture.reference(Some(uri), 16).await;
+        let session = crate::ReadSession::open_with_sources(
+            &fixture.descriptor(),
+            crate::DatasetVersion::Snapshot(&snapshot),
+            &declarations,
+        )
+        .await
+        .unwrap();
+        let raw = session
+            .store
+            .get(&zarrs_storage::StoreKey::new("stored/zarr.json").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata = serde_json::from_slice(&raw).unwrap();
+        let capability = crate::attest_with_mode(&metadata, "stored", true).unwrap();
+        let array = AttestedArray::new("stored", &capability, &metadata, &raw).unwrap();
+        let error = match resolve(
+            session.store.session(),
+            session.sources.as_ref(),
+            &array,
+            "stored/c/0",
+        )
+        .await
+        {
+            Ok(_) => panic!("unauthorized entrypoint resolved {uri}"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{uri}");
+        assert_eq!(error.message, "Unsupported virtual source policy", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn mapped_descriptors_preserve_admitted_key_bytes_at_the_wire() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    for prefix in ["s3://example-bucket/", "gs://example-bucket/"] {
+        for key in [
+            "A/b~c/file.",
+            "a/..hidden",
+            "a/file_01.grib2",
+            "0",
+            "a-b/C.D_e~f",
+        ] {
+            let owner = owner(prefix, "us-east-1").await;
+            let descriptor = reference(owner, &format!("{prefix}{key}"), 7, 4);
+            let mut mapped = descriptor.map(0..4).unwrap();
+            let expected = if prefix.starts_with("s3:") {
+                format!("https://example-bucket.s3.us-east-1.amazonaws.com/{key}")
+            } else {
+                format!("https://storage.googleapis.com/example-bucket/{key}")
+            };
+            assert_eq!(mapped.url.as_str(), expected);
+            let path = mapped.url.path().to_owned();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            // Test-only substitution after checking the production mapping.
+            // The descriptor's original source, bounds and identity stay intact.
+            mapped.url =
+                reqwest::Url::parse(&format!("http://{}{path}", listener.local_addr().unwrap()))
+                    .unwrap();
+            let origin = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut part = [0u8; 1024];
+                    let n = socket.read(&mut part).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&part[..n]);
+                    assert!(bytes.len() <= 16384);
+                    if bytes.windows(4).any(|s| s == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                assert_eq!(
+                    request.lines().next().unwrap(),
+                    format!("GET {path} HTTP/1.1")
+                );
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("range: bytes=7-10\r\n")
+                );
+                socket.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 7-10/100\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd").await.unwrap();
+            });
+            let result = mapped.fetch().await.unwrap();
+            assert_eq!(result.data.as_ref(), b"abcd");
+            origin.await.unwrap();
+            assert_eq!(
+                mapped.reference.source.original.as_ref(),
+                format!("{prefix}{key}")
+            );
+        }
+    }
 }

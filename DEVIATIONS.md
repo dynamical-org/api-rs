@@ -663,7 +663,8 @@ no empty/dot segments, percent spelling, query, fragment, backslash, whitespace,
 Unicode or plus. S3 whole-key `soap`, dotted/IP-style authorities, access-point and
 directory-bucket spellings are rejected. Only standard regional S3 virtual-hosted
 HTTPS in us-east-1/eu-central-1 and fixed GCS XML HTTPS are mapped; known buckets
-require their declared mapping region. Custom endpoints/options and discovery,
+require their declared mapping region, including noaa-rrfs-ops-pds in us-east-1.
+Custom endpoints/options and discovery,
 redirects, mirror fallback and credential/provider chains are not admitted.
 
 Policy assembly is bounded before native-map construction. The retained policy
