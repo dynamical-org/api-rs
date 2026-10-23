@@ -436,7 +436,7 @@ metadata policy. The library alone enables no service route.
   precedence and the unsupported-target path. No service captures supply expected
   public test results.
 
-## D-virt-1 — Private bounded GRIB qualification rejects unqualified constants
+## D35 — Private bounded GRIB qualification rejects unqualified constants
 
 - The unwired native GRIB module validates complete f64 data planes before calling
   pinned gribberish 1.5.0. It admits qualified 5.0/5.3 profiles within 32 MiB encoded

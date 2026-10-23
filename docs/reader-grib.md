@@ -126,7 +126,7 @@ These are Rust allocation and source-lifetime witnesses, not allocator fragmenta
 RSS, upstream metadata/cache, shared pool, cancellation or transport proofs.
 External migration comparisons remain outside repository fixtures. Constant-profile
 rejection deliberately differs from the reference decoder's wrong values/panic;
-future HTTP error mapping is not established here. See D-virt-1 in DEVIATIONS.md.
+future HTTP error mapping is not established here. See D35 in DEVIATIONS.md.
 
 Format references: [NCEP 5.0](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-0.shtml),
 [NCEP 5.3](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-3.shtml),
