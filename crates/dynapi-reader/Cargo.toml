@@ -19,6 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 async-trait = "0.1"
 futures = "0.3"
+http-body = { version = "1", default-features = false }
+quick-xml = { version = "=0.41.0", default-features = false }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream"] }
 # Preserve the existing TLS key-exchange preference when removing SDK defaults.
 rustls = { version = "0.23", default-features = false, features = ["prefer-post-quantum"] }
@@ -34,4 +36,5 @@ gribberish-types = "=1.5.0"
 gribberish-macros = "=1.5.0"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["net", "io-util", "sync"] }
+h2 = { version = "0.4", default-features = false }
+tokio = { workspace = true, features = ["net", "io-util", "sync", "test-util"] }
