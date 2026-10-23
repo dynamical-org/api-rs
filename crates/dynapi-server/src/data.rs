@@ -37,6 +37,7 @@ pub const DATASET_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const MATERIALIZATION_BYTES: u128 = query::DEFAULT_MATERIALIZATION_BYTES;
 #[derive(Clone, Default)]
 pub(crate) struct Usage {
+    pub pre_routing_rejection: bool,
     pub products: Vec<String>,
     pub geo_checked: bool,
     pub query_count: Option<usize>,

@@ -456,3 +456,39 @@ impl ServerTimings {
         values.join(", ")
     }
 }
+
+#[cfg(test)]
+mod fair_share_tests {
+    use super::*;
+    struct Fixed;
+    impl Clock for Fixed {
+        fn now(&self) -> f64 {
+            0.0
+        }
+    }
+    #[test]
+    fn released_caller_keys_are_removed_and_active_map_is_bounded() {
+        let gate = ComputeGate::new(6, 5, Fixed).unwrap();
+        let mut permits = Vec::new();
+        for i in 0..1000 {
+            if permits.len() == 6 {
+                permits.remove(i % 6);
+            }
+            permits.push(gate.acquire(Some(&format!("caller-{i}"))).unwrap());
+            let (callers, held, total) = {
+                let state = gate.slots.lock().unwrap();
+                (
+                    state.callers.len(),
+                    state.held.len(),
+                    state.callers.values().sum::<usize>(),
+                )
+            };
+            assert!(callers <= held);
+            assert_eq!(total, held);
+        }
+        drop(permits);
+        let state = gate.slots.lock().unwrap();
+        assert!(state.held.is_empty());
+        assert!(state.callers.is_empty());
+    }
+}

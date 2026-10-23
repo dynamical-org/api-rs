@@ -547,3 +547,12 @@ serving cannot reuse this profile. The reference supports more virtual layouts.
 All three virtual analysis products retain generic HTTP 500 `Internal Server
 Error` before repository I/O, consistent with virtual forecast point serving,
 until virtual GRIB support is implemented. No new public status is introduced.
+
+## D-fair-1 — Cancellation before the dataset worker starts
+
+- Trigger: a data request disconnects after compute admission while awaiting the catalog or caller-location check.
+- Python: admission lives in the handler thread, which keeps its slot and caller count until that check returns.
+- Rust: cancelling the async request releases its single permit and caller count immediately, before a dataset worker starts. A detached caller-location flight retains the independent bounds described in D38. Once the dataset worker starts, its permit and caller count survive disconnect until that worker finishes.
+- Consequence: a caller may be admitted sooner after cancelling during a metadata or location check. The remaining location work is governed by its own deadline, coalescing and in-flight cap.
+- Rationale: retain admission with native dataset work while releasing ownership for an abandoned async request.
+- Tests: `cancellation_during_async_location_check_releases_admission_before_worker_start`; `every_route_holds_its_caller_after_disconnect_until_physical_work_finishes` covers the dataset-worker boundary on all four routes.

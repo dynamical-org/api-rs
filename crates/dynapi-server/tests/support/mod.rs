@@ -262,6 +262,17 @@ impl Server {
         catalog: Option<dynapi_catalog::native::StacCatalog>,
         root: Option<PathBuf>,
     ) -> Self {
+        Self::start_with_peer(values, catalog, root, true).await
+    }
+    pub async fn start_without_peer(values: &[(&str, &str)]) -> Self {
+        Self::start_with_peer(values, None, None, false).await
+    }
+    async fn start_with_peer(
+        values: &[(&str, &str)],
+        catalog: Option<dynapi_catalog::native::StacCatalog>,
+        root: Option<PathBuf>,
+        with_peer: bool,
+    ) -> Self {
         let host = FixtureHost::start_with_root(root).await;
         let mut env: BTreeMap<String, String> = values
             .iter()
@@ -288,7 +299,24 @@ impl Server {
         let address = listener.local_addr().unwrap();
         let serve = app.clone();
         let task = tokio::spawn(async move {
-            transport::run(listener, serve).await.unwrap();
+            if with_peer {
+                transport::run(listener, serve).await.unwrap();
+            } else {
+                let mut tasks = JoinSet::new();
+                loop {
+                    tokio::select! {
+                        accepted=listener.accept()=> {
+                            let (socket,_)=accepted.unwrap(); let app=serve.clone();
+                            tasks.spawn(async move {
+                                let local=socket.local_addr().unwrap();
+                                let service=hyper::service::service_fn(move |request|app.clone().serve(request,None,local));
+                                let _=hyper::server::conn::http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(socket),service).await;
+                            });
+                        }
+                        Some(result)=tasks.join_next()=>{result.unwrap();}
+                    }
+                }
+            }
         });
         Self {
             address,

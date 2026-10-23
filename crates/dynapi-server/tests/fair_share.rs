@@ -116,7 +116,11 @@ async fn boundary_table_over_http() {
 }
 #[tokio::test]
 async fn all_four_routes_return_fair_share_before_catalog_and_geo_and_emit_ordinary_failures() {
-    let server = server(&[("SENTRY_DSN", "https://fake@example.test/1")]).await;
+    let server = server(&[
+        ("SENTRY_DSN", "https://fake@example.test/1"),
+        ("POSTHOG_PROJECT_TOKEN", "fixture-token"),
+    ])
+    .await;
     server.host.reads.gated.store(true, Ordering::SeqCst);
     let held = hold(&server, 2, 2);
     for (method, path, body) in routes() {
@@ -135,6 +139,25 @@ async fn all_four_routes_return_fair_share_before_catalog_and_geo_and_emit_ordin
             .collect();
         assert_eq!(failures.len(), 4);
         assert!(failures.iter().all(|(_, e)| e["status"] == 429));
+        let expected = vec![
+            "/v1/forecasts",
+            "/v1/analyses",
+            "/v1/forecasts/runs",
+            "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}",
+        ];
+        assert_eq!(
+            failures
+                .iter()
+                .map(|(_, e)| e["route"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let analytics: Vec<_> = events
+            .iter()
+            .filter(|(stream, _)| *stream == Stream::Analytics)
+            .map(|(_, e)| e["properties"]["route"].as_str().unwrap())
+            .collect();
+        assert_eq!(analytics, expected);
         assert!(events.iter().all(|(stream, _)| *stream != Stream::Error));
     }
     drop(held);
@@ -455,4 +478,167 @@ async fn off_switch_and_inert_small_capacity_restore_capacity_only_http() {
         assert_eq!(server.app.gate.snapshot().fair_share_refusals, 0);
         drop(held);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unidentified_http_holders_stay_exempt_and_do_not_enter_caller_occupancy() {
+    for mode in 0..3 {
+        let server = if mode == 2 {
+            Server::start_without_peer(&[]).await
+        } else {
+            server(&[]).await
+        };
+        let wire = match mode {
+            0 => vec![("X-Dynamical-Origin-Auth", ORIGIN)],
+            1 => vec![
+                ("X-Dynamical-Origin-Auth", ORIGIN),
+                ("CF-Connecting-IP", ""),
+            ],
+            _ => vec![],
+        };
+        server
+            .host
+            .reads
+            .hold_snapshots
+            .store(true, Ordering::SeqCst);
+        let mut sockets = vec![];
+        for count in 1..=4 {
+            sockets.push(
+                server
+                    .socket_with_headers("POST", "/v1/forecasts", &wire, &payload())
+                    .await,
+            );
+            wait_slots(&server, count).await;
+        }
+        assert_eq!(
+            server.app.gate.snapshot().max_caller_slots,
+            0,
+            "mode={mode}"
+        );
+        let admitted = server
+            .request_with_headers(
+                "GET",
+                "/v1/forecasts/runs?dataProductId=missing",
+                &wire,
+                &Value::Null,
+            )
+            .await;
+        assert_eq!(admitted.status, 404, "mode={mode}");
+        assert_eq!(server.app.gate.snapshot().in_use, 4);
+        for count in 5..=6 {
+            sockets.push(
+                server
+                    .socket_with_headers("POST", "/v1/forecasts", &wire, &payload())
+                    .await,
+            );
+            wait_slots(&server, count).await;
+        }
+        let capacity = server
+            .request_with_headers(
+                "GET",
+                "/v1/forecasts/runs?dataProductId=missing",
+                &wire,
+                &Value::Null,
+            )
+            .await;
+        assert_eq!(capacity.status, 503);
+        assert!(
+            capacity.json()["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("Server busy")
+        );
+        let snapshot = server.app.gate.snapshot();
+        assert_eq!(snapshot.max_caller_slots, 0);
+        assert_eq!(snapshot.fair_share_refusals, 0);
+        assert_eq!(snapshot.capacity_refusals, 1);
+        server
+            .host
+            .reads
+            .hold_snapshots
+            .store(false, Ordering::SeqCst);
+        server.host.reads.release.add_permits(100);
+        wait_slots(&server, 0).await;
+        drop(sockets);
+    }
+}
+async fn wait_slots(server: &Server, count: usize) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while server.app.gate.snapshot().in_use != count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn pre_routing_auth_and_rate_labels_stay_distinct_from_routed_fair_refusals() {
+    for (method, path, body) in routes() {
+        let server = server(&[
+            ("POSTHOG_PROJECT_TOKEN", "fixture-token"),
+            ("DYNAMICAL_API_QUERY_RATE_LIMIT_BURST", "1"),
+            ("DYNAMICAL_API_RATE_LIMIT_BURST", "1"),
+        ])
+        .await;
+        let _held = hold(&server, 2, 2);
+        assert_eq!(server.request(method, &path, &body).await.status, 403);
+        fair(
+            &server
+                .request_with_headers(method, &path, &headers(), &body)
+                .await,
+        );
+        let rate = server
+            .request_with_headers(method, &path, &headers(), &body)
+            .await;
+        assert_eq!(rate.status, 429);
+        assert_ne!(rate.json(), json!({"detail":FAIR}));
+        let template = if path.starts_with("/v1/data/") {
+            "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}"
+        } else {
+            path.split('?').next().unwrap()
+        };
+        let before_route = if path.starts_with("/v1/data/") {
+            template
+        } else {
+            "unrouted"
+        };
+        let events = server.sink.0.lock().unwrap();
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|(stream, e)| *stream == Stream::Terminal && e["event"] == "api_failure")
+            .map(|(_, e)| e["route"].as_str().unwrap())
+            .collect();
+        assert_eq!(terminal, vec![before_route, template, before_route]);
+        let analytics: Vec<_> = events
+            .iter()
+            .filter(|(stream, _)| *stream == Stream::Analytics)
+            .map(|(_, e)| e["properties"]["route"].as_str().unwrap())
+            .collect();
+        assert_eq!(analytics, vec![template, "unmatched"]);
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_async_location_check_releases_admission_before_worker_start() {
+    let proxy = proxy::Proxy::start().await;
+    proxy.state.hold.store(true, Ordering::SeqCst);
+    let server = server(&[
+        ("DYNAPI_HARNESS_GEO_CHECK_URL", proxy.url.as_str()),
+        ("DYNAMICAL_API_GEO_CHECK_SECRET", proxy::SECRET),
+    ])
+    .await;
+    server.host.reads.gated.store(true, Ordering::SeqCst);
+    let socket = server
+        .socket_with_headers("POST", "/v1/forecasts", &headers(), &payload())
+        .await;
+    proxy.wait_for(1).await;
+    assert_eq!(server.app.gate.snapshot().in_use, 1);
+    assert_eq!(server.app.gate.snapshot().max_caller_slots, 1);
+    drop(socket);
+    wait_slots(&server, 0).await;
+    assert_eq!(server.app.gate.snapshot().max_caller_slots, 0);
+    assert!(proxy.state.hold.load(Ordering::SeqCst));
+    assert_eq!(proxy.count(), 1);
+    proxy.state.release.add_permits(1);
 }

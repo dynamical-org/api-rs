@@ -41,6 +41,9 @@ const RATE_DETAIL: &str =
 const FAIR_SHARE_DETAIL: &str = "Too many concurrent requests from this caller while the server is busy; reduce concurrency or retry later, and contact feedback@dynamical.org if you need higher limits";
 const LIMIT_DESCRIPTION: &str = "Request rate limit exceeded, or too many concurrent requests from this caller while the server is busy; contact feedback@dynamical.org if you need higher limits";
 
+#[derive(Clone, Copy)]
+struct PreRoutingRejection;
+
 pub struct Monotonic(Instant);
 impl Default for Monotonic {
     fn default() -> Self {
@@ -172,7 +175,7 @@ impl App {
     pub async fn serve(
         self: Arc<Self>,
         request: Request<Incoming>,
-        peer: String,
+        peer: Option<String>,
         local: SocketAddr,
     ) -> Result<HttpResponse, RequestError> {
         let id = uuid::Uuid::new_v4().simple().to_string();
@@ -237,11 +240,13 @@ impl App {
             server_error()
         } else if self.config.origin_secret.is_some() && !authenticated {
             analytics = false;
-            detail(403, "Forbidden")
+            let mut response = detail(403, "Forbidden");
+            response.extensions_mut().insert(PreRoutingRejection);
+            response
         } else {
             let limited = query_limited(&policy_path) || policy_path.starts_with("/v1/data/");
             let caller = caller_key(
-                Some(&peer),
+                peer.as_deref(),
                 authenticated,
                 header("cf-connecting-ip").as_deref(),
                 header("cf-worker").as_deref(),
@@ -257,6 +262,7 @@ impl App {
             };
             if let Some(retry) = retry {
                 let mut result = detail(429, RATE_DETAIL);
+                result.extensions_mut().insert(PreRoutingRejection);
                 result
                     .headers_mut()
                     .insert("retry-after", retry.to_string().parse().unwrap());
@@ -302,6 +308,8 @@ impl App {
         }
         {
             let mut usage = usage.lock().unwrap();
+            usage.pre_routing_rejection =
+                response.extensions().get::<PreRoutingRejection>().is_some();
             if let Some(kind) = response.extensions().get::<telemetry::ErrorKind>().copied() {
                 usage.error_kind = Some(kind);
             } else if let Some(kind) = usage.error_kind {
@@ -838,7 +846,7 @@ impl App {
             {
                 return false;
             }
-            if !matches!(status, Some(403 | 429)) {
+            if !usage.pre_routing_rejection {
                 return true;
             }
             // FastAPI 0.141 wraps include_router routes in _IncludedRouter.
@@ -934,7 +942,7 @@ impl App {
             && middleware_url_path(path).starts_with("/v1/")
         {
             self.emit(Stream::Analytics, json!({"event": "api_request", "distinct_id": caller.as_deref().unwrap_or("anonymous"), "properties": {
-                "$process_person_profile": false, "route": if status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
+                "$process_person_profile": false, "route": if usage.pre_routing_rejection && status == Some(429) { "unmatched" } else { route.as_ref().map(|r| r.template).unwrap_or("unmatched") },
                 "method": method, "status": status, "duration_ms": telemetry::round_decimal(duration_ms, 1),
                 "client_kind": kind, "user_agent": ua.chars().take(120).collect::<String>(),
                 "country": header("cf-ipcountry"), "data_product_ids": products, "query_count": usage.query_count,
