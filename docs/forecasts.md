@@ -10,13 +10,15 @@ unsupported on WASM. Virtual GRIB, representation routing, discovery and run
 listing remain later work.
 
 The native catalog service warms at process startup and shares its refresh,
-freshness and failure-backoff state across requests. Schema validation precedes catalog lookup and caller-location checks, which
-finish before compute admission. Each worker retains that exact catalog generation, opens pinned dataset
-views, selects points/runs/windows, and charges response values in input order.
+freshness and failure-backoff state across requests. Schema validation precedes
+compute admission, then catalog lookup and caller-location checks finish before
+dataset opens. Each worker retains that exact catalog generation, opens pinned
+dataset views, selects points/runs/windows, and charges response values in input
+order.
 Only after every selection succeeds does it charge the aggregate read budget
 and load data. The worker owns its compute permit until reads and encoding finish,
-even if the HTTP client disconnects. Caller-location policy overrides response cache headers after a gated product
-is identified.
+even if the HTTP client disconnects. Caller-location policy overrides response
+cache headers after a gated product is identified.
 
 | Environment variable | Default |
 | --- | --- |
@@ -46,8 +48,9 @@ revalidating that the branch still resolves to the same immutable snapshot.
 Pinned entries have no TTL; all entries share an LRU bounded by count and bytes.
 `X-Dynamical-Dataset-Cache` reports sorted unique `hit`, `miss` or `revalidated`
 statuses for the request. Canonical GET accepts immutable snapshot IDs and uses
-immutable caching for products without a caller-location check. Invalid snapshot IDs return 404 with instructions to use a
-response's `snapshotId`. Forecast POST uses mutable caching and accepts
+immutable caching for products without a caller-location check. Invalid snapshot
+IDs return 404 with instructions to use a response's `snapshotId`. Forecast POST
+uses mutable caching and accepts
 `representation` values `auto` and `requested`, with routing off for both.
 
 Successes include `Server-Timing` phases in reference order,
@@ -67,9 +70,10 @@ No Python tooling or reference-service output is part of the test suite.
 
 A product with any `http` virtual chunk container whose hostname is
 `wn.dynamical.org` requires a caller-location check. Product IDs do not select the
-policy. Forecast batches check all products before opening any dataset or taking
-a compute slot. Canonical GET, run listing and the analyses stub use the same
-policy; allowed run/analysis requests retain their current 501 stub behavior.
+policy. Forecast POST and canonical GET acquire a compute slot before catalog
+resolution and caller-location checks. Forecast batches check every gated product
+before opening any dataset. Run listing and the analyses stub check before
+admission; allowed run/analysis requests retain their current 501 stub behavior.
 
 Set `DYNAMICAL_API_GEO_CHECK_SECRET` to enable checks. The service sends it as
 `X-Geo-Check-Secret` to `https://wn.dynamical.org/geo-check`. Viewer country and

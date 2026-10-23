@@ -36,16 +36,15 @@ fn viewer<'a>(country: &'a str, region: &'a str) -> Vec<(&'static str, &'a str)>
     ]
 }
 #[tokio::test]
-async fn a_refused_mixed_batch_never_opens_any_dataset_or_acquires_compute() {
+async fn a_refused_mixed_batch_never_opens_any_dataset_and_releases_admission() {
     let proxy = Proxy::start().await;
     let server = server(&proxy, Some(SECRET), true).await;
-    let _permit = server.app.gate.try_acquire().unwrap();
     let mut body = payload();
     let mut direct = body["queries"][0].clone();
     direct["dataProductId"] = json!("fixture-ensemble");
     body["queries"].as_array_mut().unwrap().insert(0, direct);
     let reply = server
-        .request_with_headers("POST", "/v1/forecasts", &body, &viewer("BB", "R1"))
+        .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &body)
         .await;
     assert_eq!(
         reply.status,
@@ -67,6 +66,7 @@ async fn a_refused_mixed_batch_never_opens_any_dataset_or_acquires_compute() {
             .all(|p| !p.contains("/repository/"))
     );
     assert_eq!(proxy.count(), 1);
+    assert_eq!(server.app.gate.snapshot().in_use, 0);
 }
 
 fn canonical() -> String {
@@ -89,12 +89,12 @@ async fn allowed_post_and_canonical_keep_data_and_etags_but_never_shared_cache()
     let proxy = Proxy::start().await;
     let server = server(&proxy, Some(SECRET), true).await;
     let post = server
-        .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("AA", "R1"))
+        .request_with_headers("POST", "/v1/forecasts", &viewer("AA", "R1"), &payload())
         .await;
     private(&post, 200);
     assert!(post.headers.contains_key("etag"));
     let get = server
-        .request_with_headers("GET", &canonical(), &json!(null), &viewer("AA", "R1"))
+        .request_with_headers("GET", &canonical(), &viewer("AA", "R1"), &json!(null))
         .await;
     private(&get, 200);
     assert!(get.headers.contains_key("etag"));
@@ -110,7 +110,14 @@ async fn allowed_post_and_canonical_keep_data_and_etags_but_never_shared_cache()
 async fn location_needs_both_current_auth_headers_and_nonempty_fields() {
     let proxy = Proxy::start().await;
     for (origin, headers) in [
-        (true, vec![("X-Dynamical-Origin-Auth", ORIGIN)]),
+        (
+            true,
+            vec![
+                ("X-Dynamical-Origin-Auth", ORIGIN),
+                ("X-Dynamical-Viewer-Country", "AA"),
+                ("X-Dynamical-Viewer-Region-Code", "R1"),
+            ],
+        ),
         (
             true,
             vec![
@@ -125,7 +132,7 @@ async fn location_needs_both_current_auth_headers_and_nonempty_fields() {
         let server = server(&proxy, Some(SECRET), origin).await;
         private(
             &server
-                .request_with_headers("POST", "/v1/forecasts", &payload(), &headers)
+                .request_with_headers("POST", "/v1/forecasts", &headers, &payload())
                 .await,
             451,
         );
@@ -173,32 +180,24 @@ async fn absent_secret_fails_closed_without_asking_but_direct_and_unknown_are_un
     assert_eq!(proxy.count(), 0);
 }
 #[tokio::test]
-async fn responses_after_identification_are_private_including_busy_and_validation_errors() {
+async fn responses_after_identification_are_private_including_validation_errors() {
     let proxy = Proxy::start().await;
     let server = server(&proxy, Some(SECRET), true).await;
-    let permit = server.app.gate.try_acquire().unwrap();
-    private(
-        &server
-            .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("AA", "R1"))
-            .await,
-        503,
-    );
-    drop(permit);
     let path = canonical().replace("/0,0?", "/bad,0?");
     private(
         &server
-            .request_with_headers("GET", &path, &json!(null), &viewer("AA", "R1"))
+            .request_with_headers("GET", &path, &viewer("AA", "R1"), &json!(null))
             .await,
         422,
     );
     private(
         &server
-            .request_with_headers("GET", &canonical(), &json!(null), &viewer("BB", "R1"))
+            .request_with_headers("GET", &canonical(), &viewer("BB", "R1"), &json!(null))
             .await,
         451,
     );
     let malformed = server
-        .request_with_headers("POST", "/v1/forecasts", &json!({}), &viewer("BB", "R2"))
+        .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R2"), &json!({}))
         .await;
     assert_eq!(malformed.status, 422);
     assert_ne!(
@@ -223,14 +222,14 @@ async fn run_and_analysis_stubs_gate_before_compute_without_serving_data() {
         let permit = server.app.gate.try_acquire().unwrap();
         private(
             &server
-                .request_with_headers(method, path, &body, &viewer("BB", "R1"))
+                .request_with_headers(method, path, &viewer("BB", "R1"), &body)
                 .await,
             451,
         );
         drop(permit);
         private(
             &server
-                .request_with_headers(method, path, &body, &viewer("AA", "R1"))
+                .request_with_headers(method, path, &viewer("AA", "R1"), &body)
                 .await,
             501,
         );
@@ -255,7 +254,7 @@ async fn unsuccessful_checks_redirects_and_oversized_details_are_uncached() {
         let before = proxy.count();
         for _ in 0..2 {
             let reply = server
-                .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+                .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
                 .await;
             private(&reply, 503);
             assert_eq!(reply.headers["retry-after"], "5");
@@ -269,7 +268,7 @@ async fn unsuccessful_checks_redirects_and_oversized_details_are_uncached() {
         for _ in 0..2 {
             private(
                 &server
-                    .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+                    .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
                     .await,
                 503,
             );
@@ -291,14 +290,14 @@ async fn denial_text_trims_python_whitespace_and_empty_text_has_fallback() {
     ] {
         *proxy.state.body.lock().unwrap() = text.into();
         let reply = server
-            .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", region))
+            .request_with_headers("POST", "/v1/forecasts", &viewer("BB", region), &payload())
             .await;
         private(&reply, 451);
         assert_eq!(reply.json(), json!({"detail":expected}));
     }
     *proxy.state.body.lock().unwrap() = SECRET.into();
     let reply = server
-        .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R3"))
+        .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R3"), &payload())
         .await;
     private(&reply, 503);
     assert!(!String::from_utf8_lossy(&reply.body).contains(SECRET));
@@ -321,8 +320,8 @@ async fn allow_and_deny_cache_keys_include_country_region_and_expire_at_five_min
                 .request_with_headers(
                     "POST",
                     "/v1/forecasts",
-                    &payload(),
                     &viewer(country, region),
+                    &payload(),
                 )
                 .await,
             status,
@@ -332,7 +331,7 @@ async fn allow_and_deny_cache_keys_include_country_region_and_expire_at_five_min
     server.clock.0.store(299, Ordering::SeqCst);
     private(
         &server
-            .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+            .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
             .await,
         451,
     );
@@ -340,7 +339,7 @@ async fn allow_and_deny_cache_keys_include_country_region_and_expire_at_five_min
     server.clock.0.store(300, Ordering::SeqCst);
     private(
         &server
-            .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+            .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
             .await,
         451,
     );
@@ -416,7 +415,7 @@ async fn failed_catalog_lookup_does_not_skip_the_next_check() {
     let proxy = Proxy::start().await;
     let (server, recipes, _catalog, clock) = recipe_server(&proxy, true).await;
     let reply = server
-        .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+        .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
         .await;
     assert_eq!(reply.status, 503);
     assert_eq!(proxy.count(), 0);
@@ -424,7 +423,7 @@ async fn failed_catalog_lookup_does_not_skip_the_next_check() {
     clock.0.store(5, Ordering::SeqCst);
     private(
         &server
-            .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+            .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
             .await,
         451,
     );
@@ -467,7 +466,7 @@ async fn catalog_refresh_during_check_opens_exactly_the_checked_recipe() {
     let body = payload();
     let headers = viewer("AA", "R1");
     let (reply, ()) = tokio::join!(
-        server.request_with_headers("POST", "/v1/forecasts", &body, &headers),
+        server.request_with_headers("POST", "/v1/forecasts", &headers, &body),
         refresh
     );
     private(&reply, 200);
@@ -477,7 +476,7 @@ async fn catalog_refresh_during_check_opens_exactly_the_checked_recipe() {
     );
     // The changed container recipe must open a new handle.
     let next = server
-        .request_with_headers("POST", "/v1/forecasts", &payload(), &viewer("BB", "R1"))
+        .request_with_headers("POST", "/v1/forecasts", &viewer("BB", "R1"), &payload())
         .await;
     assert_eq!(next.status, 200);
     assert_eq!(next.headers["x-dynamical-dataset-cache"], "miss");
@@ -487,4 +486,46 @@ async fn catalog_refresh_during_check_opens_exactly_the_checked_recipe() {
     );
     assert!(next.headers["cache-control"].starts_with("public"));
     assert_eq!(proxy.count(), 1);
+}
+
+#[tokio::test]
+async fn forecast_and_canonical_busy_precede_catalog_unknown_products_and_geo_checks() {
+    let proxy = Proxy::start().await;
+    let server = server(&proxy, Some(SECRET), true).await;
+    server.host.reads.fail_catalog.store(true, Ordering::SeqCst);
+    let permit = server.app.gate.try_acquire().unwrap();
+    for missing in [false, true] {
+        let mut body = payload();
+        let path = if missing {
+            body["queries"][0]["dataProductId"] = json!("missing-product");
+            canonical().replace("fixture-forecast", "missing-product")
+        } else {
+            canonical()
+        };
+        for (method, path, body) in [
+            ("POST", "/v1/forecasts".to_owned(), body),
+            ("GET", path, json!(null)),
+        ] {
+            let reply = server
+                .request_with_headers(method, &path, &viewer("BB", "R1"), &body)
+                .await;
+            assert_eq!(reply.status, 503);
+            assert_eq!(
+                reply.json(),
+                json!({"detail":"Server busy; retry after 5 seconds"})
+            );
+            assert_eq!(reply.headers["retry-after"], "5");
+            assert!(!reply.headers.contains_key("cache-control"));
+        }
+    }
+    assert!(server.host.reads.paths.lock().unwrap().is_empty());
+    assert_eq!(proxy.count(), 0);
+    drop(permit);
+    let reply = server
+        .request_with_headers("GET", &canonical(), &viewer("AA", "R1"), &json!(null))
+        .await;
+    assert_eq!(reply.status, 503);
+    assert!(!reply.headers.contains_key("retry-after"));
+    assert_eq!(proxy.count(), 0);
+    assert_eq!(server.app.gate.snapshot().in_use, 0);
 }

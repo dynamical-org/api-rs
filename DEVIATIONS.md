@@ -456,6 +456,7 @@ metadata policy. The library alone enables no service route.
   behavior and constant rejections. Allocation tests include retained input through
   result conversion and distinguish peak live requests from cumulative allocations.
   They do not establish shared-pool, native/RSS or whole-process bounds.
+
 ## D-geo-1 — Container identity in repository and dataset cache keys
 
 Cache keys include the sorted virtual-container type/prefix tuples as well as
@@ -471,10 +472,15 @@ identity. Rust-owned fixtures cover dataset/repository misses and byte bounds.
 
 Location is trusted only when both origin authentication and viewer authentication
 match the configured origin secret, matching the reference Python service's
-stronger trust rule. All batch products are checked before any dataset open or
-compute admission. The exact immutable catalog generation checked is passed to
-the worker. Run listing and analyses remain stubs: their checks run first, allowed
+stronger trust rule. Forecast POST and canonical GET admit compute before catalog
+resolution and caller-location checks, preserving busy-before-catalog/lookup
+errors; all batch products are checked before any dataset open. The exact
+immutable catalog generation checked is passed to the worker. Run listing and analyses remain stubs: their checks run first, allowed
 requests retain 501, and refused/unavailable requests return 451/503.
+The stubs now return 404 for unknown IDs, analyses reads/parses at most 16 MiB
+before its stub, and hidden forecast products skip the check and return 404
+without the gated privacy override, unlike the reference's refusal/unavailable
+response for gated hidden products; no data is served in these cases.
 
 ## D-geo-3 — Bounded and coalesced location checks
 
@@ -491,9 +497,9 @@ and are never cached. Redirects are never followed. Only 204/451 are cached for
 ## D-geo-4 — Response privacy and secret handling
 
 After identifying a gated product, all subsequent responses override cache policy
-with `private, no-store`, including canonical responses, compute rejection and
-query/read failures. Earlier schema/auth/rate errors retain their existing order
-and policy, matching the reference's identification boundary. Successful ETags
+with `private, no-store`, including canonical responses and query/read failures.
+Compute rejection precedes product identification on forecast POST and canonical
+GET. Earlier schema/auth/rate errors retain their existing order and policy, matching the reference's identification boundary. Successful ETags
 remain. The configured check secret has redacted Debug output, sensitive HTTP
 header storage and static diagnostics. A refusal echoing the secret fails closed
 to generic 503 rather than copying it into a public detail or telemetry.

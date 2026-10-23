@@ -384,7 +384,7 @@ impl DataService {
         self: &Arc<Self>,
         payload: ForecastBatch,
         catalog: Arc<Snapshot>,
-        gate: &ComputeGate<SharedClock>,
+        permit: dynapi_policy::Permit,
         usage: SharedUsage,
     ) -> HttpResponse {
         let started = Instant::now();
@@ -398,10 +398,7 @@ impl DataService {
             u.query_count = Some(payload.queries.len());
         }
         let mut timings = Timings::new(usage.clone(), self.observer.clone());
-        // Caller-location policy has completed before admission or store I/O.
-        let Some(permit) = gate.try_acquire() else {
-            return busy(gate);
-        };
+        // Admission and caller-location policy completed before store I/O.
         let service = self.clone();
         let result = run_with_permit(permit, move |handle| {
             let resolved: Vec<std::sync::OnceLock<(Arc<OpenedDataset>, Collection)>> =
@@ -411,7 +408,7 @@ impl DataService {
             let mut budget = service.budget();
             let mut builder = query::BatchBuilder::new(Kind::Forecast);
             let mut opened = Vec::new();
-            // Keep the exact catalog generation checked before compute admission.
+            // Keep the exact catalog generation checked before store I/O.
             let snapshot = catalog;
             for (q, cell) in payload.queries.iter().zip(&resolved) {
                 timings.start("catalog");
@@ -490,7 +487,7 @@ impl DataService {
         snapshot: String,
         indices: &str,
         params: CanonicalQuery,
-        gate: &ComputeGate<SharedClock>,
+        permit: dynapi_policy::Permit,
         usage: SharedUsage,
     ) -> HttpResponse {
         let started = Instant::now();
@@ -499,11 +496,8 @@ impl DataService {
             u.products = vec![product.id.clone()];
             u.query_count = Some(1);
         }
-        // Caller-location policy has completed before admission or store I/O.
+        // Admission and caller-location policy completed before store I/O.
         let mut timings = Timings::new(usage.clone(), self.observer.clone());
-        let Some(permit) = gate.try_acquire() else {
-            return busy(gate);
-        };
         timings.start("catalog");
         if let Some(reason) = product.point_query_reason() {
             return query_error(QueryError::invalid(reason));
@@ -792,7 +786,7 @@ pub(crate) fn query_error(error: QueryError) -> HttpResponse {
     }
     result
 }
-fn busy(gate: &ComputeGate<SharedClock>) -> HttpResponse {
+pub(crate) fn busy(gate: &ComputeGate<SharedClock>) -> HttpResponse {
     let retry = gate.retry_after();
     let mut result = detail(503, &format!("Server busy; retry after {retry} seconds"));
     result

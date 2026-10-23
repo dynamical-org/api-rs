@@ -548,14 +548,15 @@ impl App {
                             .iter()
                             .map(|q| q.data_product_id.as_str())
                             .collect();
+                        let Some(permit) = self.admit_data(&ids, &usage) else {
+                            return Ok(data::busy(&self.gate));
+                        };
                         match self
                             .checked_catalog(&ids, true, true, &geo_headers, viewer_trusted, &usage)
                             .await
                         {
                             Ok(catalog) => {
-                                self.data
-                                    .forecasts(payload, catalog, &self.gate, usage)
-                                    .await
+                                self.data.forecasts(payload, catalog, permit, usage).await
                             }
                             Err(response) => response,
                         }
@@ -563,22 +564,7 @@ impl App {
                 }
             }
             "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}" => {
-                let params: Vec<_> = request
-                    .uri()
-                    .query()
-                    .unwrap_or("")
-                    .split('&')
-                    .filter(|p| !p.is_empty())
-                    .map(|pair| {
-                        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-                        let decode = |v: &str| {
-                            percent_encoding::percent_decode_str(&v.replace('+', " "))
-                                .decode_utf8_lossy()
-                                .into_owned()
-                        };
-                        (decode(key), decode(value))
-                    })
-                    .collect();
+                let params = query_values(request.uri().query().unwrap_or(""));
                 match dynapi_contract::validation::validate_canonical(&params) {
                     Err(invalid) => response(
                         invalid.status,
@@ -591,6 +577,9 @@ impl App {
                     ),
                     Ok(params) => {
                         let parts: Vec<_> = path.split('/').collect();
+                        let Some(permit) = self.admit_data(&[parts[3]], &usage) else {
+                            return Ok(data::busy(&self.gate));
+                        };
                         let catalog = match self
                             .checked_catalog(
                                 &[parts[3]],
@@ -611,7 +600,7 @@ impl App {
                                 parts[4].into(),
                                 parts[6],
                                 params,
-                                &self.gate,
+                                permit,
                                 usage,
                             )
                             .await
@@ -681,6 +670,15 @@ impl App {
             }
             _ => self.stub(),
         })
+    }
+    fn admit_data(&self, ids: &[&str], usage: &data::SharedUsage) -> Option<dynapi_policy::Permit> {
+        {
+            let mut state = usage.lock().unwrap();
+            state.products = ids.iter().map(|id| (*id).to_owned()).collect();
+            state.query_count = Some(ids.len());
+            state.read_values = Some(0);
+        }
+        self.gate.try_acquire()
     }
     async fn checked_catalog(
         &self,

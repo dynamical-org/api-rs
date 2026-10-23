@@ -545,35 +545,22 @@ fn responses(schema: V, errors: bool, data: bool, post: bool, validation: bool) 
     let mut responses = vec![("200", success(schema))];
     if errors {
         responses.push((
-            "451",
-            object([
-                (
-                    "description",
-                    V::from("The data proxy refused the caller location"),
-                ),
-                (
-                    "headers",
-                    object([(
-                        "Cache-Control",
-                        object([
-                            (
-                                "description",
-                                V::from("private, no-store for caller-location checked products"),
-                            ),
-                            ("schema", kind("string")),
-                        ]),
-                    )]),
-                ),
-                ("content", content(reference("ErrorDetail"))),
-            ]),
-        ));
-        responses.push((
             "429",
             retryable(crate::RATE_DETAIL, "Seconds to wait before retrying", post),
         ));
         responses.push(("503", retryable(
-            if data { "Server busy, catalog or caller-location check unavailable, or upstream data read timed out or was throttled" } else { "Server busy, catalog or caller-location check unavailable" },
-            if data { "Seconds to wait when server busy, caller-location check unavailable, or upstream data timed out or was throttled; may be absent for catalog errors" } else { "Seconds to wait when server busy or caller-location check unavailable; may be absent for catalog errors" }, post)));
+            if data { "Server busy, catalog unavailable, or upstream data read timed out or was throttled" } else { "Server busy or catalog unavailable" },
+            if data { "Seconds to wait when server busy or upstream data timed out or was throttled; may be absent for catalog errors" } else { "Seconds to wait when server busy; may be absent for catalog errors" }, post)));
+        responses.push((
+            "451",
+            object([
+                (
+                    "description",
+                    V::from("Data product not available in the caller's location"),
+                ),
+                ("content", content(reference("ErrorDetail"))),
+            ]),
+        ));
     }
     if validation {
         responses.push(("422", validation_error()));
@@ -1146,7 +1133,32 @@ mod tests {
                 refusal["content"]["application/json"]["schema"]["$ref"],
                 "#/components/schemas/ErrorDetail"
             );
-            assert!(refusal["headers"]["Cache-Control"].is_object());
+            assert_eq!(
+                refusal,
+                &json!({
+                    "description":"Data product not available in the caller's location",
+                    "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorDetail"}}}
+                })
+            );
+            let responses = &document["paths"][path][method]["responses"];
+            assert_eq!(
+                responses
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["200", "429", "503", "451", "422"]
+            );
+            assert_eq!(
+                refusal
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["description", "content"]
+            );
         }
 
         let document = spec();
