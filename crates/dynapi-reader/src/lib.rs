@@ -32,7 +32,16 @@ pub mod cf_time;
 )]
 mod grib;
 mod http;
+#[allow(
+    dead_code,
+    reason = "Source-aware recipe integration follows the isolated owner witnesses"
+)]
+mod preparation;
 mod repository_http;
+pub use preparation::{
+    PreparationSnapshot, PreparationStage, PreparationState, preparation_snapshot,
+    shutdown_preparation_until,
+};
 mod scale_offset;
 use scale_offset::ScaleOffset;
 
