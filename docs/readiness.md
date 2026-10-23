@@ -57,25 +57,33 @@ request destructor is covered by the same total process watchdog.
 | `DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS` | `15` | Additional reserve for cleanup and runtime teardown |
 
 These settings accept finite positive seconds, including fractions; the combined
-budget must fit the process clock. The total shutdown bound is their sum,
+budget must fit the process clock. Finalization must reserve at least 10 seconds
+for stdout and network telemetry, or 14 seconds when `telemetry-delivery` is built
+and a nonempty `SENTRY_DSN` is configured (including four seconds for SDK cleanup).
+A smaller reserve fails startup with a static diagnostic. The default 15 seconds
+covers both cases. The total shutdown bound is their sum,
 **45 seconds by default**, starting when the signal is observed. Normal shutdown
 usually finishes earlier. Request timeout is reported as an unsuccessful exit.
 An independent OS thread enforces the total budget even if a handler, native
 decode, synchronous cleanup or runtime teardown stalls. At expiry, Unix uses
-`_exit(1)` without logging, application locks, destructors or C exit hooks.
+`_exit(1)` after a best-effort static, nonblocking stderr diagnostic, without
+application locks, allocation, destructors or C exit hooks.
 Forced exit can lose responses and pending telemetry and can skip catalog
 cleanup. OS scheduling delays are outside a userspace deadline guarantee. The
 strict immediate-exit path is Unix-specific; other platforms use process exit.
 The explicitly owned Tokio runtime never waits indefinitely for blocking workers.
 The watchdog remains armed through runtime teardown and process exit.
 
-The cleanup order is stop accepting → request and detached-compute drain →
-telemetry flush → catalog close → runtime teardown → exit. There is a single
-process watchdog. The current server has a documented insertion point for
-telemetry flush in `main.rs`; the telemetry integration must reuse this watchdog
-and the same absolute total deadline, and validate that its maximum flush/SDK
-budget fits the finalization reserve. It must not arm a second watchdog or
-restart the process budget. Heartbeat/readiness tasks stop before finalization.
+The cleanup order is stop accepting → stop and join heartbeat/readiness work →
+request and detached-compute drain → telemetry flush → catalog close → runtime
+teardown → exit. One watchdog owns the absolute total deadline established when
+the signal is observed. Stdout and network telemetry flush concurrently, using
+at most their existing 10/14-second bound and only the remaining process time.
+The SDK reserve is included in that time. No cleanup step restarts the process
+budget or arms a second watchdog. Lifecycle logs use the bounded stdout queue,
+so a full pipe cannot block the async shutdown path. On startup failure, with no
+request drain, the same watchdog bounds error capture, flush and runtime teardown
+at 10/14 seconds.
 
 The deployment's function timeout and container shutdown grace must exceed the
 configured total budget, with scheduling headroom. The default 45 seconds is a
@@ -85,4 +93,5 @@ The server cannot extend an earlier platform SIGKILL.
 
 Rust subprocess tests exercise pre-bind success/failure/timeout, post-bind catalog
 readiness, in-flight completion, refused connections after SIGTERM, SIGINT,
-stuck handlers, and detached blocking work plus stuck synchronous cleanup.
+stuck handlers, detached blocking work plus stuck synchronous cleanup, stopped
+heartbeat/readiness work, stdout backpressure and stalled telemetry resolution.

@@ -175,6 +175,32 @@ fn readiness_configuration_validates_auth_marker_scheme_and_deadlines() {
     );
 }
 
+#[test]
+fn finalization_reserve_covers_stdout_and_configured_sdk_shutdown() {
+    let key = "DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS";
+    for sentry in [false, true] {
+        let minimum = if cfg!(feature = "telemetry-delivery") && sentry {
+            14.0
+        } else {
+            10.0
+        };
+        let mut values = BTreeMap::new();
+        if sentry {
+            values.insert(
+                "SENTRY_DSN".into(),
+                "https://public@errors.example.invalid/1".into(),
+            );
+        }
+        values.insert(key.into(), (minimum - 0.001_f64).to_string());
+        assert_eq!(
+            Config::from_values(&values).unwrap_err(),
+            "DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS must cover telemetry shutdown"
+        );
+        values.insert(key.into(), minimum.to_string());
+        assert!(Config::from_values(&values).is_ok());
+    }
+}
+
 #[tokio::test]
 async fn public_redirect_scheme_uses_host_and_ignores_forwarded_headers() {
     let server = Server::start(&[("DYNAMICAL_API_PUBLIC_SCHEME", "https")]).await;

@@ -39,7 +39,7 @@ impl Process {
             )
             .env("DYNAPI_HARNESS_STORE_BASE_URL", &host.url)
             .env("DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS", "2")
-            .env("DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS", "0.3")
+            .env("DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS", "10")
             .envs(settings.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -240,6 +240,55 @@ async fn sigint_also_drains_and_closes_idle_keep_alive_connections() {
 }
 
 #[tokio::test]
+async fn sigterm_joins_heartbeat_and_readiness_before_request_drain() {
+    let host = FixtureHost::start().await;
+    host.reads.hold_catalog.store(true, Ordering::SeqCst);
+    let mut process = Process::spawn(
+        &host,
+        &[
+            ("DYNAMICAL_API_CATALOG_WAIT_SECONDS", "0"),
+            ("DYNAMICAL_API_HEARTBEAT_SECONDS", "0.01"),
+        ],
+        0,
+    );
+    let (address, ready) = process.ready().await;
+    assert_eq!(ready["catalogReady"], false);
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        host.reads.catalog_started.notified(),
+    )
+    .await
+    .unwrap();
+    let mut socket = TcpStream::connect(address).await.unwrap();
+    socket.write_all(b"POST /v1/forecasts HTTP/1.1\r\nHost: example.test\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{").await.unwrap();
+    loop {
+        if process.event("api_container").await["inflightAdmitted"] == 1 {
+            break;
+        }
+    }
+    process.signal("-TERM");
+    process.event("api_shutdown").await;
+    host.reads.hold_catalog.store(false, Ordering::SeqCst);
+    host.reads.release.add_permits(1);
+    // Keep the request in drain across multiple observer/heartbeat intervals.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(process.child.try_wait().unwrap().is_none());
+    socket.write_all(b"}").await.unwrap();
+    assert!(response(&mut socket).await.starts_with(b"HTTP/1.1 422"));
+    assert!(process.exited(Duration::from_secs(3)).await.success());
+    let mut drained = false;
+    while let Some(event) = process.lines.recv().await {
+        assert_ne!(event["event"], "api_container", "heartbeat survived stop");
+        assert_ne!(
+            event["event"], "api_catalog_ready",
+            "readiness survived stop"
+        );
+        drained |= event["event"] == "api_shutdown_drained";
+    }
+    assert!(drained);
+}
+
+#[tokio::test]
 async fn stuck_handler_cannot_hold_process_past_drain_and_finalization_bound() {
     let host = FixtureHost::start().await;
     let mut process = Process::spawn(&host, &[("DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS", "0.2")], 0);
@@ -310,9 +359,10 @@ async fn detached_native_worker_keeps_permit_and_watchdog_bounds_stuck_cleanup()
     let stopped = process.event("api_shutdown_drained").await;
     assert_eq!(stopped["drained"], false);
     assert_eq!(stopped["computeInUse"], 1);
-    let status = process.exited(Duration::from_secs(2)).await;
+    let status = process.exited(Duration::from_secs(12)).await;
     assert_eq!(status.code(), Some(1));
-    assert!(started.elapsed() >= Duration::from_millis(450));
+    assert!(started.elapsed() >= Duration::from_millis(10_150));
+    assert!(started.elapsed() < Duration::from_secs(12));
 }
 
 #[tokio::test]
@@ -326,4 +376,81 @@ async fn required_origin_auth_refuses_startup_without_a_nonblank_secret() {
         let mut process = Process::spawn(&host, &settings, 0);
         assert!(!process.exited(Duration::from_secs(3)).await.success());
     }
+}
+
+#[cfg(feature = "telemetry-delivery")]
+#[tokio::test]
+async fn telemetry_flush_after_a_long_request_drain_waits_for_network_completion() {
+    use http_body_util::BodyExt;
+    let collector = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let collector_url = format!("http://{}", collector.local_addr().unwrap());
+    let (received, captured) = tokio::sync::oneshot::channel();
+    let (release, reply) = tokio::sync::oneshot::channel();
+    let collector = tokio::spawn(async move {
+        let (socket, _) = collector.accept().await.unwrap();
+        let controls = std::sync::Mutex::new(Some((received, reply)));
+        let service =
+            hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let (received, reply) = controls.lock().unwrap().take().unwrap();
+                async move {
+                    assert_eq!(request.uri().path(), "/capture/");
+                    let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                    received
+                        .send(serde_json::from_slice::<Value>(&bytes).unwrap())
+                        .unwrap();
+                    reply.await.unwrap();
+                    Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                        http_body_util::Full::new(bytes::Bytes::from_static(b"{}")),
+                    ))
+                }
+            });
+        let _ = hyper::server::conn::http1::Builder::new()
+            .serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+            .await;
+    });
+    let host = FixtureHost::start().await;
+    host.reads.hold_snapshots.store(true, Ordering::SeqCst);
+    let mut process = Process::spawn(
+        &host,
+        &[
+            ("DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS", "20"),
+            ("DYNAMICAL_API_HEARTBEAT_SECONDS", "0.01"),
+            ("POSTHOG_PROJECT_TOKEN", "fake-project-token"),
+            ("POSTHOG_HOST", &collector_url),
+        ],
+        0,
+    );
+    let (address, _) = process.ready().await;
+    let mut socket = request(address, "/v1/forecasts", "", &forecast()).await;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        host.reads.snapshot_started.notified(),
+    )
+    .await
+    .unwrap();
+    process.event("api_container").await;
+    process.signal("-TERM");
+    process.event("api_shutdown").await;
+    // Exceed telemetry's old ten-second signal-relative drain deadline.
+    tokio::time::sleep(Duration::from_millis(10_100)).await;
+    assert!(process.child.try_wait().unwrap().is_none());
+    host.reads.hold_snapshots.store(false, Ordering::SeqCst);
+    host.reads.release.add_permits(32);
+    assert!(response(&mut socket).await.starts_with(b"HTTP/1.1 200"));
+    let event = tokio::time::timeout(Duration::from_secs(2), captured)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event["event"], "api_request");
+    assert_eq!(event["properties"]["status"], 200);
+    // The collector has the record but has not acknowledged it. Flush must
+    // still own that delivery, even though signal+10s has already passed.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(process.child.try_wait().unwrap().is_none());
+    release.send(()).unwrap();
+    assert!(process.exited(Duration::from_secs(3)).await.success());
+    while let Some(event) = process.lines.recv().await {
+        assert_ne!(event["event"], "api_container", "heartbeat survived stop");
+    }
+    collector.await.unwrap();
 }

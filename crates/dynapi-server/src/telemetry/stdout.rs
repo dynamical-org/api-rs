@@ -75,7 +75,7 @@ impl StdoutSink {
                 &counters.dropped,
                 counters.pending.swap(0, Ordering::Relaxed),
             );
-            report_loss(&counters);
+            // Expiry must not format, allocate or acquire application locks.
         })
     }
     pub fn report_loss(&self) {
@@ -130,13 +130,17 @@ impl StdoutSink {
         started: tokio::time::Instant,
         budget: Duration,
     ) -> bool {
+        self.shutdown_until(started + budget).await
+    }
+    /// Use the executable's absolute deadline, including time already spent.
+    pub async fn shutdown_until(&self, deadline: tokio::time::Instant) -> bool {
         self.sender.lock().unwrap().take();
         let finished = self.finished.lock().unwrap().take();
         let Some(finished) = finished else {
             return !self.abandoned.load(Ordering::Acquire);
         };
         if matches!(
-            tokio::time::timeout_at(started + budget, finished).await,
+            tokio::time::timeout_at(deadline, finished).await,
             Ok(Ok(()))
         ) {
             return true;

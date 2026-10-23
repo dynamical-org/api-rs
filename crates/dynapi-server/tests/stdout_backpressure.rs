@@ -93,7 +93,8 @@ async fn full_undrained_stdout_does_not_block_http_and_counts_loss_at_bounded_sh
         .unwrap();
     assert!(
         stderr.contains(&format!(
-            "Stdout telemetry lost records: dropped={REQUESTS}, failed=0"
+            "Stdout telemetry lost records: dropped={}, failed=0",
+            REQUESTS + 3
         )),
         "{stderr}"
     );

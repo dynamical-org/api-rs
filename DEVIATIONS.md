@@ -323,10 +323,12 @@ subprocess tests cover these deliberate deployment controls.
 ## D-ready-3 — Explicit bounded process drain
 
 On SIGTERM/SIGINT Rust closes the listener, drains current requests and detached
-compute permits, then closes the catalog and exits. The configurable defaults
-allow 30 seconds for requests and 15 additional seconds for finalization. A
+compute permits, flushes telemetry, then closes the catalog and exits. The
+configurable defaults allow 30 seconds for requests and 15 additional seconds for finalization. A
 single independent watchdog enforces their sum through runtime/process teardown;
-on Unix expiry uses lock-free `_exit(1)`. Compute permits are never released on
+telemetry shares the absolute deadline, and startup validates its 10/14-second
+minimum finalization reserve. Heartbeat/readiness work stops before drain.
+Unix expiry uses lock-free `_exit(1)`. Compute permits are never released on
 a caller's behalf. Forced exit may discard responses/telemetry and skip cleanup.
 This explicit total bound includes stuck native work rather than relying on
 runtime destruction or only an async timeout. See `docs/readiness.md` for the

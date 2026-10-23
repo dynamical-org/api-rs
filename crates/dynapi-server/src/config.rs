@@ -109,6 +109,14 @@ impl Config {
         let drain_timeout = seconds("DYNAMICAL_API_DRAIN_TIMEOUT_SECONDS", "30", false)?;
         let finalization_timeout =
             seconds("DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS", "15", false)?;
+        let error_reporting_enabled = values.get("SENTRY_DSN").is_some_and(|v| !v.is_empty());
+        if finalization_timeout
+            < crate::telemetry::shutdown::minimum_finalization_reserve(error_reporting_enabled)
+        {
+            return Err(
+                "DYNAMICAL_API_FINALIZATION_TIMEOUT_SECONDS must cover telemetry shutdown".into(),
+            );
+        }
         let total = drain_timeout
             .checked_add(finalization_timeout)
             .ok_or("Shutdown budget exceeds clock capacity")?;
@@ -176,7 +184,7 @@ impl Config {
             analytics_enabled: values
                 .get("POSTHOG_PROJECT_TOKEN")
                 .is_some_and(|v| !v.is_empty()),
-            error_reporting_enabled: values.get("SENTRY_DSN").is_some_and(|v| !v.is_empty()),
+            error_reporting_enabled,
             container: get("MODAL_TASK_ID", "local"),
             #[cfg(feature = "harness")]
             fixture_store_base: values.get("DYNAPI_HARNESS_STORE_BASE_URL").cloned(),
