@@ -20,7 +20,7 @@ async fn set(store: &Store, key: &str, value: Value) {
         .await
         .unwrap();
 }
-async fn fixture(root: &Path, name: &str, rotated: bool) -> String {
+async fn fixture(root: &Path, name: &str, rotated: bool, analysis: bool) -> String {
     let path = root.join(name).join("repository");
     std::fs::create_dir_all(&path).unwrap();
     let repo = icechunk::Repository::create(
@@ -48,7 +48,25 @@ async fn fixture(root: &Path, name: &str, rotated: bool) -> String {
         ("init_time", vec![0.], "seconds since 1970-01-01"),
         ("lead_time", vec![0., 3600., 7200.], "seconds"),
     ] {
+        if analysis && name == "init_time" {
+            continue;
+        }
+        let name = if analysis && name == "lead_time" {
+            "time"
+        } else {
+            name
+        };
         let (mut meta, mut data) = axis(name, &values, units);
+        if name == "time" {
+            meta["data_type"] = json!("int64");
+            meta["fill_value"] = json!(0);
+            meta["attributes"] =
+                json!({"units":"seconds since 1970-01-01","calendar":"proleptic_gregorian"});
+            data = [1_785_369_600i64, 1_785_373_200, 1_785_376_800]
+                .into_iter()
+                .flat_map(i64::to_le_bytes)
+                .collect();
+        }
         if name == "init_time" {
             meta["data_type"] = json!("int64");
             meta["fill_value"] = json!(0);
@@ -77,8 +95,17 @@ async fn fixture(root: &Path, name: &str, rotated: bool) -> String {
     set(&store, "spatial_ref/zarr.json", json!({"zarr_format":3,"node_type":"array","shape":[],"data_type":"int64","dimension_names":[],
         "chunk_grid":{"name":"regular","configuration":{"chunk_shape":[]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,
         "codecs":[{"name":"bytes","configuration":{"endian":"little"}}],"attributes":{"crs_wkt":wkt,"spatial_ref":wkts["wgs84"]}})).await;
-    set(&store, "count/zarr.json", json!({"zarr_format":3,"node_type":"array","shape":[1,3,3,3],"data_type":"int64","dimension_names":["init_time","lead_time","y","x"],
-        "chunk_grid":{"name":"regular","configuration":{"chunk_shape":[1,3,3,3]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":-1,
+    let (shape, dimensions, key) = if analysis {
+        (vec![3, 3, 3], vec!["time", "y", "x"], "count/c/0/0/0")
+    } else {
+        (
+            vec![1, 3, 3, 3],
+            vec!["init_time", "lead_time", "y", "x"],
+            "count/c/0/0/0/0",
+        )
+    };
+    set(&store, "count/zarr.json", json!({"zarr_format":3,"node_type":"array","shape":shape,"data_type":"int64","dimension_names":dimensions,
+        "chunk_grid":{"name":"regular","configuration":{"chunk_shape":shape}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":-1,
         "codecs":[{"name":"bytes","configuration":{"endian":"little"}}],"attributes":{}})).await;
     let data: Vec<u8> = (0i64..3)
         .flat_map(|lead| {
@@ -87,7 +114,7 @@ async fn fixture(root: &Path, name: &str, rotated: bool) -> String {
             })
         })
         .collect();
-    store.set("count/c/0/0/0/0", data.into()).await.unwrap();
+    store.set(key, data.into()).await.unwrap();
     let snapshot = store
         .session()
         .write()
@@ -99,8 +126,12 @@ async fn fixture(root: &Path, name: &str, rotated: bool) -> String {
         .to_string();
     let mut collection = input("projected")["collection"].clone();
     collection["id"] = json!(name);
+    if analysis {
+        collection["cube:dimensions"] =
+            json!({"time":{"type":"temporal"},"y":{"type":"spatial"},"x":{"type":"spatial"}});
+    }
     collection["cube:variables"] =
-        json!({"count":{"type":"data","dimensions":["init_time","lead_time","y","x"],"unit":null}});
+        json!({"count":{"type":"data","dimensions":dimensions,"unit":null}});
     std::fs::write(
         root.join(name).join("collection.json"),
         serde_json::to_vec(&collection).unwrap(),
@@ -115,8 +146,8 @@ async fn projected_forecasts_and_canonical_get_share_cells_values_locations_and_
     let temp = tempfile::tempdir().unwrap();
     let names = ["fixture-lambert", "fixture-rotated"];
     let snapshots = [
-        fixture(temp.path(), names[0], false).await,
-        fixture(temp.path(), names[1], true).await,
+        fixture(temp.path(), names[0], false, false).await,
+        fixture(temp.path(), names[1], true, false).await,
     ];
     std::fs::write(temp.path().join("catalog.json"), serde_json::to_vec(&json!({"links":names.map(|n| json!({"rel":"child","href":format!("/{n}/collection.json")}))})).unwrap()).unwrap();
     let server = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
@@ -177,5 +208,46 @@ async fn projected_forecasts_and_canonical_get_share_cells_values_locations_and_
             br#"{"detail":"Location is outside the data product grid"}"#
         );
         assert!(!outside.headers.contains_key("etag"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projected_analyses_share_point_selection_and_canonical_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let names = ["fixture-lambert-analysis", "fixture-rotated-analysis"];
+    let snapshots = [
+        fixture(temp.path(), names[0], false, true).await,
+        fixture(temp.path(), names[1], true, true).await,
+    ];
+    std::fs::write(temp.path().join("catalog.json"), serde_json::to_vec(&json!({"links":names.map(|n| json!({"rel":"child","href":format!("/{n}/collection.json")}))})).unwrap()).unwrap();
+    let server = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
+    for (i, (latitude, longitude)) in [(38.5, -97.5), (90. - 36.08852, -114.694858)]
+        .into_iter()
+        .enumerate()
+    {
+        let body = json!({"queries":[{"dataProductId":names[i],"location":{"latitude":latitude,"longitude":longitude},"variables":["count"],"startTime":"2026-07-30T00:00:00Z","endTime":"2026-07-30T02:00:00Z"}]});
+        let post = server.request("POST", "/v1/analyses", &body).await;
+        assert_eq!(post.status, 200, "{}", String::from_utf8_lossy(&post.body));
+        let result = &post.json()["results"][0];
+        assert_eq!(result["snapshotId"], snapshots[i]);
+        assert_eq!(
+            result["point"]["selected"]["grid"],
+            json!({"yIndex":1,"xIndex":1})
+        );
+        assert_eq!(result["data"]["count"], json!([11, 111]));
+        assert_eq!(
+            result["analysisTimes"],
+            json!(["2026-07-30T00:00:00Z", "2026-07-30T01:00:00Z"])
+        );
+        let get = server
+            .request(
+                "GET",
+                result["links"]["canonical"].as_str().unwrap(),
+                &Value::Null,
+            )
+            .await;
+        assert_eq!(get.status, 200);
+        assert_eq!(get.json()["data"], result["data"]);
+        assert_eq!(get.json()["point"]["selected"], result["point"]["selected"]);
     }
 }

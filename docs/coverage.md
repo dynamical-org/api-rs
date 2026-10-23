@@ -21,9 +21,10 @@ whole-contract acceptance criteria.
 
 The [measured product sweep](https://github.com/dynamical-org/api/issues/7#issuecomment-6361528722)
 is separate migration evidence, not a committed fixture or a cutover sign-off.
-The service still has gaps and temporary 501 handlers. D16 narrows D5's older
-stub inventory; D34 supersedes D12's unsupported status for the two attested
-native projected grids. Tables below use that current scope.
+The service still has product and qualification gaps. D16's analysis/run stub
+inventory is historical; the native handler assertions are listed below. D34
+supersedes D12's unsupported status for the two attested native projected grids.
+Analysis/run rows were extended from Rust-owned fixtures on 2026-10-23.
 
 ## Static, health and documentation routes
 
@@ -50,7 +51,7 @@ does not establish that the edge allows that request.
 | `/docs`, `/docs/oauth2-redirect`, `/redoc` | Schema link, Swagger bundle, OAuth callbacks and ReDoc bundle/link | covered | [catalog_documentation.rs::documentation_links_and_oauth_flow_are_usable][catalog-docs]; these assert generated HTML, not browser/CDN availability |
 | `/openapi.json` | Route/method inventory and explicit schema exclusions | covered | [openapi.rs::router_and_document_inventory_agree_both_ways_with_explicit_exclusions][openapi] |
 | `/openapi.json` | Resolving schema references, required fields, aliases/defaults, request bounds and representation literals | covered | [openapi.rs::every_schema_reference_resolves_and_required_properties_exist][openapi]; [openapi.rs::forecast_property_aliases_defaults_and_required_fields_agree_with_validation][openapi]; [openapi.rs::shared_request_bounds_and_literals_are_enforced_at_the_schema_boundaries][openapi] |
-| `/openapi.json` | Response unions, nullability, routing schema and Retry-After error schemas | covered | [openapi.rs::response_schemas_include_unions_nullability_routing_and_retry_headers][openapi]; schemas do not establish implementation of analyses, runs or automatic routing |
+| `/openapi.json` | Response unions, nullability, routing schema and Retry-After error schemas | covered | [openapi.rs::response_schemas_include_unions_nullability_routing_and_retry_headers][openapi]; schemas establish documentation; runtime assertions are listed below |
 | Documentation routes | Origin-auth 403, CORS on rejection, preflight 200/400 without catalog fetch | covered | [catalog_documentation.rs::origin_guard_and_cors_preflight_cover_every_new_route][catalog-docs] |
 | All routes | Header field ordering and deterministic two-method Allow ordering | deviation | [D7](../DEVIATIONS.md#d7--http-field-ordering-and-process-dependent-method-set-order) |
 
@@ -132,14 +133,20 @@ does not establish that the edge allows that request.
 | Projected forecast | HRRR/HRDPS synthetic values/indices/location, independent SHA-256 ETag, repeat stability, immutable cache and out-of-grid 422 | covered | [projected.rs::projected_forecasts_and_canonical_get_share_cells_values_locations_and_etags][server-projected] |
 | HEAD, POST, PUT, PATCH, DELETE; plain OPTIONS; slash forms | 405 method/Allow/body/type/length/CORS, plain OPTIONS 204 and slash redirects for GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE without catalog or compute | covered | [public_contract.rs::data_route_methods_plain_options_and_slash_redirects_need_no_catalog_or_compute][public-contract]; public edge reachability remains [#33](https://github.com/dynamical-org/api/issues/33) |
 
-## Pending analyses and run listing
+## Analyses and run listing
 
 | Route | Method × capability or error | Status | Evidence |
 | --- | --- | --- | --- |
-| `/v1/analyses` | POST: all 11 analysis products, batch selection/data/headers and analysis validation | gap | [#4](https://github.com/dynamical-org/api/issues/4); [D16](../DEVIATIONS.md#d16--scope-of-the-remaining-http-milestone-stubs) records the 501 stub |
-| `/v1/forecasts/runs` | GET: forecast product, sorted unique runs, snapshot, limit/default and after/before windows | gap | [#4](https://github.com/dynamical-org/api/issues/4); [D16](../DEVIATIONS.md#d16--scope-of-the-remaining-http-milestone-stubs) |
-| `/v1/forecasts/runs` | GET: query/type/timezone/order/unknown-product/catalog errors and mutable run-cache headers | gap | [#4](https://github.com/dynamical-org/api/issues/4); middleware tests returning 501 are not handler coverage |
-| Both routes | HEAD/unsupported methods, plain OPTIONS and slash redirect response tables without catalog/compute use; pending successful handlers are excluded | covered | [public_contract.rs::data_route_methods_plain_options_and_slash_redirects_need_no_catalog_or_compute][public-contract]; public edge reachability remains [#33](https://github.com/dynamical-org/api/issues/33) |
+| `/v1/analyses` | Typed schema: aliases, required aware ordered window, exact 31-day/microsecond bounds, extras, variable and Unicode query-ID bounds | covered | [analyses.rs::analysis_model_checks_timezone_order_and_elapsed_range_in_order][analysis-contract]; [analyses.rs::analysis_variable_and_query_id_bounds_use_items_and_unicode_codepoints][analysis-contract] |
+| `/v1/analyses` | Deterministic values, half-open/source-order times, units, static cardinality, canonical replay, independent body-hash ETags and cache repeats | covered | [analyses.rs::analysis_values_half_open_windows_canonical_headers_and_cache_follow_recipe][analyses]; [query.rs::analysis_windows_preserve_unsorted_duplicate_source_times_and_exclude_end][query] |
+| `/v1/analyses` | Ensemble member IDs and dimension-order integer values; both attested projected operations and canonical cells | covered | [analyses.rs::analysis_ensembles_preserve_member_identity_dimension_order_and_integer_values][analyses]; [projected.rs::projected_analyses_share_point_selection_and_canonical_values][server-projected] |
+| `/v1/analyses` | Atomic selection before loading, response/read budgets and earlier response budget before later unknown product; blank variables before open; empty windows | covered | [analyses.rs::analysis_validation_and_selection_are_atomic_before_weather_loading][analyses]; [analyses.rs::analysis_empty_variables_precede_open_and_empty_window_has_public_error][analyses] |
+| Both data families | Only typed metadata-budget failure maps to safe 422; malformed metadata and unrelated reader limits stay 500 | deviation | [D-an-1](../DEVIATIONS.md#d-an-1--typed-dataset-metadata-budget-rejection); [data.rs::only_the_typed_metadata_budget_open_failure_becomes_422][data-service] |
+| `/v1/forecasts/runs` | Typed query defaults, last-wins/ignored extras, bounded integer coercion; unique full-ns ordering, NaT removal and strict filtering | covered | [analyses.rs::runs_accept_last_query_value_extras_and_decimal_integer_coercion][analysis-contract]; [query.rs::run_listing_sorts_unique_full_precision_times_drops_nat_and_filters_strictly][query] |
+| `/v1/forecasts/runs` | Metadata-only values/snapshot/limits/empty windows, mutable caching, no ETag or data-query headers; unsupported point grid remains discoverable | covered | [analyses.rs::runs_are_strict_newest_first_metadata_only_and_have_no_query_response_headers][analyses]; [analyses.rs::run_discovery_bypasses_point_grid_eligibility][analyses] |
+| Both routes | Schema before compute; lookup/type/time before open, catalog before deferred handler checks; generic runs open error has no Retry-After | covered | [analyses.rs::new_route_schema_checks_precede_compute_and_both_routes_release_permits][analyses]; [analyses.rs::runs_lookup_type_and_time_guards_precede_open_errors][analyses]; [analyses.rs::both_new_routes_preserve_catalog_failure_before_handler_checks][analyses] |
+| Both routes | Analysis body cap before catalog/compute; cancellation retains permit through owned store work | covered | [analyses.rs::analysis_body_cap_precedes_catalog_and_compute][analyses]; [analyses.rs::cancelled_analysis_and_runs_keep_their_permit_until_owned_store_work_finishes][analyses] |
+| Both routes | HEAD/unsupported methods, plain OPTIONS and slash redirect response tables without catalog/compute use | covered | [public_contract.rs::data_route_methods_plain_options_and_slash_redirects_need_no_catalog_or_compute][public-contract]; public edge reachability remains [#33](https://github.com/dynamical-org/api/issues/33) |
 
 ## Data-route dtype, codec and spatial families
 
@@ -171,7 +178,7 @@ The admission details and independent byte/work budgets are in
 | GRIB + scale_offset; S3/GCS virtual chunk containers | Product eligibility, GRIB decoding exactly once and end-to-end reads | gap | [#3](https://github.com/dynamical-org/api/issues/3) |
 | Ensemble source order | Dataset: variable-specific member axis placement, Cartesian reordered/duplicate selections | covered | [fixtures.rs::ensemble_cartesian_reads_follow_each_variable_source_order][dataset-fixtures] |
 | Ensemble physical encodings | Dataset: int16 members with Blosc typesize 4, int8/uint8 members and member-position value offsets | covered | [fixtures.rs::physical_ensemble_members_and_offsets_follow_the_recipe][dataset-fixtures] |
-| Ensemble presentation | Query over physical dataset: complete two-time analysis response with exact member IDs and values | covered | [fixtures.rs::complete_ensemble_query_pairs_members_with_recipe_values][dataset-fixtures]; analysis POST itself remains a gap |
+| Ensemble presentation | Query over physical dataset: complete two-time analysis response with exact member IDs and values | covered | [fixtures.rs::complete_ensemble_query_pairs_members_with_recipe_values][dataset-fixtures]; [analyses.rs::analysis_ensembles_preserve_member_identity_dimension_order_and_integer_values][analyses] |
 | Ensemble HTTP breadth | Exact forecast member values/IDs and member-independent static-variable broadcasting across supported physical encodings | gap | [#3](https://github.com/dynamical-org/api/issues/3), [#10](https://github.com/dynamical-org/api/issues/10); array-shape and component recipe checks do not cover all HTTP combinations |
 | Unused string statistic axis | Dataset: unused strings stay lazy; required string member coordinate fails open | covered | [integer_coordinates.rs::unused_string_dimension_is_lazy_but_selected_string_axis_fails_cleanly][integer-coords] |
 | Geographic global x/y | Query: both hemispheres, longitude wrapping/seam and midpoint first-index ties | covered | [query.rs::geographic_xy_global_grid_normalizes_both_hemispheres_and_seam][query] |
@@ -200,10 +207,11 @@ for that product-level qualification; family-level fixture evidence is above.
 | `noaa-gfs-forecast-virtual`; `noaa-gefs-forecast-10-day-0-25-degree-virtual`, `noaa-gefs-forecast-16-day-0-5-degree-virtual`, `noaa-gefs-forecast-35-day-0-5-degree-virtual` | Not served: virtual GRIB eligibility refused | gap | [#3](https://github.com/dynamical-org/api/issues/3) |
 | `noaa-hrrr-forecast-18-hour-virtual`, `noaa-hrrr-forecast-48-hour-virtual`; `noaa-rrfs-forecast-sub-hourly-virtual`, `noaa-rrfs-forecast-18-hour-virtual`, `noaa-rrfs-forecast-84-hour-virtual`, `noaa-rrfs-ens-forecast-virtual` | Not served: virtual GRIB eligibility refused | gap | [#3](https://github.com/dynamical-org/api/issues/3) |
 | `noaa-refs-forecast-hourly-virtual`, `noaa-refs-forecast-3-hourly-virtual`; `ecmwf-aifs-single-forecast-virtual` | Not served: virtual GRIB eligibility refused (13 forecast products total across the three rows) | gap | [#3](https://github.com/dynamical-org/api/issues/3) |
-| `noaa-gfs-analysis`, `noaa-gfs-analysis-virtual`; `noaa-gefs-analysis`, `noaa-gefs-analysis-0-25-degree-virtual` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); virtual GRIB dependency also [#3](https://github.com/dynamical-org/api/issues/3) |
-| `noaa-hrrr-analysis`, `noaa-hrrr-analysis-virtual`; `noaa-mrms-conus-analysis-hourly` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); native projected support does not complete analysis serving |
-| `ucsb-chc-chirps-analysis-final`, `ucsb-chc-chirps-analysis-preliminary` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); no claim that all analysis products work through canonical GET |
-| `nasa-imerg-analysis-early`, `nasa-imerg-analysis-late` | Integer-epoch staging fits the unchanged 64 MiB open budget through generic bounded batches; analysis POST remains 501 (11 analysis products total across these four rows). Whole-product qualification remains separate from synthetic coordinate tests | gap | [#30](https://github.com/dynamical-org/api/issues/30), [dataset accounting](dataset.md); [epoch_coordinates.rs::batched_epochs_keep_nat_gaps_duplicates_source_order_and_analysis_bounds][epoch-coordinates]; analysis POST awaits [#4](https://github.com/dynamical-org/api/issues/4) |
+| `noaa-gfs-analysis`, `noaa-gefs-analysis` | Analysis windows/variables, canonical links and repeat body/ETags matched; GFS/GEFS forecast run discovery also matched | gap | [#7](https://github.com/dynamical-org/api/issues/7): exhaustive variable/snapshot combinations; fixture-layer serving assertions above |
+| `noaa-hrrr-analysis`, `noaa-mrms-conus-analysis-hourly` | Projected/rectilinear analysis windows, variables, canonical links and body/ETags matched | gap | [#7](https://github.com/dynamical-org/api/issues/7): broader boundary/runtime/product qualification |
+| `ucsb-chc-chirps-analysis-final`, `ucsb-chc-chirps-analysis-preliminary` | Daily analysis windows, land-point numeric precipitation, canonical links and body/ETags matched | gap | [#7](https://github.com/dynamical-org/api/issues/7): broader variable/snapshot/product qualification |
+| `noaa-gfs-analysis-virtual`, `noaa-gefs-analysis-0-25-degree-virtual`, `noaa-hrrr-analysis-virtual` | Not served: virtual GRIB eligibility remains excluded | gap | [#3](https://github.com/dynamical-org/api/issues/3); no analysis-ID bypass |
+| `nasa-imerg-analysis-early`, `nasa-imerg-analysis-late` | Integer-epoch staging fits the unchanged 64 MiB open budget through generic bounded batches; analysis qualification pending | gap | [#30](https://github.com/dynamical-org/api/issues/30), [dataset accounting](dataset.md); [epoch_coordinates.rs::batched_epochs_keep_nat_gaps_duplicates_source_order_and_analysis_bounds][epoch-coordinates] |
 
 ## Shared data-route middleware and transport
 
@@ -302,3 +310,6 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [dataset-bounds]: ../crates/dynapi-dataset/tests/bounds.rs
 [epoch-coordinates]: ../crates/dynapi-dataset/tests/epoch_coordinates.rs
 [epoch]: ../crates/dynapi-dataset/src/epoch.rs
+[analyses]: ../crates/dynapi-server/tests/analyses.rs
+[analysis-contract]: ../crates/dynapi-contract/tests/analyses.rs
+[data-service]: ../crates/dynapi-server/src/data.rs

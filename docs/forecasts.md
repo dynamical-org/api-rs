@@ -1,13 +1,36 @@
-# Forecast and canonical point serving
+# Forecast, analysis and canonical point serving
 
-`dynapi-server` serves forecast batches and canonical point links for materialized
-rectilinear products. Both deterministic and ensemble values use the portable
-query engine's ordered JSON and SHA-256 ETags. Analysis data can be read through
-canonical GET; `POST /v1/analyses` remains a stub. Native HRRR Lambert conformal
-and HRDPS rotated-pole grids use the same operation for geographic selection and
-canonical locations, preserving stored y/x indices. Projected selection remains
-unsupported on WASM. Virtual GRIB, representation routing, discovery and run
-listing remain later work.
+`dynapi-server` serves forecast and analysis batches, forecast run listing, and
+canonical point links for materialized rectilinear products. Deterministic and
+ensemble data responses use the portable query engine's ordered JSON and SHA-256
+ETags. Native HRRR Lambert conformal and HRDPS rotated-pole grids use the same
+operation for geographic selection and canonical locations, preserving stored
+y/x indices. Projected selection remains
+unsupported on WASM. Virtual GRIB and representation routing remain later work.
+
+`POST /v1/analyses` accepts 1–10 queries, each with a product, location, 1–25
+variables and required timezone-aware `startTime`/`endTime`. The UTC elapsed
+window must be positive and at most 31 days. Selection includes start and
+excludes end; result times preserve source order. Responses contain analysis
+times, units, snapshot and canonical/catalog links, plus data or ensemble members.
+Static variables keep their own dimension cardinality. The shared response/read
+budgets apply atomically across a batch before loading, as for forecasts.
+
+`GET /v1/forecasts/runs` requires `dataProductId`, accepts independent strict
+`initTimesAfter`/`initTimesBefore` bounds, and returns newest-first unique init
+times with the opened snapshot. Limit defaults to 20 and accepts 1–100. It reads
+metadata coordinates without weather selection or data-query budget charges;
+point-grid eligibility does not restrict discovery. Successful responses use
+mutable caching and intentionally have no ETag, Server-Timing, dataset-cache or
+work-unit response headers. Catalog/type checks precede timezone/order checks;
+non-budget dataset-open failures retain the reference's generic 500 behavior.
+
+Six materialized analysis products are readable: GFS, GEFS, HRRR, hourly CONUS
+MRMS and both CHIRPS variants. The three virtual analysis products await virtual
+GRIB support. Both IMERG products temporarily exceed the unchanged 64 MiB metadata
+bound and return typed 422, pending [#30](https://github.com/dynamical-org/api/issues/30).
+Only that typed limit maps to 422 in the shared open-error mapper; unrelated
+metadata/storage failures keep their existing classifications (D-an-1).
 
 The native catalog service warms at process startup and shares its refresh,
 freshness and failure-backoff state across requests. Schema validation precedes

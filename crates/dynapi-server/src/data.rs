@@ -11,7 +11,7 @@ use dynapi_catalog::{
     refresh::Snapshot,
 };
 use dynapi_contract::{
-    ForecastBatch, Value,
+    AnalysisBatch, ForecastBatch, ForecastRunsQuery, Value,
     validation::{CanonicalQuery, parse_grid_integer},
 };
 use dynapi_dataset::{OpenError, OpenedDataset, run_with_permit};
@@ -481,6 +481,208 @@ impl DataService {
         .await;
         result.unwrap_or_else(query_error)
     }
+    pub async fn analyses(
+        self: &Arc<Self>,
+        payload: AnalysisBatch,
+        catalog: Arc<Snapshot>,
+        permit: dynapi_policy::Permit,
+        usage: SharedUsage,
+    ) -> HttpResponse {
+        let started = Instant::now();
+        {
+            let mut u = usage.lock().unwrap();
+            u.products = payload
+                .queries
+                .iter()
+                .map(|q| q.data_product_id.clone())
+                .collect();
+            u.query_count = Some(payload.queries.len());
+        }
+        let mut timings = Timings::new(usage.clone(), self.observer.clone());
+        // Admission and caller-location policy completed before store I/O.
+        let service = self.clone();
+        let result = run_with_permit(permit, move |handle| {
+            let resolved: Vec<std::sync::OnceLock<(Arc<OpenedDataset>, Collection)>> =
+                (0..payload.queries.len())
+                    .map(|_| std::sync::OnceLock::new())
+                    .collect();
+            let mut budget = service.budget();
+            let mut builder = query::BatchBuilder::new(Kind::Analysis);
+            let mut opened = Vec::new();
+            let mut product_ids = Vec::with_capacity(payload.queries.len());
+            // Keep the exact catalog generation whose recipes were checked.
+            let snapshot = catalog;
+            for (q, cell) in payload.queries.into_iter().zip(&resolved) {
+                timings.start("catalog");
+                let product = Self::visible_product(&snapshot, &q.data_product_id)?;
+                require_kind(&product, "analysis")?;
+                if let Some(reason) = product.point_query_reason() {
+                    return Err(QueryError::invalid(reason));
+                }
+                if q.variables.iter().all(|v| {
+                    v.trim_matches(dynapi_contract::output::python_whitespace)
+                        .is_empty()
+                }) {
+                    return Err(QueryError::invalid("At least one variable is required"));
+                }
+                timings.finish("catalog");
+                timings.start("dataset_open");
+                let (dataset, status) = service.open(&product, None, &handle, &mut timings)?;
+                timings.finish("dataset_open");
+                timings.cache(status);
+                let (dataset, c) = cell.get_or_init(|| (dataset, collection(&product)));
+                product_ids.push(q.data_product_id);
+                let input = query::QueryInput {
+                    dataset: dataset.view(),
+                    collection: c,
+                    snapshot_id: dataset.snapshot_id(),
+                    query_id: q.query_id,
+                    latitude: q.latitude,
+                    longitude: q.longitude,
+                    variables: q.variables,
+                    init_times: Default::default(),
+                    max_lead_time_hours: None,
+                    start: Some(q.start_time),
+                    end: Some(q.end_time),
+                };
+                builder.push(&input, &mut budget, &mut timings)?;
+                opened.push(dataset.clone());
+                bound_selections(builder.selections(), &opened)?;
+            }
+            let batch = builder.finish(&mut budget, false, 1)?;
+            bound_selections(batch.selections(), &opened)?;
+            let plan = batch.load_plan();
+            timings.count("selections", plan.selections as u64);
+            timings.count("ungroupableSelections", plan.ungroupable_selections as u64);
+            timings.count("coTiledQueries", plan.co_tiled_queries as u64);
+            timings.pending_loads = plan
+                .groups
+                .iter()
+                .flatten()
+                .filter_map(|index| {
+                    let selected = &batch.selections()[*index];
+                    opened
+                        .iter()
+                        .enumerate()
+                        .find(|(_, dataset)| std::ptr::eq(dataset.view(), selected.source()))
+                        .map(|(position, dataset)| {
+                            service.load_work(dataset, &product_ids[position], selected, true)
+                        })
+                })
+                .collect();
+            let mut reader = BatchReader {
+                opened: &opened,
+                handle,
+                #[cfg(feature = "harness")]
+                failure: service.read_failure.lock().unwrap().take(),
+            };
+            let body = batch.load_observed(&mut reader, &mut timings)?;
+            finish(
+                body,
+                batch.work_units(),
+                CachePolicy::Mutable,
+                timings,
+                started,
+                &usage,
+            )
+        })
+        .await;
+        result.unwrap_or_else(query_error)
+    }
+    /// Run discovery reads only opened coordinates; it does not select weather values.
+    pub async fn runs(
+        self: &Arc<Self>,
+        params: ForecastRunsQuery,
+        catalog: Arc<Snapshot>,
+        permit: dynapi_policy::Permit,
+        usage: SharedUsage,
+    ) -> HttpResponse {
+        {
+            let mut u = usage.lock().unwrap();
+            u.products = vec![params.data_product_id.clone()];
+            u.query_count = Some(1);
+        }
+        let service = self.clone();
+        let result = run_with_permit(permit, move |handle| {
+            let snapshot = catalog;
+            let product = Self::visible_product(&snapshot, &params.data_product_id)?;
+            require_kind(&product, "forecast")?;
+            for (name, date) in [
+                ("initTimesAfter", params.init_times_after),
+                ("initTimesBefore", params.init_times_before),
+            ] {
+                if date.is_some_and(|date| date.time.tz_offset.is_none()) {
+                    return Err(QueryError::invalid(format!(
+                        "{name} must include a timezone"
+                    )));
+                }
+            }
+            if let (Some(after), Some(before)) = (params.init_times_after, params.init_times_before)
+                && (after.timestamp_tz(), after.time.microsecond)
+                    >= (before.timestamp_tz(), before.time.microsecond)
+            {
+                return Err(QueryError::invalid(
+                    "initTimesAfter must be before initTimesBefore",
+                ));
+            }
+            let mut timings = Timings::new(usage.clone(), service.observer.clone());
+            let (dataset, _) = service
+                .open(&product, None, &handle, &mut timings)
+                .map_err(|error| {
+                    // The reference GET does not catch dataset-open failures as retryable.
+                    // Preserve the deliberately typed metadata-budget 422 shared by data routes.
+                    if error.status == 422 {
+                        error
+                    } else {
+                        QueryError::internal(error.detail)
+                    }
+                })?;
+            let runs = query::list_forecast_init_times(
+                dataset.view(),
+                params.init_times_after,
+                params.init_times_before,
+                params.limit,
+            )?;
+            let body = Value::object([
+                ("dataProductId", Value::from(product.id)),
+                ("snapshotId", Value::from(dataset.snapshot_id())),
+                (
+                    "runs",
+                    Value::Array(
+                        runs.into_iter()
+                            .map(|run| {
+                                Value::object([(
+                                    "initTime",
+                                    Value::from(query::format_datetime(run)),
+                                )])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]);
+            let encoded = dynapi_contract::output::json(&body, false)
+                .map_err(|_| QueryError::internal("Run response encoding failed"))?;
+            Ok(response(200, encoded, Some("application/json")))
+        })
+        .await;
+        result.unwrap_or_else(query_error)
+    }
+    fn visible_product(snapshot: &Snapshot, id: &str) -> Result<Product, QueryError> {
+        snapshot
+            .collections
+            .get(id)
+            .filter(|p| matches!(p.kind(), "forecast" | "analysis"))
+            .cloned()
+            .ok_or_else(|| QueryError {
+                status: 404,
+                detail: format!(
+                    "Unknown data product {}",
+                    dynapi_contract::output::python_repr(id)
+                ),
+                retry_after: None,
+                exception_class: None,
+            })
+    }
     pub async fn canonical(
         self: &Arc<Self>,
         product: Product,
@@ -571,6 +773,16 @@ impl DataService {
         result.unwrap_or_else(query_error)
     }
 }
+fn require_kind(product: &Product, expected: &str) -> Result<(), QueryError> {
+    if product.kind() != expected {
+        return Err(QueryError::invalid(format!(
+            "Data product {} is {}, not {expected}",
+            dynapi_contract::output::python_repr(&product.id),
+            product.kind()
+        )));
+    }
+    Ok(())
+}
 fn collection(p: &Product) -> Collection {
     Collection {
         id: p.id.clone(),
@@ -605,6 +817,9 @@ fn map_open(error: OpenError) -> QueryError {
             retry_after: None,
             exception_class: None,
         },
+        OpenError::MetadataLimit { limit } => {
+            QueryError::invalid(format!("Opened dataset metadata exceeds {limit} bytes"))
+        }
         OpenError::Reader(e) => dynapi_dataset::map_reader_error(e),
         _ => QueryError::internal(error.to_string()),
     }
@@ -862,6 +1077,33 @@ mod tests {
         assert_eq!(usage.counters["groupedReadValues"], 2);
     }
 
+    #[test]
+    fn only_the_typed_metadata_budget_open_failure_becomes_422() {
+        let limit = 64 * 1024 * 1024;
+        let error = map_open(OpenError::MetadataLimit { limit });
+        assert_eq!(error.status, 422);
+        assert_eq!(
+            error.detail,
+            "Opened dataset metadata exceeds 67108864 bytes"
+        );
+        assert_eq!(error.retry_after, None);
+        let error = map_open(OpenError::Metadata(
+            "Opened dataset metadata exceeds 67108864 bytes".into(),
+        ));
+        assert_eq!(error.status, 500);
+        for kind in [
+            dynapi_reader::ErrorKind::Unsupported,
+            dynapi_reader::ErrorKind::SizeLimit,
+        ] {
+            let error = map_open(OpenError::Reader(dynapi_reader::ReaderError {
+                kind,
+                message: "synthetic reader failure".into(),
+                virtual_chunk_fetch: false,
+                exception_class: None,
+            }));
+            assert_eq!(error.status, 500);
+        }
+    }
     #[test]
     fn non_lookup_snapshot_errors_remain_internal() {
         let error = map_open(OpenError::Reader(dynapi_reader::ReaderError {

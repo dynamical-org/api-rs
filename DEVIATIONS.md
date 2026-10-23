@@ -196,6 +196,9 @@ for the catalog/documentation surface. Rust-owned fixture and loopback tests in
 `catalog_documentation.rs` and schema invariant tests in `openapi.rs` cover this
 surface; they do not qualify the pending execution handlers.
 
+Superseded in part: analyses and forecast run listing now have native handlers;
+their serving contract is documented in [point serving](docs/forecasts.md).
+
 ## D17 — Bounded catalog response encoding
 
 - Trigger: a catalog list or detail projection would encode more than
@@ -513,3 +516,14 @@ GET. Earlier schema/auth/rate errors retain their existing order and policy, mat
 remain. The configured check secret has redacted Debug output, sensitive HTTP
 header storage and static diagnostics. A refusal echoing the secret fails closed
 to generic 503 rather than copying it into a public detail or telemetry.
+
+## D-an-1 — Typed dataset metadata-budget rejection
+
+A typed `OpenError::MetadataLimit` maps to HTTP 422 with the existing safe detail
+`Opened dataset metadata exceeds 67108864 bytes`. Other metadata, reader and
+storage errors retain their existing classifications. This mapping is shared by
+forecast, analysis, run listing and canonical reads; it does not increase the 64 MiB budget or
+use product-ID exceptions. Both IMERG analysis products remain temporarily
+excluded while their eager coordinate staging exceeds this limit, pending the
+metadata-bound decision in [#30](https://github.com/dynamical-org/api/issues/30).
+The reference Python service can open these products without this Rust bound.

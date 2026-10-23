@@ -349,3 +349,78 @@ fn geographic_xy_global_grid_normalizes_both_hemispheres_and_seam() {
         );
     }
 }
+
+#[test]
+fn run_listing_sorts_unique_full_precision_times_drops_nat_and_filters_strictly() {
+    let (mut view, _) = forecast(0, vec![0]);
+    view.coordinates.insert(
+        "init_time".into(),
+        Coordinate::Time(vec![HOUR, 1, NAT, 0, HOUR, 2]),
+    );
+    view.dimensions.insert("init_time".into(), 6);
+    let runs = list_forecast_init_times(&view, None, None, 20).unwrap();
+    // Distinct nanosecond labels remain distinct even when presentation rounds them.
+    assert_eq!(runs, [i128::from(HOUR), 0, 0, 0]);
+    assert_eq!(
+        list_forecast_init_times(&view, None, None, 1).unwrap(),
+        runs[..1]
+    );
+    let bound = RequestDatetime::parse_str("1970-01-01T00:00:00Z").unwrap();
+    let before = RequestDatetime::parse_str("1970-01-01T01:00:00Z").unwrap();
+    let filtered = list_forecast_init_times(&view, Some(bound), Some(before), 20).unwrap();
+    assert_eq!(filtered, [0, 0]);
+    view.coordinates.remove("init_time");
+    assert_eq!(
+        list_forecast_init_times(&view, None, None, 20)
+            .unwrap_err()
+            .detail,
+        "Forecast data product is missing its init_time coordinate"
+    );
+}
+
+#[test]
+fn analysis_windows_preserve_unsorted_duplicate_source_times_and_exclude_end() {
+    let (mut view, mut collection) = forecast(0, vec![0]);
+    view.dimensions = [
+        ("time".into(), 6),
+        ("latitude".into(), 1),
+        ("longitude".into(), 1),
+    ]
+    .into();
+    view.coordinates.remove("init_time");
+    view.coordinates.remove("lead_time");
+    view.coordinates.insert(
+        "time".into(),
+        Coordinate::Time(vec![NAT, HOUR, 0, HOUR, 2 * HOUR, HOUR + 1]),
+    );
+    let dimensions = vec!["time".into(), "latitude".into(), "longitude".into()];
+    let variable = view.variables.get_mut("temperature").unwrap();
+    variable.dimensions = dimensions.clone();
+    variable.chunks = Some(vec![Some(2), Some(1), Some(1)]);
+    collection.kind = Kind::Analysis;
+    collection
+        .variables
+        .get_mut("temperature")
+        .unwrap()
+        .dimensions = dimensions;
+    let point = select_nearest_point(&view, 0., 0.).unwrap();
+    let selected = select_query(
+        &view,
+        &collection,
+        point,
+        QueryOptions {
+            variables: vec!["temperature".into()],
+            start: Some(RequestDatetime::parse_str("1970-01-01T00:00:00Z").unwrap()),
+            end: Some(RequestDatetime::parse_str("1970-01-01T02:00:00Z").unwrap()),
+            ..QueryOptions::default()
+        },
+        "snapshot-test",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        selected.positions()["time"],
+        Selection::Indices(vec![1, 2, 3, 5])
+    );
+    assert_eq!(selected.value_count(), 4);
+}

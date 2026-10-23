@@ -33,7 +33,6 @@ use subtle::ConstantTimeEq;
 use telemetry::{Stream, Telemetry};
 
 pub const BODY_LIMIT: usize = 16 * 1024 * 1024;
-pub const INTERNAL_STUB: &str = "Internal stub: data route handlers are not implemented yet";
 pub const ROBOTS: &[u8] = include_bytes!("../robots.txt");
 include!(concat!(env!("OUT_DIR"), "/robots_metadata.rs"));
 const RATE_DETAIL: &str =
@@ -607,30 +606,12 @@ impl App {
                     }
                 }
             }
-            "/v1/forecasts/runs" => {
-                let id = query_values(request.uri().query().unwrap_or(""))
-                    .into_iter()
-                    .rev()
-                    .find(|(key, _)| key == "dataProductId")
-                    .map(|(_, value)| value);
-                if let Some(id) = id
-                    && let Err(response) = self
-                        .checked_catalog(
-                            &[&id],
-                            true,
-                            false,
-                            request.headers(),
-                            viewer_trusted,
-                            &usage,
-                        )
-                        .await
-                {
-                    return Ok(response);
-                }
-                self.stub()
-            }
             "/v1/analyses" => {
                 let geo_headers = request.headers().clone();
+                let content_type = request
+                    .headers()
+                    .get("content-type")
+                    .map(|value| latin1(value.as_bytes()));
                 let bytes =
                     match collect_body(request.into_body(), self.config.body_read_timeout).await {
                         Ok(bytes) => bytes,
@@ -639,36 +620,55 @@ impl App {
                         }
                         Err(error) => return Err(error),
                     };
-                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    let ids: Vec<_> = body["queries"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|query| {
-                            query
-                                .get("dataProductId")
-                                .or_else(|| query.get("data_product_id"))
-                                .and_then(serde_json::Value::as_str)
-                        })
-                        .collect();
-                    if !ids.is_empty()
-                        && let Err(response) = self
-                            .checked_catalog(
-                                &ids,
-                                false,
-                                false,
-                                &geo_headers,
-                                viewer_trusted,
-                                &usage,
-                            )
-                            .await
-                    {
-                        return Ok(response);
-                    }
+                match dynapi_contract::validate_analysis(&bytes, content_type.as_deref()) {
+                    Ok(payload) => {
+                        let ids: Vec<_> = payload.queries.iter().map(|q| q.data_product_id.as_str()).collect();
+                        let Some(permit) = self.admit_data(&ids, &usage) else {
+                            return Ok(data::busy(&self.gate));
+                        };
+                        let catalog = match self.checked_catalog(&ids, false, true, &geo_headers, viewer_trusted, &usage).await {
+                            Ok(catalog) => catalog,
+                            Err(response) => return Ok(response),
+                        };
+                        self.data.analyses(payload, catalog, permit, usage).await
+                    },
+                    Err(invalid) => response(
+                        invalid.status,
+                        invalid.body,
+                        Some(if invalid.status == 500 {
+                            "text/plain; charset=utf-8"
+                        } else {
+                            "application/json"
+                        }),
+                    ),
                 }
-                self.stub()
             }
-            _ => self.stub(),
+            "/v1/forecasts/runs" => {
+                let params = query_values(request.uri().query().unwrap_or(""));
+                match dynapi_contract::validate_forecast_runs(&params) {
+                    Ok(params) => {
+                        let ids = [params.data_product_id.as_str()];
+                        let Some(permit) = self.admit_data(&ids, &usage) else {
+                            return Ok(data::busy(&self.gate));
+                        };
+                        let catalog = match self.checked_catalog(&ids, false, false, request.headers(), viewer_trusted, &usage).await {
+                            Ok(catalog) => catalog,
+                            Err(response) => return Ok(response),
+                        };
+                        self.data.runs(params, catalog, permit, usage).await
+                    },
+                    Err(invalid) => response(
+                        invalid.status,
+                        invalid.body,
+                        Some(if invalid.status == 500 {
+                            "text/plain; charset=utf-8"
+                        } else {
+                            "application/json"
+                        }),
+                    ),
+                }
+            }
+            _ => unreachable!("registered route has no handler"),
         })
     }
     fn admit_data(&self, ids: &[&str], usage: &data::SharedUsage) -> Option<dynapi_policy::Permit> {
@@ -738,25 +738,7 @@ impl App {
     pub fn close_catalog(&self) {
         self.catalog.close();
     }
-    fn stub(&self) -> HttpResponse {
-        let Some(_permit) = self.gate.try_acquire() else {
-            let retry = self.gate.retry_after();
-            let mut result = detail(503, &format!("Server busy; retry after {retry} seconds"));
-            result
-                .headers_mut()
-                .insert("retry-after", retry.to_string().parse().unwrap());
-            result
-                .extensions_mut()
-                .insert(telemetry::ErrorKind::ServerBusy);
-            return result;
-        };
-        // Never consumed as a public result by the differential harness.
-        response(
-            501,
-            INTERNAL_STUB.as_bytes().to_vec(),
-            Some("text/plain; charset=utf-8"),
-        )
-    }
+
     fn emit(&self, stream: Stream, record: serde_json::Value) {
         if stream == Stream::Terminal
             && record["event"] == "api_request"

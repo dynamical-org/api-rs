@@ -622,9 +622,9 @@ fn paths() -> V {
             add(
                 kind("integer"),
                 [
-                    ("maximum", V::from(100i64)),
-                    ("minimum", V::from(1i64)),
-                    ("default", V::from(20i64)),
+                    ("maximum", V::from(contract::MAX_RUN_LIMIT)),
+                    ("minimum", V::from(contract::MIN_RUN_LIMIT)),
+                    ("default", V::from(contract::DEFAULT_RUN_LIMIT)),
                 ],
             ),
         ),
@@ -839,7 +839,7 @@ mod tests {
         }
         assert!(documented.is_disjoint(&excluded));
         assert_eq!(served, documented.union(&excluded).cloned().collect());
-        // Only these documented execution operations still await handlers.
+        // These execution operations stay in the public schema.
         for operation in [("/v1/analyses", "POST"), ("/v1/forecasts/runs", "GET")] {
             assert!(documented.contains(&(operation.0.to_owned(), operation.1.to_owned())));
         }
