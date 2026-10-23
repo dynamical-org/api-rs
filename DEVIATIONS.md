@@ -556,3 +556,24 @@ until virtual GRIB support is implemented. No new public status is introduced.
 - Consequence: a caller may be admitted sooner after cancelling during a metadata or location check. The remaining location work is governed by its own deadline, coalescing and in-flight cap.
 - Rationale: retain admission with native dataset work while releasing ownership for an abandoned async request.
 - Tests: `cancellation_during_async_location_check_releases_admission_before_worker_start`; `every_route_holds_its_caller_after_disconnect_until_physical_work_finishes` covers the dataset-worker boundary on all four routes.
+
+## D-virt-2 — Private CCSDS qualification has an explicit bounded profile
+
+- The unwired native GRIB module admits 5.42 only with options 14, block 32,
+  RSI 128 and the checked integer/stream profile in
+  [the qualification contract](docs/reader-grib.md). It retains the 32 MiB encoded
+  and 56 MiB f64 plane limits. It adds no codec backend, public API, reader wiring
+  or product eligibility, and does not qualify WASM runtime or endpoint behavior.
+- Nonzero widths 8–16 have exact f32 integer intermediates. Wider widths,
+  incomplete 32-sample blocks, big-endian multi-byte conversion, second-extension
+  indices above the pinned table and insufficient pinned fast-read margins remain
+  unsupported. These are deliberate qualification limits, including for some
+  otherwise valid CCSDS streams; no Python exception/HTTP status parity is claimed.
+- Zero-bit fields are admitted only with a positive-zero reference, no bitmap and
+  an empty payload, where format-derived values and the pinned resize path agree.
+  Nonzero/negative-zero references and masked zero-bit fields remain typed constant
+  rejections. No general constant correction or change to D35's 5.0/5.3 policy follows.
+- The CCSDS ledger funds retained/compressed copies and queue with F, and decoded
+  byte/f32/f64 buffers, fixed RSI scratch, bitmap/order/scale and byte conversion
+  with X. Source phase accounting and owned-input peak witnesses are separate
+  evidence from pool/cancellation conservation, allocator fragmentation or RSS.

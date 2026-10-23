@@ -43,7 +43,7 @@ Admission is by the entire checked profile, not its template number. Preflight
 runs before the first gribberish constructor and uses no dynamic scratch buffer.
 It checks section order, exact framing, required section sizes, grid/shape counts,
 packed counts, bitmap length/popcount, group-table/data bounds and zero padding.
-Repeated fields, trailing messages, GRIB1, image templates and CCSDS are rejected.
+Repeated fields, trailing messages, GRIB1 and image templates are rejected.
 
 Data grid templates 3.0 and 3.30 have fixed lengths, row-major/nonstaggered scans,
 and positive nonmissing spacing in the admitted directions. Geographic grids use
@@ -66,6 +66,32 @@ constant field. Zero group-reference width alone is allowed; it is not a constan
 Groups must have positive lengths and their sum must equal the packed count.
 Previous/predefined bitmap reuse is not admitted.
 
+Packing 5.42 admits only options 14, block size 32 and reference sample interval
+128. Integer widths 8–16 use the pinned decoder's exact f32 integer intermediate
+before f64 GRIB scaling. Wider samples remain unqualified: the pinned three-byte
+storage configuration disagrees with its output size, and its four-byte conversion
+interprets bytes as f32 rather than integer samples. Multi-byte CCSDS samples on
+big-endian hosts are unsupported. Nonzero-width packed counts must be multiples
+of 32; a final reference interval may have fewer than 128 blocks.
+
+The CCSDS preflight walks code IDs, reference samples, Rice unary/remainder fields,
+second-extension pairs and zero runs without reconstructing or allocating a field.
+It checks exact output counts and byte padding, word ranges and RSI boundaries,
+including the end-of-sequence meaning of the remainder-of-segment zero code.
+It also follows the pinned decoder's fast/incremental branch choices and byte
+read-ahead. Short seven-byte fast unary tails, insufficient fast remainder margins
+and second-extension table indices above 90 are explicitly unsupported, even when
+the abstract code stream could be valid. A header-only bound does not qualify
+these data-dependent paths. Uncompressed and Rice values fit the declared width;
+unsigned postprocessing therefore stays inside that width and nonnegative i32.
+
+Zero-bit 5.42 fields are qualified only for a positive-zero reference, no bitmap
+and an empty payload, after the existing finite GRIB factor checks. The pinned
+empty-vector/zero-resize behavior is correct for precisely that zero profile.
+Nonzero or negative-zero references and masked zero-bit fields remain typed
+constant rejections. This does not add a general constant decoder or change the
+5.0/5.3 constant policy.
+
 Additional implementation-specific restrictions:
 
 - Every group-table bit product is at most 2^24, making the pinned f32 alignment
@@ -85,7 +111,8 @@ The integer-state validation exists to reject overflow before unchecked upstream
 operations; it does not produce decoded values or replace the GRIB decoder.
 Malformed framing/count/padding failures are distinguished from valid but
 unqualified profiles and size/arithmetic limits. `Message::data().resize` is not
-used to establish consistency: preflight establishes exact counts first. No
+used to repair inconsistent counts: preflight establishes exact counts first,
+except for the separately qualified true-zero 5.42 profile described above. No
 runtime catch-unwind boundary is used as admission policy.
 
 The optional Zarr scale/offset applies once after decoding/reordering, using f64
@@ -130,4 +157,38 @@ future HTTP error mapping is not established here. See D35 in DEVIATIONS.md.
 
 Format references: [NCEP 5.0](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-0.shtml),
 [NCEP 5.3](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-3.shtml),
-[NCEP 7.3](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp7-3.shtml).
+[NCEP 7.3](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp7-3.shtml),
+[NCEP 5.42](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-42.shtml),
+[CCSDS 121.0-B-3](https://ccsds.org/Pubs/121x0b3.pdf).
+
+## CCSDS allocation phases
+
+For 5.42, F funds the retained complete input and compressed copies, including
+the packed BitVec/Vec and the VecDeque input queue. They overlap during state
+construction: at most three E-sized backings plus the fixed state. Sections,
+including optional local-use padding, borrow the original input; the 25-byte
+packing template is copied. The bit-vector conversion transfers its backing.
+F = 4E + 2 MiB covers the compressed backings and metadata. The 16 KiB RSI
+scratch remains an X term even during state construction.
+
+During nonzero-width decoding the packed Vec has been released. The queue and caller input
+coexist with geometric output-byte capacity, RSI scratch and then a f32 vector.
+With P packed samples, P <= D/8, output bytes <=2P, byte capacity <4P and f32
+storage 4P. Before f64 collection the queue, byte vector and RSI buffer are
+released. Conservatively including old/new f64 reallocation overlap and the
+still-owned f32 input gives <3.5D plus bounded metadata. Bitmap expansion and
+final byte conversion are separate later phases with at most 3D backing. X =
+8D + 64 KiB covers these decoded buffers; compressed copies remain an F term.
+A peak minus only the retained input is therefore not an X-only bound for CCSDS.
+Tiny zero-bit units have bounded minimum Vec capacities covered by the fixed
+64 KiB term rather than these proportional nonzero-width bounds.
+
+Native debug witnesses retain the complete input through reorder, f64 scale and
+LE conversion. At D = 58,720,256, the 16-bit uncompressed stream measured
+144,818,408 peak bytes; a 9-bit half-bitmap stream measured 122,544,327; the
+qualified zero-bit field measured 117,440,711. A deliberately inefficient valid
+Rice stream with E = 33,554,432 and D = 1,048,576 measured 100,665,537 peak bytes
+against F = 136,314,880 and X = 8,454,144. The last case makes compressed copies
+visible independently of a large D allowance. Preflight requests zero heap bytes.
+These phase bounds and controlled requested-allocation witnesses retain the
+allocator ownership, process-memory and integration limitations stated above.

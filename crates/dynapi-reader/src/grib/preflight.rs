@@ -457,7 +457,7 @@ pub(super) fn validate(encoded: &[u8], profile: Profile<'_>) -> Result<Validated
     }
     let packing = sections[5].unwrap();
     let template_number = u16_at(packing, 9)?;
-    if !matches!(template_number, 0 | 3) {
+    if !matches!(template_number, 0 | 3 | 42) {
         return Err(Error::Unsupported("packing template"));
     }
     if packing.len() < 21 {
@@ -473,6 +473,7 @@ pub(super) fn validate(encoded: &[u8], profile: Profile<'_>) -> Result<Validated
     match template_number {
         0 => simple(packing, data, packed)?,
         3 => spatial(packing, data, packed)?,
+        42 => super::ccsds::validate(packing, data, packed, sections[6].unwrap()[5] == 0)?,
         _ => unreachable!(),
     }
     reorder(grid, template, nx, ny, profile)
