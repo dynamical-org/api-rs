@@ -76,7 +76,7 @@ value gives exact `5000000001000000000`. Fractional, negative, NaT, duplicate,
 empty and unselected-overflow cases assert dtype, shape, nanosecond bytes and
 full-unit versus selected work. The generic traced API and descriptive dataset
 entry point are checked separately with their respective admitted metadata.
-D-encb-2 records the existing whole-unit typed rejection where the reference
+D46 records the existing whole-unit typed rejection where the reference
 converts an overflowing full-coordinate value to per-element NaT.
 
 `scalar_zstd.rs` constructs ordinary single-segment raw/RLE frames and explicit
@@ -87,4 +87,4 @@ validity. Other cases cover flags, content size, actual decoded length, reserved
 blocks, truncation, concatenation and trailing data. The private guard test owns
 empty input because Icechunk refuses to store zero-length chunks. Explicit
 window descriptors distinguish 1 KiB (accepted), 1,152 bytes and 1 GiB (rejected);
-see D-encb-1 for this deliberately narrow scalar policy.
+see D45 for this deliberately narrow scalar policy.

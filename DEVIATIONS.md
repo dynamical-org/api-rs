@@ -606,7 +606,7 @@ until virtual GRIB support is implemented. No new public status is introduced.
   a fixed borrowed-key duplicate check. Missing/invalid required validators and
   a complete 412 status are ObjectModified, independent of error-body framing.
 
-## D-encb-1 — Enforce the scalar Zstd window bound before decoding
+## D45 — Enforce the scalar Zstd window bound before decoding
 
 - Reference Python service: its general Zstd codec accepts valid frames whose
   declared window exceeds 1 KiB, including tiny scalar outputs.
@@ -627,7 +627,7 @@ until virtual GRIB support is implemented. No new public status is introduced.
   (1 GiB). Removing the header check makes this regression fail. The scalar
   value, frame-fault and exact encoded-limit tables also cover this path.
 
-## D-encb-2 — Reject an out-of-range CF duration decoding unit
+## D46 — Reject an out-of-range CF duration decoding unit
 
 - Reference Python service: xarray can convert an out-of-nanosecond-range float64
   duration to per-element NaT during fractional resolution promotion. For the

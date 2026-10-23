@@ -140,7 +140,7 @@ outside this allowlist:
   must be one ordinary Zstd frame, have a known content size of exactly 8, no
   dictionary/checksum/reserved flags, and no trailing bytes. Encoded input is at
   most 64 bytes; the header independently limits non-single-segment windows to
-  1 KiB, and the decoder also sets WindowLogMax(10). See D-encb-1 for the explicit
+  1 KiB, and the decoder also sets WindowLogMax(10). See D45 for the explicit
   header check, since fixed-buffer decoding can bypass that decoder parameter. Other standalone Zstd
   layouts remain excluded. The existing C-backed Zstd dependency is now direct;
   this adds no package versions to the lockfile. The existing attestation also
@@ -403,7 +403,7 @@ attribute object. Output preserves
 shape and contains little-endian int64 bits tagged `datetime64[ns]` or
 `timedelta64[ns]`. Integer i64::MIN and floating NaNs become NaT (i64::MIN).
 Integer epoch zero is valid, not missing. Checked conversion rejects out-of-ns-range
-values and infinities (D-encb-2 records xarray's per-element NaT difference for
+values and infinities (D46 records xarray's per-element NaT difference for
 overflowing float durations). Fractional seconds follow xarray's successive s→ms→us→ns
 multiplications and integer truncation. This operation decodes the supplied buffer;
 for float time data, xarray's resolution choice can depend on other values in the
