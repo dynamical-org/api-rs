@@ -23,13 +23,22 @@ point-grid eligibility does not restrict discovery. Successful responses use
 mutable caching and intentionally have no ETag, Server-Timing, dataset-cache or
 work-unit response headers. Catalog/type checks precede timezone/order checks;
 non-budget dataset-open failures retain the reference's generic 500 behavior.
+Run listing opens stored coordinate metadata with all virtual containers disabled,
+in a separate cache profile. Virtual forecast products can list runs when their
+coordinates are stored in the repository; virtual coordinates fail closed without
+fetching an external chunk. Virtual forecast point serving retains generic 500
+until virtual GRIB support is implemented; its container authorization stays
+separate from run discovery.
 
 Six materialized analysis products are readable: GFS, GEFS, HRRR, hourly CONUS
-MRMS and both CHIRPS variants. The three virtual analysis products await virtual
-GRIB support. Both IMERG products temporarily exceed the unchanged 64 MiB metadata
-bound and return typed 422, pending [#30](https://github.com/dynamical-org/api/issues/30).
+MRMS and both CHIRPS variants. Historical GEFS windows depend on the separately
+qualified Blosc byte-typesize compatibility fix; the earlier reader rejects
+those frames with generic 500, also on canonical GET. The three virtual analysis
+products await virtual GRIB support and currently return generic 500 `Internal Server Error` before
+repository I/O, consistently with virtual forecast point serving. Both IMERG
+products temporarily exceed the unchanged 64 MiB metadata bound and return typed 422, pending [#30](https://github.com/dynamical-org/api/issues/30).
 Only that typed limit maps to 422 in the shared open-error mapper; unrelated
-metadata/storage failures keep their existing classifications (D-an-1).
+metadata/storage failures keep their existing classifications (D40).
 
 The native catalog service warms at process startup and shares its refresh,
 freshness and failure-backoff state across requests. Schema validation precedes

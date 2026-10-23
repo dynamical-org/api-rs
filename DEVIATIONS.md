@@ -526,7 +526,7 @@ to generic 503 rather than copying it into a public detail or telemetry.
 Analysis POST and run listing now use the same admission-before-identification
 boundary. Run listing continues to omit ETags on successful responses.
 
-## D-an-1 — Typed dataset metadata-budget rejection
+## D40 — Typed dataset metadata-budget rejection
 
 A typed `OpenError::MetadataLimit` maps to HTTP 422 with the existing safe detail
 `Opened dataset metadata exceeds 67108864 bytes`. Other metadata, reader and
@@ -536,3 +536,15 @@ use product-ID exceptions. Both IMERG analysis products remain temporarily
 excluded while their eager coordinate staging exceeds this limit, pending the
 metadata-bound decision in [#30](https://github.com/dynamical-org/api/issues/30).
 The reference Python service can open these products without this Rust bound.
+
+## D-an-2 — Metadata-only run discovery and virtual exclusions
+
+Run listing uses a separate Metadata dataset-cache profile, retaining product,
+repository, snapshot and original container identity in the keys. The reader
+receives an empty container set that replaces persisted authorization. It opens
+only stored coordinate metadata and never loads weather selections. A virtual
+coordinate fails closed without fetching its external payload; normal point
+serving cannot reuse this profile. The reference supports more virtual layouts.
+All three virtual analysis products retain generic HTTP 500 `Internal Server
+Error` before repository I/O, consistent with virtual forecast point serving,
+until virtual GRIB support is implemented. No new public status is introduced.

@@ -297,11 +297,12 @@ impl DataService {
         &self,
         product: &Product,
         snapshot: Option<&str>,
+        profile: Profile,
         handle: &tokio::runtime::Handle,
         timings: &mut Timings,
     ) -> Result<(Arc<OpenedDataset>, dynapi_catalog::cache::CacheStatus), QueryError> {
         let started = Instant::now();
-        let result = self.open_unobserved(product, snapshot, handle);
+        let result = self.open_unobserved(product, snapshot, profile, handle);
         let elapsed = elapsed_ms(started);
         let status = match &result {
             Ok((_, status)) => match status {
@@ -332,11 +333,37 @@ impl DataService {
         &self,
         product: &Product,
         snapshot: Option<&str>,
+        profile: Profile,
         handle: &tokio::runtime::Handle,
     ) -> Result<(Arc<OpenedDataset>, dynapi_catalog::cache::CacheStatus), QueryError> {
-        let recipe = product
-            .reader_config()
-            .map_err(|e| QueryError::internal(e.to_string()))?;
+        let recipe = if profile == Profile::Metadata {
+            // Replace all persisted authorization with an empty set. Required
+            // coordinates must be physically stored; virtual coordinates fail
+            // closed without a virtual fetch. Never share this session with
+            // point-serving handles, even when they use the same snapshot.
+            let store = match &product.icechunk {
+                dynapi_catalog::RepositoryLocation::Http(location) => {
+                    dynapi_reader::StoreDescriptor::Http {
+                        url: location.url.trim_end_matches('/').into(),
+                    }
+                }
+                dynapi_catalog::RepositoryLocation::S3(location) => {
+                    dynapi_reader::StoreDescriptor::AnonymousS3 {
+                        bucket: location.bucket.clone(),
+                        prefix: location.prefix.clone(),
+                        region: location.region.clone(),
+                    }
+                }
+            };
+            dynapi_catalog::ReaderConfig {
+                store,
+                containers: Vec::new(),
+            }
+        } else {
+            product
+                .reader_config()
+                .map_err(|e| QueryError::internal(e.to_string()))?
+        };
         #[cfg(feature = "harness")]
         let recipe = if let Some(base) = &self.config.fixture_store_base {
             dynapi_catalog::ReaderConfig {
@@ -349,7 +376,7 @@ impl DataService {
             recipe
         };
         let opened = self.cache.open(
-            DatasetKey::new(product, snapshot, Profile::Default),
+            DatasetKey::new(product, snapshot, profile),
             || {
                 let id = match snapshot {
                     Some(id) => id.to_owned(),
@@ -421,7 +448,8 @@ impl DataService {
                 }
                 timings.finish("catalog");
                 timings.start("dataset_open");
-                let (dataset, status) = service.open(&product, None, &handle, &mut timings)?;
+                let (dataset, status) =
+                    service.open(&product, None, Profile::Default, &handle, &mut timings)?;
                 timings.finish("dataset_open");
                 timings.cache(status);
                 let (dataset, c) = cell.get_or_init(|| (dataset, collection(&product)));
@@ -527,7 +555,8 @@ impl DataService {
                 }
                 timings.finish("catalog");
                 timings.start("dataset_open");
-                let (dataset, status) = service.open(&product, None, &handle, &mut timings)?;
+                let (dataset, status) =
+                    service.open(&product, None, Profile::Default, &handle, &mut timings)?;
                 timings.finish("dataset_open");
                 timings.cache(status);
                 let (dataset, c) = cell.get_or_init(|| (dataset, collection(&product)));
@@ -627,7 +656,7 @@ impl DataService {
             }
             let mut timings = Timings::new(usage.clone(), service.observer.clone());
             let (dataset, _) = service
-                .open(&product, None, &handle, &mut timings)
+                .open(&product, None, Profile::Metadata, &handle, &mut timings)
                 .map_err(|error| {
                     // The reference GET does not catch dataset-open failures as retryable.
                     // Preserve the deliberately typed metadata-budget 422 shared by data routes.
@@ -732,7 +761,7 @@ impl DataService {
         let service = self.clone();
         let result = run_with_permit(permit, move |handle| {
             timings.start("dataset_open");
-            let (ds, status) = service.open(&product, Some(&snapshot), &handle, &mut timings).map_err(|mut e| { if e.status == 404 { e.detail = format!("Unknown snapshot {} for data product {}; use the snapshotId from a forecasts or analyses response", dynapi_contract::output::python_repr(&snapshot), dynapi_contract::output::python_repr(&product.id)); } e })?;
+            let (ds, status) = service.open(&product, Some(&snapshot), Profile::Default, &handle, &mut timings).map_err(|mut e| { if e.status == 404 { e.detail = format!("Unknown snapshot {} for data product {}; use the snapshotId from a forecasts or analyses response", dynapi_contract::output::python_repr(&snapshot), dynapi_contract::output::python_repr(&product.id)); } e })?;
             timings.finish("dataset_open");
             timings.cache(status);
             timings.start("point_select");

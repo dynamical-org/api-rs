@@ -555,3 +555,236 @@ async fn cancelled_analysis_and_runs_keep_their_permit_until_owned_store_work_fi
         }
     }
 }
+
+async fn write_fixture_array(root: &Path, id: &str, name: &str, metadata: &Value) -> String {
+    let storage = icechunk::new_local_filesystem_storage(&root.join(id).join("repository"))
+        .await
+        .unwrap();
+    let repo = icechunk::Repository::open(None, storage, Default::default())
+        .await
+        .unwrap();
+    let writer = std::sync::Arc::new(tokio::sync::RwLock::new(
+        repo.writable_session("main").await.unwrap(),
+    ));
+    let store = icechunk::Store::from_session(writer.clone()).await;
+    store
+        .set(
+            &format!("{name}/zarr.json"),
+            serde_json::to_vec(metadata).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    writer
+        .write()
+        .await
+        .commit("Synthetic coordinate preflight")
+        .execute()
+        .await
+        .unwrap()
+        .to_string()
+}
+async fn virtual_fixture_chunk(root: &Path, id: &str, key: &str, url: &str) {
+    let storage = icechunk::new_local_filesystem_storage(&root.join(id).join("repository"))
+        .await
+        .unwrap();
+    let repo = icechunk::Repository::open(None, storage, Default::default())
+        .await
+        .unwrap();
+    let writer = std::sync::Arc::new(tokio::sync::RwLock::new(
+        repo.writable_session("main").await.unwrap(),
+    ));
+    let store = icechunk::Store::from_session(writer.clone()).await;
+    store
+        .set_virtual_ref(
+            key,
+            icechunk::format::manifest::VirtualChunkRef {
+                location: icechunk::format::manifest::VirtualChunkLocation::from_url(url).unwrap(),
+                offset: 0,
+                length: 16,
+                checksum: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    writer
+        .write()
+        .await
+        .commit("Synthetic unavailable virtual payload")
+        .execute()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn metadata_limit_has_safe_http_422_on_analysis_forecast_runs_and_canonical() {
+    let temp = tempfile::tempdir().unwrap();
+    let analysis = mount(temp.path(), "analysis");
+    let forecast = mount(temp.path(), "forecast");
+    catalog(temp.path(), &[analysis, forecast]);
+    // This small metadata declares an eager coordinate whose preflight charge
+    // exceeds 64 MiB. No large vector or coordinate payload is constructed.
+    let metadata = json!({"zarr_format":3,"node_type":"array","shape":[500000],"data_type":"int64","dimension_names":["ensemble_member"],"chunk_grid":{"name":"regular","configuration":{"chunk_shape":[1024]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"blosc","configuration":{"cname":"zstd","clevel":3,"shuffle":"shuffle","typesize":8,"blocksize":0}}],"attributes":{},"storage_transformers":[]});
+    write_fixture_array(
+        temp.path(),
+        "fixture-analysis",
+        "ensemble_member",
+        &metadata,
+    )
+    .await;
+    let snapshot = write_fixture_array(
+        temp.path(),
+        "fixture-forecast",
+        "ensemble_member",
+        &metadata,
+    )
+    .await;
+    let server = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
+    for (method, path, body) in [
+        ("POST", "/v1/analyses".into(), payload()),
+        ("POST", "/v1/forecasts".into(), support::payload()),
+        (
+            "GET",
+            "/v1/forecasts/runs?dataProductId=fixture-forecast".into(),
+            Value::Null,
+        ),
+        (
+            "GET",
+            format!(
+                "/v1/data/fixture-forecast/{snapshot}/points/0,0?variables=count&initTime=2026-07-30T00:00:00Z"
+            ),
+            Value::Null,
+        ),
+    ] {
+        let reply = server.request(method, &path, &body).await;
+        assert_eq!(
+            reply.status,
+            422,
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        assert_eq!(
+            reply.json(),
+            json!({"detail":"Opened dataset metadata exceeds 67108864 bytes"})
+        );
+        assert!(!reply.headers.contains_key("etag"));
+        assert!(!reply.headers.contains_key("retry-after"));
+    }
+    no_weather_reads(&server);
+}
+
+#[tokio::test]
+async fn virtual_analysis_ids_fail_before_repository_io_with_existing_generic_500() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut collections = Vec::new();
+    for id in [
+        "noaa-gfs-analysis-virtual",
+        "noaa-gefs-analysis-0-25-degree-virtual",
+        "noaa-hrrr-analysis-virtual",
+    ] {
+        std::fs::create_dir(temp.path().join(id)).unwrap();
+        let mut collection = input("analysis")["collection"].clone();
+        collection["id"] = json!(id);
+        collection["assets"]["icechunk"]["icechunk:virtual_chunk_containers"] = json!([{"url_prefix":"s3://synthetic.example.test/chunks/","credentials":{"type":"s3","anonymous":true}}]);
+        collections.push(collection);
+    }
+    catalog(temp.path(), &collections);
+    let server = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
+    for collection in collections {
+        let mut body = payload();
+        body["queries"][0]["dataProductId"] = collection["id"].clone();
+        let reply = server.request("POST", "/v1/analyses", &body).await;
+        assert_eq!(reply.status, 500);
+        assert_eq!(reply.body, b"Internal Server Error");
+        assert_eq!(reply.headers["content-type"], "text/plain; charset=utf-8");
+        assert!(!reply.headers.contains_key("etag"));
+        assert!(!reply.headers.contains_key("retry-after"));
+    }
+    assert!(
+        server
+            .host
+            .reads
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|p| !p.contains("/repository/"))
+    );
+}
+
+#[tokio::test]
+async fn virtual_forecast_runs_use_only_stored_coordinates_without_virtual_authorization() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut collection = mount(temp.path(), "forecast");
+    let id = "noaa-gfs-forecast-virtual";
+    std::fs::rename(temp.path().join("fixture-forecast"), temp.path().join(id)).unwrap();
+    collection["id"] = json!(id);
+    collection["assets"]["icechunk"]["icechunk:virtual_chunk_containers"] = json!([{"url_prefix":"s3://synthetic.example.test/chunks/","credentials":{"type":"s3","anonymous":true}}]);
+    catalog(temp.path(), &[collection.clone()]);
+    virtual_fixture_chunk(
+        temp.path(),
+        id,
+        "count/c/0/0/0/0",
+        "s3://synthetic.example.test/chunks/weather",
+    )
+    .await;
+    let server = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
+    let path = format!("/v1/forecasts/runs?dataProductId={id}");
+    let reply = server.request("GET", &path, &Value::Null).await;
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    assert_eq!(reply.json()["runs"].as_array().unwrap().len(), 2);
+    assert!(!reply.headers.contains_key("etag"));
+    assert_eq!(
+        reply.headers["cache-control"],
+        "public, max-age=30, stale-while-revalidate=120"
+    );
+    let mut body = support::payload();
+    body["queries"][0]["dataProductId"] = json!(id);
+    assert_eq!(
+        server.request("POST", "/v1/forecasts", &body).await.status,
+        500
+    );
+    // A virtual coordinate must remain unauthorized even when the product has
+    // HTTP containers. The local URL is outside the declaration as well, so a
+    // regression cannot send test traffic to an external service.
+    let prefix = format!("{}/forbidden/", server.host.url);
+    collection["assets"]["icechunk"]["icechunk:virtual_chunk_containers"] = json!([{"url_prefix":"https://chunks.dynamical.org/forbidden/","credentials":{"type":"http"}}]);
+    catalog(temp.path(), &[collection]);
+    virtual_fixture_chunk(
+        temp.path(),
+        id,
+        "init_time/c/0",
+        &format!("{prefix}coordinate"),
+    )
+    .await;
+    let fresh = Server::start_with_catalog_and_root(&[], None, Some(temp.path().to_owned())).await;
+    let refused = fresh.request("GET", &path, &Value::Null).await;
+    assert_eq!(refused.status, 500);
+    assert!(!refused.headers.contains_key("etag"));
+    assert!(!refused.headers.contains_key("retry-after"));
+    assert!(
+        server
+            .host
+            .reads
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|p| !p.contains("/forbidden/"))
+    );
+    assert!(
+        fresh
+            .host
+            .reads
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|p| !p.contains("/forbidden/"))
+    );
+}

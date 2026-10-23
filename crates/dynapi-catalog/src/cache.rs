@@ -20,6 +20,8 @@ pub enum Profile {
     #[default]
     Default,
     Routing,
+    /// Stored coordinate metadata with no virtual-container authorization.
+    Metadata,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RepositoryKey {
