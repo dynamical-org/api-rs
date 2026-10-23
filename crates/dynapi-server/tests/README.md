@@ -183,3 +183,36 @@ table covers all-path preflight before authentication and decoded-segment path
 boundaries. No external service, policy file or captured response is required.
 See the [generic ingress contract](../../../docs/ingress.md) for regeneration,
 header trust and deployment reachability ownership.
+
+## Integer encoding and detail lifecycle recipes
+
+`integer_encoding_breadth.rs` constructs fresh Icechunk repositories from the
+[reader input recipe](../../dynapi-reader/tests/fixtures/encoding-breadth/README.md).
+For each of the seven supported integer dtypes, forecast and analysis products
+retain seven hourly cells with the explicit minimum/zero/maximum/fill/7/1/fill
+values. Each encoded variable has an absent-chunk sibling with the same fill.
+Plain bytes, all three Blosc/Zstd shuffles at producer levels 0–9, forced memcpy
+frames, both shard index locations and the admitted LZ4/int16 standalone Zstd
+forms are queried over HTTP. Width-one bytes also exercise omitted, empty and
+null endian configuration. Every returned cell must be an integer JSON number;
+POST values, units and times and canonical GET data have explicit assertions.
+
+Independent fictional products contain at most 24 encodings apiece, with unique
+repository hrefs. This bounds sibling scans without aliasing dataset cache keys.
+Each forecast product also contains an int64 `anchor`, dimensions
+`[init_time, lead_time, latitude, longitude]`, values `[0,1,2,3,4,5,6]`.
+Selecting it preserves the run dimension when other variables are independent
+of initialization. Analysis time is int64 epoch seconds starting at
+`1785369600`, step 3600; forecast init is that epoch and lead is float64 seconds
+`[0,3600,7200,10800,14400,18000,21600]`. Both use latitude 44 and longitude 0.
+The input recipe supplies integer payloads; every repository and snapshot is
+created locally through the Rust Icechunk API. No external service is needed.
+
+The two detail-specific tests in `catalog_lifecycle.rs` use semaphore-held fetches,
+a fake monotonic clock and fixed maximum jitter. Startup requests intentionally
+expire their cold wait while the root/child flight is held; the same single
+flight later publishes the complete snapshot. Loaded detail requests retain the
+old generation during held/failed refreshes. Explicit clock boundaries assert
+backoff and recovery; a new generation publishes only after its final child
+finishes. Known, escaped and unknown IDs, cache/retry headers and compute-permit
+independence are checked through the native HTTP server.
