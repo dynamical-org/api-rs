@@ -4,7 +4,9 @@ Route/product inventory audited at Rust revision `f1b43f2` against reference
 Python service revision `203ec99` (2026-10-23): routes and OpenAPI, middleware/error handlers, catalog
 families, dataset encodings, representation routing and telemetry.
 The cited HTTP assertions also include follow-up tests added from `48f9abc`;
-the measured product sweep retains its original revision pin.
+the measured product sweep retains its original revision pin. Caller-location,
+integer-epoch staging and byte-sized Blosc frame assertions were refreshed against
+Rust revision `05bf01e` (2026-10-23); this does not re-run the original product sweep.
 
 **covered** means the linked Rust-owned test asserts the stated behavior;
 **deviation** links an intentional difference in [DEVIATIONS.md](../DEVIATIONS.md);
@@ -172,6 +174,7 @@ The admission details and independent byte/work budgets are in
 | CF float64 duration breadth | Full-decoding-unit and auxiliary-duration precision/selection cases | gap | [#10](https://github.com/dynamical-org/api/issues/10) |
 | Plain little-endian bytes; width-one omitted/null endian | Dataset/reader: admitted byte forms; big-endian and relaxed multibyte forms rejected | covered | [integer_coordinates.rs::one_byte_endian_forms_keep_multibyte_and_original_api_admission_strict][integer-coords] |
 | Plain Blosc/Zstd; indexed sharded Blosc/Zstd with bytes/CRC32C index | Dataset: physical float32, float64, int64 fixture reads follow numeric recipes | covered | [fixtures.rs::forecast_coordinates_metadata_and_cartesian_values_follow_the_recipe][dataset-fixtures] |
+| Blosc header typesize 1 under native-width metadata | Reader: float32/int64 exact bytes in full/partial and plain/sharded reads for byte shuffle, bitshuffle and no shuffle; other typesize mismatches and nonnative metadata rejected | covered | [blosc_typesize.rs::byte_typesize_float32_and_int64_decode_header_shuffle_for_partial_and_full_reads][blosc-typesize]; [blosc_typesize.rs::header_typesize_one_bitshuffle_preserves_partial_and_full_numeric_bytes][blosc-typesize]; [blosc_typesize.rs::header_typesize_one_noshuffle_preserves_partial_and_full_numeric_bytes][blosc-typesize]; [blosc_typesize.rs::other_mismatches_and_byte_header_with_nonnative_metadata_stay_rejected][blosc-typesize]; narrow admission is documented in [D33](../DEVIATIONS.md#d33--explicit-catalog-codec-subset-and-lazy-data-variables) |
 | Sharded bytes; both index locations; all Blosc shuffle/level and memcpy/frame-corruption combinations | Complete selected-read, sparse/missing/corrupt-index and codec cross-product assertions | gap | [#10](https://github.com/dynamical-org/api/issues/10); metadata admission and happy-path sharded fixture reads do not prove this entire family |
 | WeatherNext float32 Blosc/LZ4 | Reader: compressed virtual payload, exact float bits, duplicate ordering, full/sparse range and decoded-unit charge | covered | [http.rs::weathernext_lz4_virtual_chunk][reader-http] |
 | Leading float32 scale_offset + bytes + Blosc | Dataset reader: separate float32 division/addition, rounded parameters, duplicate selection, NaN fill and deployed offset/scale examples | covered | [catalog_encodings.rs::leading_scale_offset_decodes_in_float32_before_selection_and_preserves_fill][encodings]; [catalog_encodings.rs::scale_offset_rounds_the_float32_quotient_before_adding_offset][encodings]; [catalog_encodings.rs::deployed_scale_offset_values_and_frame_validation_are_exact][encodings] |
@@ -235,7 +238,11 @@ for that product-level qualification; family-level fixture evidence is above.
 | Redirecting paths | Configured scheme + validated Host; ignored forwarded headers; accepted-socket fallback | covered | [server.rs::public_redirect_scheme_uses_host_and_ignores_forwarded_headers][server]; [server.rs::slash_redirect_falls_back_to_accepted_socket_authority][server] |
 | Application responses | Optional release marker / required origin auth / startup validation | deviation | [D27](../DEVIATIONS.md#d27--optional-deployment-identity-authentication-and-redirect-scheme), [D9](../DEVIATIONS.md#d9--startup-configuration-validation) |
 | Public route/method surface and trusted headers | Origin behavior agrees with edge route/method admission, rate policy and origin-auth/viewer-location header transforms | gap | [#33](https://github.com/dynamical-org/api/issues/33); public reachability and header-policy alignment need qualification independently of origin response tests |
-| Data products using `wn.dynamical.org` | Authenticated viewer location, pre-compute gate, 451/503/retry, fail-closed cache and private no-store responses | gap | [#13](https://github.com/dynamical-org/api/issues/13); the application gate is absent from the pinned reference revision, while its edge viewer-location/auth headers are present |
+| Container-aware dataset/repository cache identity | Container type/prefix changes miss both caches, declaration reordering keeps identity, and key storage counts toward cache bytes | covered | [D36](../DEVIATIONS.md#d36--container-identity-in-repository-and-dataset-cache-keys); [cache.rs::container_changes_miss_dataset_and_repository_caches][cache]; [cache.rs::container_order_is_not_repository_identity][cache]; [cache.rs::container_key_storage_is_charged_before_cache_retention][cache] |
+| Gated-product selection and checked recipe | Exact proxy host on any HTTP container selects the gate; failed catalog lookup does not suppress the next check; refresh during a check opens that checked generation and a changed recipe misses cache next time | covered | [geo_gate_tests.rs::metadata_selects_any_http_container_on_exact_proxy_host][geo-gate-component] (component); [geo_gate.rs::failed_catalog_lookup_does_not_skip_the_next_check][geo-gate]; [geo_gate.rs::catalog_refresh_during_check_opens_exactly_the_checked_recipe][geo-gate] |
+| Data products using `wn.dynamical.org` | Origin and viewer authentication required to forward location; denied mixed batch opens no dataset; allowed POST/canonical responses retain ETags with private no-store | covered | [geo_gate.rs::location_needs_both_current_auth_headers_and_nonempty_fields][geo-gate]; [geo_gate.rs::a_refused_mixed_batch_never_opens_any_dataset_and_releases_admission][geo-gate]; [geo_gate.rs::allowed_post_and_canonical_keep_data_and_etags_but_never_shared_cache][geo-gate] |
+| Caller-location failures and cache | Missing secret and unexpected status/redirect: 503/Retry-After 5; oversized answers: uncached 503; 204/451 decisions use country/region keys, with 451 expiry asserted at 300 seconds | covered | [geo_gate.rs::absent_secret_fails_closed_without_asking_but_direct_and_unknown_are_unchanged][geo-gate]; [geo_gate.rs::unsuccessful_checks_redirects_and_oversized_details_are_uncached][geo-gate]; [geo_gate.rs::allow_and_deny_cache_keys_include_country_region_and_expire_at_five_minutes][geo-gate]; timeout/transport assertions are component-only: [geo_gate_tests.rs::transport_errors_and_hard_timeout_are_retryable_and_uncached][geo-gate-component] |
+| Caller-location placement, resource bounds and privacy | Busy-before-catalog/lookup order; analyses/runs gate before their 501 stubs; bounded/coalesced checks and private responses after identification | deviation | [D37](../DEVIATIONS.md#d37--viewer-trust-and-gate-placement), [D38](../DEVIATIONS.md#d38--bounded-and-coalesced-location-checks), [D39](../DEVIATIONS.md#d39--response-privacy-and-secret-handling); [geo_gate.rs::forecast_and_canonical_busy_precede_catalog_unknown_products_and_geo_checks][geo-gate]; [geo_gate.rs::run_and_analysis_stubs_gate_before_compute_without_serving_data][geo-gate]; [geo_gate.rs::responses_after_identification_are_private_including_validation_errors][geo-gate]; [geo_gate_tests.rs::identical_checks_coalesce_and_cancelled_callers_leave_bounded_deadline_tasks][geo-gate-component]; [geo_gate_tests.rs::cached_entries_and_owned_bytes_have_separate_hard_bounds][geo-gate-component] |
 | Native HTTP/1 | Hyper parser behavior, bounded connections/header/body/idle deadlines | deviation | [D10](../DEVIATIONS.md#d10--hyper-http1-wire-parsing-and-bounded-native-connections) |
 | HTTPS repository / virtual payload reader | No redirects, exact prefix/range/length checks, response caps; trusted repository metadata expansion remains | deviation | [D24](../DEVIATIONS.md#d24--bounded-readonly-repository-http-transport); payload/component tests do not qualify an arbitrary remote repository |
 | HTTP virtual payload reader | Declared-prefix success, duplicate values and exact requested byte range | covered | [http.rs::allowed_virtual_chunk_http_repository][reader-http] |
@@ -264,7 +271,8 @@ Network delivery requires the separate `telemetry-delivery` build feature.
 | Native errors / heartbeat resources | Static error categories/native stacks and nativeThreads replace Python-specific context | deviation | [D19](../DEVIATIONS.md#d19--native-error-categories-and-explicit-sdk-context), [D20](../DEVIATIONS.md#d20--native-heartbeat-resource-counters) |
 | Optional analytics/error network delivery | Bounded queues/records, timeout/loss policy, explicit shutdown and SDK context differences | deviation | [D21](../DEVIATIONS.md#d21--optional-bounded-delivery-adapters); delivery-only tests require that feature and are separate from the harness-only test listing |
 | Stdout backpressure | Bounded dropping preserves request availability; loss counters/diagnostic | deviation | [D23](../DEVIATIONS.md#d23--bounded-stdout-delivery-under-backpressure) |
-| Routing/geo-gate telemetry | Shadow/auto counters/provenance and viewer-policy denial/error conditions | gap | [#3](https://github.com/dynamical-org/api/issues/3), [#13](https://github.com/dynamical-org/api/issues/13) |
+| Geo-gate privacy in telemetry | Refusal containing the configured secret fails closed without copying it into response or captured telemetry | covered | [geo_gate.rs::denial_text_trims_python_whitespace_and_empty_text_has_fallback][geo-gate]; this specific assertion does not establish the full denial/error event field and counter table |
+| Routing and geo-gate telemetry breadth | Shadow/auto counters/provenance and complete viewer-policy denial/error event assertions | gap | [#3](https://github.com/dynamical-org/api/issues/3), [#10](https://github.com/dynamical-org/api/issues/10); implemented gate HTTP behavior does not establish complete telemetry conditions |
 
 ## Readiness and drain
 
@@ -285,7 +293,7 @@ and measured product results together. Re-list tests with
 `cargo-slot test --locked --workspace --features dynapi-server/harness -- --list`
 and read the cited assertions; use a feature-enabled listing for delivery-only
 tests. Keep gaps open until their specific assertions and migration evidence
-exist. Recheck the newer caller-location contract and routing/co-tile/open-load
+exist. Recheck caller-location ordering/privacy deviations and routing/co-tile/open-load
 telemetry when adopting a later reference pin. Do not infer coverage from an
 issue's closed state, a test name, an OpenAPI schema or a successful small request.
 
@@ -318,5 +326,7 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [analyses]: ../crates/dynapi-server/tests/analyses.rs
 [analysis-contract]: ../crates/dynapi-contract/tests/analyses.rs
 [data-service]: ../crates/dynapi-server/src/data.rs
-
 [server-geo]: ../crates/dynapi-server/tests/geo_gate.rs
+[geo-gate]: ../crates/dynapi-server/tests/geo_gate.rs
+[geo-gate-component]: ../crates/dynapi-server/src/geo_gate_tests.rs
+[blosc-typesize]: ../crates/dynapi-reader/tests/blosc_typesize.rs
