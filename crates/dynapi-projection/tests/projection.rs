@@ -3,10 +3,7 @@ use dynapi_projection::{
 };
 
 fn close(actual: f64, expected: f64, tolerance: f64) {
-    assert!(
-        (actual - expected).abs() <= tolerance,
-        "{actual:?} != {expected:?}"
-    );
+    assert!((actual - expected).abs() <= tolerance);
 }
 
 #[test]

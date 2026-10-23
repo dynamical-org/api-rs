@@ -337,10 +337,6 @@ the deployment's actual shutdown grace. Rust subprocess tests verify completion,
 connection refusal, stuck-handler expiry and a worker retaining its permit
 through stuck synchronous cleanup.
 
-## D-proj-1 — Correct HRDPS rotated geographic selection
-
-## D-proj-1 — HRDPS rotated operation matches the reference
-
 ## D29 — HRDPS rotated operation matches the reference
 
 This is an alignment note, not an active contract deviation. Both the reference
