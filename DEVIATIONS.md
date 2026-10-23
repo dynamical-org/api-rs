@@ -365,7 +365,7 @@ metadata policy. The library alone enables no service route.
 - Tests: `ascending_descending_and_duplicate_ties_choose_first_array_index`, `bounds_use_median_unique_spacing_and_are_inclusive`, `singleton_and_constant_axes_have_zero_tolerance`, and `invalid_axes_and_points_fail_before_selection` own explicit axis arrays and adjacent representable boundary values.
 
 
-## D-enc-1 — Catalog decoded-unit ceiling
+## D32 — Catalog decoded-unit ceiling
 
 - The reference Python service has no equivalent 16 MiB per-float-chunk admission
   ceiling. Rust now admits up to **56 MiB (58,720,256 bytes)** per decoded float
@@ -384,7 +384,7 @@ metadata policy. The library alone enables no service route.
   with and without scale/offset. `decoded_unit_boundaries_and_zstd_window_are_fixed`
   checks exact-byte limits and the small native Zstd frame/window policy.
 
-## D-enc-2 — Explicit catalog codec subset and lazy data variables
+## D33 — Explicit catalog codec subset and lazy data variables
 
 - The reference Python service supports more Zarr extension combinations. Rust
   adds leading float32 `scale_offset` only with NaN fill, numeric finite float32
