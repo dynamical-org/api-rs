@@ -329,34 +329,18 @@ impl DataService {
         }
         result
     }
-    fn open_unobserved(
-        &self,
+    fn open_recipe(
         product: &Product,
         snapshot: Option<&str>,
         profile: Profile,
-        handle: &tokio::runtime::Handle,
-    ) -> Result<(Arc<OpenedDataset>, dynapi_catalog::cache::CacheStatus), QueryError> {
+    ) -> Result<(DatasetKey, dynapi_catalog::ReaderConfig), QueryError> {
         let recipe = if profile == Profile::Metadata {
             // Replace all persisted authorization with an empty set. Required
             // coordinates must be physically stored; virtual coordinates fail
             // closed without a virtual fetch. Never share this session with
             // point-serving handles, even when they use the same snapshot.
-            let store = match &product.icechunk {
-                dynapi_catalog::RepositoryLocation::Http(location) => {
-                    dynapi_reader::StoreDescriptor::Http {
-                        url: location.url.trim_end_matches('/').into(),
-                    }
-                }
-                dynapi_catalog::RepositoryLocation::S3(location) => {
-                    dynapi_reader::StoreDescriptor::AnonymousS3 {
-                        bucket: location.bucket.clone(),
-                        prefix: location.prefix.clone(),
-                        region: location.region.clone(),
-                    }
-                }
-            };
             dynapi_catalog::ReaderConfig {
-                store,
+                store: product.store_descriptor(),
                 containers: Vec::new(),
             }
         } else {
@@ -364,6 +348,16 @@ impl DataService {
                 .reader_config()
                 .map_err(|e| QueryError::internal(e.to_string()))?
         };
+        Ok((DatasetKey::new(product, snapshot, profile), recipe))
+    }
+    fn open_unobserved(
+        &self,
+        product: &Product,
+        snapshot: Option<&str>,
+        profile: Profile,
+        handle: &tokio::runtime::Handle,
+    ) -> Result<(Arc<OpenedDataset>, dynapi_catalog::cache::CacheStatus), QueryError> {
+        let (key, recipe) = Self::open_recipe(product, snapshot, profile)?;
         #[cfg(feature = "harness")]
         let recipe = if let Some(base) = &self.config.fixture_store_base {
             dynapi_catalog::ReaderConfig {
@@ -376,7 +370,7 @@ impl DataService {
             recipe
         };
         let opened = self.cache.open(
-            DatasetKey::new(product, snapshot, profile),
+            key,
             || {
                 let id = match snapshot {
                     Some(id) => id.to_owned(),
@@ -1104,6 +1098,129 @@ mod tests {
         assert_eq!(usage.counters["load:warm"], 1);
         assert_eq!(usage.counters["readGroups"], 1);
         assert_eq!(usage.counters["groupedReadValues"], 2);
+    }
+
+    fn recipe_product(repository: &str, kind: &str) -> Product {
+        let prefix = if kind == "s3" {
+            "s3://example-chunks/data/"
+        } else {
+            "https://chunks.dynamical.org/example/"
+        };
+        let mut value = serde_json::json!({"id":"example-forecast","assets":{"icechunk":{
+            "href":repository,
+            "icechunk:virtual_chunk_containers":[{"url_prefix":prefix,"credentials":{"type":kind,"anonymous":true}}]
+        }}});
+        if repository.starts_with("s3://") {
+            value["assets"]["icechunk"]["xarray:storage_options"] =
+                serde_json::json!({"client_kwargs":{"region_name":"us-west-2"}});
+        }
+        Product::from_stac(&value).unwrap()
+    }
+
+    #[test]
+    fn metadata_open_recipe_removes_http_and_s3_virtual_authorization() {
+        use dynapi_reader::StoreDescriptor;
+        for repository in [
+            "https://data.dynamical.org/example/repository/",
+            "s3://example-bucket/data/",
+        ] {
+            for kind in ["http", "s3"] {
+                let product = recipe_product(repository, kind);
+                assert_eq!(product.virtual_chunk_containers().len(), 1);
+                let (_, recipe) =
+                    DataService::open_recipe(&product, None, Profile::Metadata).unwrap();
+                assert!(
+                    recipe.containers.is_empty(),
+                    "metadata authorized {kind} containers"
+                );
+                // Full reads reject S3 authorization today. Clearing only the
+                // declarations lets its repository mapping be compared anyway.
+                let mut stored_only = product.clone();
+                stored_only.repository_config["virtual_chunk_containers"] = serde_json::json!([]);
+                let full = stored_only.reader_config().unwrap();
+                match (recipe.store, full.store) {
+                    (StoreDescriptor::Http { url }, StoreDescriptor::Http { url: full_url }) => {
+                        assert_eq!(url, full_url);
+                        assert_eq!(url, "https://data.dynamical.org/example/repository");
+                    }
+                    (
+                        StoreDescriptor::AnonymousS3 {
+                            bucket,
+                            prefix,
+                            region,
+                        },
+                        StoreDescriptor::AnonymousS3 {
+                            bucket: full_bucket,
+                            prefix: full_prefix,
+                            region: full_region,
+                        },
+                    ) => {
+                        assert_eq!(
+                            (&bucket, &prefix, &region),
+                            (&full_bucket, &full_prefix, &full_region)
+                        );
+                        assert_eq!(
+                            (bucket.as_str(), prefix.as_str(), region.as_str()),
+                            ("example-bucket", "data", "us-west-2")
+                        );
+                    }
+                    stores => panic!("different repository mappings: {stores:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_and_full_open_recipe_keys_keep_cache_handles_separate() {
+        use dynapi_catalog::cache::CacheStatus;
+        let product = recipe_product("https://data.dynamical.org/example/repository/", "http");
+        for snapshot in [None, Some("example-snapshot")] {
+            for profiles in [
+                [Profile::Default, Profile::Metadata],
+                [Profile::Metadata, Profile::Default],
+            ] {
+                let clock: SharedClock = Arc::new(crate::Monotonic::default());
+                let cache = DatasetCache::with_defaults(clock);
+                let first_key = DataService::open_recipe(&product, snapshot, profiles[0])
+                    .unwrap()
+                    .0;
+                let second_key = DataService::open_recipe(&product, snapshot, profiles[1])
+                    .unwrap()
+                    .0;
+                assert_ne!(first_key, second_key);
+                assert_ne!(first_key.repository_key(), second_key.repository_key());
+                // Exercise the actual recipe keys, including both opening
+                // orders: a metadata session must neither inherit nor remove
+                // the full profile's authorization through cache reuse.
+                for (index, profile) in profiles.into_iter().cycle().take(4).enumerate() {
+                    let key = DataService::open_recipe(&product, snapshot, profile)
+                        .unwrap()
+                        .0;
+                    let opened = cache
+                        .open(
+                            key,
+                            || {
+                                Ok::<_, QueryError>(Resolved {
+                                    snapshot_id: "example-snapshot".into(),
+                                    session: (),
+                                })
+                            },
+                            |_| Ok(profile),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        opened.cache_status,
+                        if index < 2 {
+                            CacheStatus::Miss
+                        } else {
+                            CacheStatus::Hit
+                        }
+                    );
+                    assert_eq!(*opened.dataset, profile);
+                }
+                assert_eq!(cache.len(), 2);
+            }
+        }
     }
 
     #[test]
