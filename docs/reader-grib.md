@@ -170,9 +170,9 @@ These are Rust allocation and source-lifetime witnesses, not allocator fragmenta
 RSS, upstream metadata/cache, shared pool, cancellation or transport proofs.
 External migration comparisons remain outside repository fixtures. Constant-profile
 rejection deliberately differs from the reference decoder's wrong values/panic;
-future HTTP error mapping is not established here. See D35 and D36 in
+future HTTP error mapping is not established here. See D35 and D43 in
 DEVIATIONS.md. D35 describes the earlier 5.0/5.3 slice; the separate CCSDS
-qualification here and in D36 extends that private library profile.
+qualification here and in D43 extends that private library profile.
 
 Format references: [NCEP 5.0](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-0.shtml),
 [NCEP 5.3](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp5-3.shtml),

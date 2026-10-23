@@ -557,9 +557,7 @@ until virtual GRIB support is implemented. No new public status is introduced.
 - Rationale: retain admission with native dataset work while releasing ownership for an abandoned async request.
 - Tests: `cancellation_during_async_location_check_releases_admission_before_worker_start`; `every_route_holds_its_caller_after_disconnect_until_physical_work_finishes` covers the dataset-worker boundary on all four routes.
 
-## D-virt-2 — Private CCSDS qualification has an explicit bounded profile
-
-## D36 — Private CCSDS qualification has an explicit bounded profile
+## D43 — Private CCSDS qualification has an explicit bounded profile
 
 - The unwired native GRIB module admits 5.42 only with options 14, block 32,
   RSI 128 and the checked integer/stream profile in
