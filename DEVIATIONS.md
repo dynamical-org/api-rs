@@ -435,3 +435,24 @@ metadata policy. The library alone enables no service route.
   ETag invariants, out-of-domain errors, dtype/units/membership, identity/CRS/index
   precedence and the unsupported-target path. No service captures supply expected
   public test results.
+
+## D35 — Private bounded GRIB qualification rejects unqualified constants
+
+- The unwired native GRIB module validates complete f64 data planes before calling
+  pinned gribberish 1.5.0. It admits qualified 5.0/5.3 profiles within 32 MiB encoded
+  and 56 MiB padded decoded limits. It deliberately rejects zero-bit 5.0 fields,
+  empty bitmap streams, and zero-group 5.3 fields; zero descriptor octets are
+  rejected as an unsupported width rather than a constant field. The reference
+  codec can return wrong zeros or panic for these cases. A typed rejection is an
+  intentional safe failure, not a claim of Python exception or HTTP status parity.
+- Additional width, integer-intermediate, f32 table-alignment, scan, scaling and
+  ignored-reference restrictions are explicit in [the qualification contract](docs/reader-grib.md).
+  Valid but unqualified inputs remain unsupported; no general decoder replacement,
+  CCSDS/image admission, public API, reader wiring or product enablement follows.
+- The Lambert data path admits messages whose reference coordinate projector
+  would fail or panic, because ordering does not construct that projector.
+  Coordinate/CRS validity must be gated at integration before projected selection.
+- Rust-owned constructed fixtures establish admitted numeric/missing/order/scaling
+  behavior and constant rejections. Allocation tests include retained input through
+  result conversion and distinguish peak live requests from cumulative allocations.
+  They do not establish shared-pool, native/RSS or whole-process bounds.
