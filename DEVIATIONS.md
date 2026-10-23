@@ -536,7 +536,7 @@ use product-ID exceptions. The 422 applies only when charged metadata still
 exceeds the cap after applicable bounded coordinate staging. The reference Python
 service does not impose this Rust bound.
 
-## D-an-2 — Metadata-only run discovery and virtual exclusions
+## D41 — Metadata-only run discovery and virtual exclusions
 
 Run listing uses a separate Metadata dataset-cache profile, retaining product,
 repository, snapshot and original container identity in the keys. The reader
