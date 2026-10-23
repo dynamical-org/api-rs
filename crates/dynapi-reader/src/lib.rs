@@ -2098,6 +2098,15 @@ fn validate_array_path(array_path: &str) -> Result<(), ReaderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_gcs_and_azure_configs_remain_deserializable() {
+        // Stored container configs are parsed before the reader replaces them.
+        for config in [r#"{"gcs":{}}"#, r#"{"azure":{}}"#] {
+            let parsed = serde_json::from_str::<icechunk::ObjectStoreConfig>(config);
+            assert!(parsed.is_ok(), "{config}: {parsed:?}");
+        }
+    }
     #[test]
     fn member_zstd_encoded_boundary_frames_are_valid_and_size_checked() {
         for raw in [false, true] {
