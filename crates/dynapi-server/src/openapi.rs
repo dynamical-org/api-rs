@@ -551,6 +551,16 @@ fn responses(schema: V, errors: bool, data: bool, post: bool, validation: bool) 
         responses.push(("503", retryable(
             if data { "Server busy, catalog unavailable, or upstream data read timed out or was throttled" } else { "Server busy or catalog unavailable" },
             if data { "Seconds to wait when server busy or upstream data timed out or was throttled; may be absent for catalog errors" } else { "Seconds to wait when server busy; may be absent for catalog errors" }, post)));
+        responses.push((
+            "451",
+            object([
+                (
+                    "description",
+                    V::from("Data product not available in the caller's location"),
+                ),
+                ("content", content(reference("ErrorDetail"))),
+            ]),
+        ));
     }
     if validation {
         responses.push(("422", validation_error()));
@@ -1108,6 +1118,49 @@ mod tests {
 
     #[test]
     fn response_schemas_include_unions_nullability_routing_and_retry_headers() {
+        let document = spec();
+        for (path, method) in [
+            ("/v1/forecasts", "post"),
+            ("/v1/analyses", "post"),
+            ("/v1/forecasts/runs", "get"),
+            (
+                "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}",
+                "get",
+            ),
+        ] {
+            let refusal = &document["paths"][path][method]["responses"]["451"];
+            assert_eq!(
+                refusal["content"]["application/json"]["schema"]["$ref"],
+                "#/components/schemas/ErrorDetail"
+            );
+            assert_eq!(
+                refusal,
+                &json!({
+                    "description":"Data product not available in the caller's location",
+                    "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorDetail"}}}
+                })
+            );
+            let responses = &document["paths"][path][method]["responses"];
+            assert_eq!(
+                responses
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["200", "429", "503", "451", "422"]
+            );
+            assert_eq!(
+                refusal
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["description", "content"]
+            );
+        }
+
         let document = spec();
         let schemas = &document["components"]["schemas"];
         assert_eq!(

@@ -28,7 +28,7 @@ pub enum RepositoryLocation {
     S3(IcechunkLocation),
     Http(IcechunkHttpLocation),
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VirtualChunkContainer {
     pub url_prefix: String,
     #[serde(rename = "type")]

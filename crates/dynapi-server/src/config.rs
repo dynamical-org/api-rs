@@ -8,6 +8,9 @@ pub const MAX_HEADER_BYTES: usize = 417_792;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub origin_secret: Option<String>,
+    pub(crate) geo_check_secret: Option<crate::geo_gate::Secret>,
+    #[cfg(feature = "harness")]
+    pub(crate) geo_check_url: Option<String>,
     pub release: Option<hyper::header::HeaderValue>,
     pub public_scheme: String,
     pub catalog_wait: Duration,
@@ -148,6 +151,25 @@ impl Config {
             finalization_timeout,
             main_dataset_ttl_seconds,
             origin_secret,
+            geo_check_secret: values
+                .get("DYNAMICAL_API_GEO_CHECK_SECRET")
+                .map(|value| crate::geo_gate::Secret::parse(value))
+                .transpose()?
+                .flatten(),
+            #[cfg(feature = "harness")]
+            geo_check_url: values
+                .get("DYNAPI_HARNESS_GEO_CHECK_URL")
+                .map(|value| {
+                    let url =
+                        reqwest::Url::parse(value).map_err(|_| "Invalid harness geo-check URL")?;
+                    if url.scheme() != "http"
+                        || !matches!(url.host_str(), Some("127.0.0.1" | "[::1]"))
+                    {
+                        return Err("Harness geo-check URL must use a loopback HTTP server");
+                    }
+                    Ok(value.clone())
+                })
+                .transpose()?,
             max_connections,
             header_read_timeout: timeout("DYNAMICAL_API_HEADER_READ_TIMEOUT_SECONDS", "10")?,
             body_read_timeout: timeout("DYNAMICAL_API_BODY_READ_TIMEOUT_SECONDS", "30")?,

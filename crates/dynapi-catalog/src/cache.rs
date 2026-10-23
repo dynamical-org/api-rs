@@ -1,6 +1,9 @@
 //! A bounded cache of opaque dataset handles. Resolver/opener closures own all
 //! storage I/O. Identical keys coalesce; unrelated keys never wait on that I/O.
-use crate::{CatalogError, Clock, Collection, RepositoryLocation, collection::python_repr};
+use crate::{
+    CatalogError, Clock, Collection, RepositoryLocation, VirtualChunkContainer,
+    collection::python_repr,
+};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,6 +26,7 @@ pub struct RepositoryKey {
     pub collection_id: String,
     pub location: RepositoryLocation,
     pub profile: Profile,
+    pub containers: Vec<VirtualChunkContainer>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DatasetKey {
@@ -30,14 +34,18 @@ pub struct DatasetKey {
     pub location: RepositoryLocation,
     pub snapshot_id: Option<String>,
     pub profile: Profile,
+    pub containers: Vec<VirtualChunkContainer>,
 }
 impl DatasetKey {
     pub fn new(collection: &Collection, snapshot_id: Option<&str>, profile: Profile) -> Self {
+        let mut containers = collection.virtual_chunk_containers();
+        containers.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.url_prefix.cmp(&b.url_prefix)));
         Self {
             collection_id: collection.id.clone(),
             location: collection.icechunk.clone(),
             snapshot_id: snapshot_id.map(str::to_owned),
             profile,
+            containers,
         }
     }
     pub fn repository_key(&self) -> RepositoryKey {
@@ -45,6 +53,7 @@ impl DatasetKey {
             collection_id: self.collection_id.clone(),
             location: self.location.clone(),
             profile: self.profile,
+            containers: self.containers.clone(),
         }
     }
 }
@@ -250,6 +259,16 @@ impl<C: Clock, H> DatasetCache<C, H> {
             .saturating_add(key.collection_id.capacity())
             .saturating_add(key.snapshot_id.as_ref().map_or(0, String::capacity))
             .saturating_add(location_bytes)
+            .saturating_add(
+                key.containers
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<VirtualChunkContainer>()),
+            )
+            .saturating_add(key.containers.iter().fold(0usize, |bytes, container| {
+                bytes
+                    .saturating_add(container.kind.capacity())
+                    .saturating_add(container.url_prefix.capacity())
+            }))
             .saturating_add(opened.snapshot_id.capacity());
         if bytes > self.max_bytes {
             return;

@@ -14,6 +14,95 @@ fn key(id: &str, snapshot: Option<&str>) -> DatasetKey {
         Profile::Default,
     )
 }
+fn container_key(containers: serde_json::Value, snapshot: Option<&str>) -> DatasetKey {
+    let value = serde_json::json!({"id":"example-forecast","assets":{"icechunk":{"href":"s3://example-bucket/data/","xarray:storage_options":{"client_kwargs":{"region_name":"us-west-2"}}}}});
+    let mut collection = Collection::from_stac(&value).unwrap();
+    collection.repository_config["virtual_chunk_containers"] = containers;
+    DatasetKey::new(&collection, snapshot, Profile::Default)
+}
+
+#[test]
+fn container_changes_miss_dataset_and_repository_caches() {
+    use dynapi_catalog::cache::RepositoryCache;
+    let proxy =
+        serde_json::json!([{"type":"http","url_prefix":"https://wn.dynamical.org/chunks/"}]);
+    for containers in [
+        serde_json::json!([]),
+        serde_json::json!([{"type":"http","url_prefix":"https://chunks.example.test/other/"}]),
+        serde_json::json!([{"type":"s3","url_prefix":"https://wn.dynamical.org/chunks/"}]),
+    ] {
+        for snapshot in [None, Some("example-snapshot")] {
+            let before = container_key(proxy.clone(), snapshot);
+            let after = container_key(containers.clone(), snapshot);
+            let count = AtomicUsize::new(0);
+            let cache = DatasetCache::with_defaults(Arc::new(FakeClock::default()));
+            assert_eq!(
+                open(&cache, before.clone(), "s1", &count).cache_status,
+                CacheStatus::Miss
+            );
+            assert_eq!(
+                open(&cache, after.clone(), "s1", &count).cache_status,
+                CacheStatus::Miss
+            );
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                open(&cache, before.clone(), "s1", &count).cache_status,
+                CacheStatus::Hit
+            );
+            assert_eq!(
+                open(&cache, after.clone(), "s1", &count).cache_status,
+                CacheStatus::Hit
+            );
+            let repositories = RepositoryCache::default();
+            let first = repositories
+                .get_or_open(before.repository_key(), || Ok::<_, CatalogError>(1))
+                .unwrap();
+            let second = repositories
+                .get_or_open(after.repository_key(), || Ok::<_, CatalogError>(2))
+                .unwrap();
+            assert_eq!((*first, *second), (1, 2));
+        }
+    }
+}
+
+#[test]
+fn container_order_is_not_repository_identity() {
+    let a = serde_json::json!({"type":"http","url_prefix":"https://chunks.example.test/a/"});
+    let b = serde_json::json!({"type":"http","url_prefix":"https://chunks.example.test/b/"});
+    let first = container_key(serde_json::json!([a.clone(), b.clone()]), None);
+    let reordered = container_key(serde_json::json!([b, a]), None);
+    assert_eq!(first, reordered);
+    assert_eq!(first.repository_key(), reordered.repository_key());
+}
+
+#[test]
+fn container_key_storage_is_charged_before_cache_retention() {
+    let cache =
+        DatasetCache::with_defaults(Arc::new(FakeClock::default())).with_byte_limit(4096, |_| 0);
+    let count = AtomicUsize::new(0);
+    open(
+        &cache,
+        container_key(serde_json::json!([]), None),
+        "s1",
+        &count,
+    );
+    assert_eq!(cache.len(), 1);
+    let large = container_key(
+        serde_json::json!([{
+            "type":"http", "url_prefix":format!("https://chunks.example.test/{}", "x".repeat(8192))
+        }]),
+        None,
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            open(&cache, large.clone(), "s1", &count).cache_status,
+            CacheStatus::Miss
+        );
+        assert_eq!(cache.len(), 1);
+        assert!(cache.metadata_bytes() <= 4096);
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 3);
+}
 fn open(
     cache: &DatasetCache<Arc<FakeClock>, usize>,
     key: DatasetKey,

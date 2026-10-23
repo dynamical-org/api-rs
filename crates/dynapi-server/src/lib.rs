@@ -3,6 +3,7 @@ mod catalog_routes;
 pub mod config;
 mod data;
 mod documentation;
+mod geo_gate;
 mod openapi;
 mod robots;
 pub mod telemetry;
@@ -109,6 +110,7 @@ pub struct App {
     sink: Arc<dyn Telemetry>,
     started: Instant,
     data: Arc<data::DataService>,
+    geo_gate: geo_gate::GeoGate,
     robots_headers: Vec<(&'static str, String)>,
 }
 impl Drop for App {
@@ -146,8 +148,10 @@ impl App {
             data::DataService::new(&config, clock.clone(), catalog.clone())?
                 .with_load_observer(loads.clone()),
         );
+        let geo_gate = geo_gate::GeoGate::new(&config, clock.clone())?;
         Ok(Self {
             data,
+            geo_gate,
             catalog,
             gate: ComputeGate::new(config.compute_slots, config.busy_retry_after, clock.clone())?,
             rate: Mutex::new(RateLimiter::new(config.rate, clock.clone())?),
@@ -328,6 +332,12 @@ impl App {
                 .headers_mut()
                 .insert("cache-control", cache.parse().unwrap());
         }
+        if usage.lock().unwrap().geo_checked {
+            response.headers_mut().insert(
+                "cache-control",
+                HeaderValue::from_static(geo_gate::NO_STORE),
+            );
+        }
         add_headers(&mut response, simple_cors(origin.is_some(), status == 500));
         response
             .headers_mut()
@@ -482,6 +492,16 @@ impl App {
                 .insert("allow", route.methods.join(", ").parse().unwrap());
             return Ok(result);
         }
+        let viewer_trusted = self.config.origin_secret.as_ref().is_some_and(|secret| {
+            ["x-dynamical-origin-auth", "x-dynamical-viewer-auth"]
+                .iter()
+                .all(|name| {
+                    request
+                        .headers()
+                        .get(*name)
+                        .is_some_and(|value| bool::from(value.as_bytes().ct_eq(secret.as_bytes())))
+                })
+        });
         Ok(match route.template {
             "/" => redirect(301, "https://dynamical.org/api/"),
             "/healthz" => response(
@@ -498,6 +518,7 @@ impl App {
                 documentation::serve(route.template)
             }
             "/v1/forecasts" => {
+                let geo_headers = request.headers().clone();
                 let content_type = request
                     .headers()
                     .get("content-type")
@@ -522,27 +543,28 @@ impl App {
                         }),
                     ),
                     ValidationResult::Valid(payload) => {
-                        self.data.forecasts(payload, &self.gate, usage).await
+                        let ids: Vec<_> = payload
+                            .queries
+                            .iter()
+                            .map(|q| q.data_product_id.as_str())
+                            .collect();
+                        let Some(permit) = self.admit_data(&ids, &usage) else {
+                            return Ok(data::busy(&self.gate));
+                        };
+                        match self
+                            .checked_catalog(&ids, true, true, &geo_headers, viewer_trusted, &usage)
+                            .await
+                        {
+                            Ok(catalog) => {
+                                self.data.forecasts(payload, catalog, permit, usage).await
+                            }
+                            Err(response) => response,
+                        }
                     }
                 }
             }
             "/v1/data/{dataProductId}/{snapshotId}/points/{gridIndices}" => {
-                let params: Vec<_> = request
-                    .uri()
-                    .query()
-                    .unwrap_or("")
-                    .split('&')
-                    .filter(|p| !p.is_empty())
-                    .map(|pair| {
-                        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-                        let decode = |v: &str| {
-                            percent_encoding::percent_decode_str(&v.replace('+', " "))
-                                .decode_utf8_lossy()
-                                .into_owned()
-                        };
-                        (decode(key), decode(value))
-                    })
-                    .collect();
+                let params = query_values(request.uri().query().unwrap_or(""));
                 match dynapi_contract::validation::validate_canonical(&params) {
                     Err(invalid) => response(
                         invalid.status,
@@ -555,21 +577,152 @@ impl App {
                     ),
                     Ok(params) => {
                         let parts: Vec<_> = path.split('/').collect();
+                        let Some(permit) = self.admit_data(&[parts[3]], &usage) else {
+                            return Ok(data::busy(&self.gate));
+                        };
+                        let catalog = match self
+                            .checked_catalog(
+                                &[parts[3]],
+                                false,
+                                false,
+                                request.headers(),
+                                viewer_trusted,
+                                &usage,
+                            )
+                            .await
+                        {
+                            Ok(catalog) => catalog,
+                            Err(response) => return Ok(response),
+                        };
                         self.data
                             .canonical(
-                                parts[3],
+                                catalog.collections[parts[3]].clone(),
                                 parts[4].into(),
                                 parts[6],
                                 params,
-                                &self.gate,
+                                permit,
                                 usage,
                             )
                             .await
                     }
                 }
             }
+            "/v1/forecasts/runs" => {
+                let id = query_values(request.uri().query().unwrap_or(""))
+                    .into_iter()
+                    .rev()
+                    .find(|(key, _)| key == "dataProductId")
+                    .map(|(_, value)| value);
+                if let Some(id) = id
+                    && let Err(response) = self
+                        .checked_catalog(
+                            &[&id],
+                            true,
+                            false,
+                            request.headers(),
+                            viewer_trusted,
+                            &usage,
+                        )
+                        .await
+                {
+                    return Ok(response);
+                }
+                self.stub()
+            }
+            "/v1/analyses" => {
+                let geo_headers = request.headers().clone();
+                let bytes =
+                    match collect_body(request.into_body(), self.config.body_read_timeout).await {
+                        Ok(bytes) => bytes,
+                        Err(RequestError::BodyTooLarge) => {
+                            return Ok(detail(413, "Request body exceeds 16777216 bytes"));
+                        }
+                        Err(error) => return Err(error),
+                    };
+                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let ids: Vec<_> = body["queries"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|query| {
+                            query
+                                .get("dataProductId")
+                                .or_else(|| query.get("data_product_id"))
+                                .and_then(serde_json::Value::as_str)
+                        })
+                        .collect();
+                    if !ids.is_empty()
+                        && let Err(response) = self
+                            .checked_catalog(
+                                &ids,
+                                false,
+                                false,
+                                &geo_headers,
+                                viewer_trusted,
+                                &usage,
+                            )
+                            .await
+                    {
+                        return Ok(response);
+                    }
+                }
+                self.stub()
+            }
             _ => self.stub(),
         })
+    }
+    fn admit_data(&self, ids: &[&str], usage: &data::SharedUsage) -> Option<dynapi_policy::Permit> {
+        {
+            let mut state = usage.lock().unwrap();
+            state.products = ids.iter().map(|id| (*id).to_owned()).collect();
+            state.query_count = Some(ids.len());
+            state.read_values = Some(0);
+        }
+        self.gate.try_acquire()
+    }
+    async fn checked_catalog(
+        &self,
+        ids: &[&str],
+        forecast: bool,
+        defer_unknown: bool,
+        headers: &hyper::HeaderMap,
+        trusted: bool,
+        usage: &data::SharedUsage,
+    ) -> Result<Arc<dynapi_catalog::refresh::Snapshot>, HttpResponse> {
+        {
+            let mut state = usage.lock().unwrap();
+            state.products = ids.iter().map(|id| (*id).to_owned()).collect();
+            state.query_count = Some(ids.len());
+        }
+        let snapshot = self.data.snapshot(usage).await.map_err(data::query_error)?;
+        for id in ids {
+            let Some(product) = snapshot
+                .collections
+                .get(*id)
+                .filter(|p| !forecast || p.kind() != "unknown")
+            else {
+                // Forecast workers retain input-order selection/budget errors. A
+                // missing product cannot need a check; known gated siblings still do.
+                if defer_unknown {
+                    continue;
+                }
+                return Err(detail(
+                    404,
+                    &format!(
+                        "Unknown data product {}",
+                        dynapi_contract::output::python_repr(id)
+                    ),
+                ));
+            };
+            if geo_gate::required(product) {
+                usage.lock().unwrap().geo_checked = true;
+                self.geo_gate
+                    .check(headers, trusted)
+                    .await
+                    .map_err(geo_gate::Failure::response)?;
+            }
+        }
+        Ok(snapshot)
     }
     #[cfg(feature = "harness")]
     pub fn inject_read_failure(&self, error: dynapi_reader::ReaderError) {
@@ -1034,4 +1187,20 @@ fn find_route(path: &str) -> Option<Route> {
             parts.next().is_none()
         })
         .copied()
+}
+
+fn query_values(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            let decode = |text: &str| {
+                percent_encoding::percent_decode_str(&text.replace('+', " "))
+                    .decode_utf8_lossy()
+                    .into_owned()
+            };
+            (decode(key), decode(value))
+        })
+        .collect()
 }
