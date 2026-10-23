@@ -486,6 +486,39 @@ impl Collection {
             },
         }
     }
+    /// Explicit source-aware recipe for independently qualified callers. This
+    /// does not enable a product in the service or grant native provider access.
+    #[cfg(feature = "reader")]
+    pub fn reader_source_config(&self) -> Result<ReaderSourceConfig, CatalogError> {
+        use dynapi_reader::VirtualSourceDeclaration;
+        let mut sources = Vec::new();
+        for container in self.virtual_chunk_containers() {
+            let source = match container.kind.as_str() {
+                "http" => VirtualSourceDeclaration::Http {
+                    url_prefix: container.url_prefix,
+                    name: None,
+                },
+                "s3" => VirtualSourceDeclaration::AnonymousS3 {
+                    url_prefix: container.url_prefix,
+                    name: None,
+                },
+                "gcs" => VirtualSourceDeclaration::AnonymousGcs {
+                    url_prefix: container.url_prefix,
+                    name: None,
+                },
+                _ => {
+                    return Err(CatalogError::new(
+                        "Reader does not support this virtual source",
+                    ));
+                }
+            };
+            sources.push(source);
+        }
+        Ok(ReaderSourceConfig {
+            store: self.store_descriptor(),
+            sources,
+        })
+    }
     /// Pure mapping. Retain non-HTTP containers in the recipe, but reject them
     /// for the current reader rather than silently dropping access declarations.
     #[cfg(feature = "reader")]
@@ -516,4 +549,11 @@ impl Collection {
 pub struct ReaderConfig {
     pub store: dynapi_reader::StoreDescriptor,
     pub containers: Vec<dynapi_reader::HttpVirtualChunkContainer>,
+}
+
+#[cfg(feature = "reader")]
+#[derive(Debug)]
+pub struct ReaderSourceConfig {
+    pub store: dynapi_reader::StoreDescriptor,
+    pub sources: Vec<dynapi_reader::VirtualSourceDeclaration>,
 }

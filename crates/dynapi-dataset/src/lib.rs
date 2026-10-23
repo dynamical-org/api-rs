@@ -5,7 +5,10 @@ use dynapi_contract::Value;
 use dynapi_query::{
     Coordinate, DataReader, DatasetView, Positions, QueryError, Selection, SpatialCrs, Variable,
 };
-pub use dynapi_reader::{DatasetVersion, HttpVirtualChunkContainer, StoreDescriptor};
+pub use dynapi_reader::{
+    DatasetVersion, HttpVirtualChunkContainer, PreparedSources, StoreDescriptor,
+    VirtualSourceDeclaration, prepare_sources,
+};
 use dynapi_reader::{ErrorKind, ReadSession, ReaderError, Selector, TypedBuffer, cf_time};
 use serde_json::Value as Json;
 use tokio::runtime::Handle;
@@ -81,7 +84,58 @@ impl OpenedDataset {
                 }
                 OpenError::Reader(error)
             })?;
-        let raw = session.root_metadata(limit).await.map_err(|error| {
+        Self::from_session_bounded(session, limit).await
+    }
+    pub async fn open_prepared(
+        prepared: &PreparedSources,
+        version: DatasetVersion<'_>,
+    ) -> Result<Arc<Self>, OpenError> {
+        let session = ReadSession::open_prepared(prepared, version)
+            .await
+            .map_err(|error| {
+                if let DatasetVersion::Snapshot(id) = version
+                    && error.kind == ErrorKind::Snapshot
+                    && error.message.starts_with("Unknown snapshot ")
+                {
+                    OpenError::UnknownSnapshot(id.into())
+                } else {
+                    OpenError::Reader(error)
+                }
+            })?;
+        Self::from_session_bounded(session, MAX_METADATA_BYTES).await
+    }
+    pub async fn open_with_sources(
+        descriptor: &StoreDescriptor,
+        version: DatasetVersion<'_>,
+        sources: &[VirtualSourceDeclaration],
+    ) -> Result<Arc<Self>, OpenError> {
+        let session = ReadSession::open_with_sources(descriptor, version, sources)
+            .await
+            .map_err(|error| {
+                if let DatasetVersion::Snapshot(id) = version
+                    && error.kind == ErrorKind::Snapshot
+                    && error.message.starts_with("Unknown snapshot ")
+                {
+                    OpenError::UnknownSnapshot(id.into())
+                } else {
+                    OpenError::Reader(error)
+                }
+            })?;
+        Self::from_session_bounded(session, MAX_METADATA_BYTES).await
+    }
+    /// Complete an already pinned opaque session without reopening it.
+    pub async fn from_read_session(session: ReadSession) -> Result<Arc<Self>, OpenError> {
+        Self::from_session_bounded(session, MAX_METADATA_BYTES).await
+    }
+    async fn from_session_bounded(
+        session: ReadSession,
+        limit: usize,
+    ) -> Result<Arc<Self>, OpenError> {
+        let policy_bytes = session.retained_source_policy_bytes();
+        let remaining = limit
+            .checked_sub(policy_bytes)
+            .ok_or(OpenError::MetadataLimit { limit })?;
+        let raw = session.root_metadata(remaining).await.map_err(|error| {
             if error.kind == ErrorKind::SizeLimit {
                 OpenError::MetadataLimit { limit }
             } else {
@@ -90,6 +144,7 @@ impl OpenedDataset {
         })?;
         let mut budget = Budget::new(limit);
         budget.add(std::mem::size_of::<Self>() + session.snapshot_id().len())?;
+        budget.add(policy_bytes)?;
         // Charge both serialized staging and parsed JSON before coordinate reads.
         for (name, bytes) in &raw {
             budget.add(name.len() + bytes.len())?;
@@ -399,6 +454,25 @@ impl DataReader for DatasetReader<'_> {
 }
 
 pub fn map_reader_error(error: ReaderError) -> QueryError {
+    if let Some(kind) = error.virtual_failure {
+        return match kind {
+            dynapi_reader::VirtualFailureKind::SlowDown
+            | dynapi_reader::VirtualFailureKind::OperationTimeout => {
+                QueryError::upstream_unavailable()
+            }
+            dynapi_reader::VirtualFailureKind::PreparationUnavailable => QueryError {
+                status: 503,
+                detail: "Server busy; retry after 5 seconds".into(),
+                retry_after: Some(5),
+                exception_class: None,
+            },
+            dynapi_reader::VirtualFailureKind::Generic
+            | dynapi_reader::VirtualFailureKind::ObjectModified => QueryError {
+                exception_class: Some("StorageError"),
+                ..QueryError::internal(error.message)
+            },
+        };
+    }
     if error.kind == ErrorKind::Storage {
         let mut query = QueryError::from_storage_failure(error.virtual_chunk_fetch, error.message);
         if query.status == 500 {

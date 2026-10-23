@@ -469,3 +469,27 @@ Loopback unit tests cover physical HTTP/2 refused streams, outer connection
 retries, terminal-attempt transitions, validators, EOF/drop/deadline ownership,
 parser boundaries and measured parser scratch. These are transport witnesses;
 provider endpoint parity and whole-service memory remain qualification work.
+
+## Explicit anonymous source preparation
+
+The additive native `VirtualSourceDeclaration` API accepts typed HTTP, anonymous
+S3 and anonymous GCS grants. `prepare_sources` returns an opaque `PreparedSources`;
+`ReadSession::open_prepared` and `open_with_sources` share the same checked recipe.
+Existing HTTP-only calls and CLI JSON are unchanged. This prepares authorization
+and descriptors; provider numeric payloads and GRIB serving remain disabled.
+
+S3/GCS routing is captured freshly from stored configuration, constrained to the
+explicit declarations with matching persisted prefixes, and stripped of credentials,
+endpoints and arbitrary options. Native provider authorization-map entries stay absent. Named expansion
+is reauthorized against the original prefix; mapped ranges use checked arithmetic
+and deterministic HTTPS endpoints. The narrow source/key/region surface and policy
+cache identity are documented in D47. A source-aware dataset open charges the
+retained policy against its metadata budget. Capture precedes every source-aware
+cache lookup, even for a pinned snapshot.
+
+Preparation uses one process-wide owner and one absolute 90-second deadline.
+Cloning/delaying a prepared value does not restart it. Cancellation/expiry leaves
+upstream work owned until completion; no later stage or late cache insertion is
+allowed. An unexpected supervisor exit faults admission closed. Manifest preloading
+is explicitly disabled in this recipe, including through reopen; demanded metadata
+still works. See D48 for aftermath, overdue, shutdown and accounting limits.

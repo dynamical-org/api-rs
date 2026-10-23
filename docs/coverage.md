@@ -400,3 +400,17 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [scalar-zstd]: ../crates/dynapi-reader/tests/scalar_zstd.rs
 [reader-lib]: ../crates/dynapi-reader/src/lib.rs
 [encoding-recipe]: ../crates/dynapi-reader/tests/fixtures/encoding-breadth/README.md
+
+## Explicit source preparation and descriptor foundation
+
+No source-backed product is enabled by this foundation. GRIB dispatch, the one-S8
+worker gate, mixed-service process-memory qualification and product-by-product
+body/ETag comparison remain later integration/enablement gates.
+
+| Scope | Capability / failure | Status | Evidence |
+| --- | --- | --- | --- |
+| Preparation ownership | Cumulative absolute deadline, cancelled/expired bootstrap spec/config joins, capture/session late disposal, no replacement, overdue recovery, fault/runtime loss and bounded shutdown | component covered | [preparation tests](../crates/dynapi-reader/src/preparation/tests.rs), [actual loopback upstream witnesses](../crates/dynapi-reader/src/preparation/tests/upstream.rs); preload-override removal is tested outside the repository |
+| Source policy | Typed declarations, native-denied sanitized recipe, original key/prefix/name/region checks, scheme separation, shared public-API admission and retained-policy charge | component covered | [source tests](../crates/dynapi-reader/src/sources/tests.rs), [descriptor tests](../crates/dynapi-reader/src/sources/descriptor/tests.rs) |
+| Cache provenance | Fresh capture before branch/pinned lookup, changed route/name misses, invalid fresh route never serves old handle; policy IDs separate repository/dataset keys | component covered | [service source-cache tests](../crates/dynapi-server/src/data/source_tests.rs), [cache tests](../crates/dynapi-catalog/tests/cache.rs) |
+| Payload/error boundary | Only absent reference is fill; present empty/overflow fails, attested canonical chunk keys, provider numeric fail-closed, typed errors precede legacy diagnostics | component covered | [descriptor/source tests](../crates/dynapi-reader/src/sources/descriptor/tests.rs), [dataset lifecycle tests](../crates/dynapi-dataset/tests/lifecycle.rs); no GRIB serving implied |
+| Service enablement | Original-source GRIB values, worker/cancellation lifetime, integrated resource headroom and historical per-product parity | gap | D47/D48; component tests and sampled message sizes do not qualify these gates |

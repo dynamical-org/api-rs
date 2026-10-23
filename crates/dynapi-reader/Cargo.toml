@@ -17,6 +17,7 @@ zarrs_storage.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "=0.10.9"
 async-trait = "0.1"
 futures = "0.3"
 http-body = { version = "1", default-features = false }

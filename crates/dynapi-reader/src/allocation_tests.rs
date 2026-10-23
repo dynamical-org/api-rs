@@ -2,6 +2,7 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -14,7 +15,19 @@ pub(crate) struct Counts {
 thread_local! { static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) }; }
 
 struct Counter;
+// Test-only process counters pair allocations and frees across upstream blocking
+// threads. Thread-local Counts cannot prove retention when ownership crosses one.
+static PROCESS_LIVE: AtomicUsize = AtomicUsize::new(0);
+static PROCESS_PEAK: AtomicUsize = AtomicUsize::new(0);
+static PROCESS_MEASURING: AtomicBool = AtomicBool::new(false);
 fn change(allocate: usize, release: usize) {
+    let peak = PROCESS_LIVE
+        .fetch_add(allocate, Ordering::SeqCst)
+        .saturating_add(allocate);
+    if PROCESS_MEASURING.load(Ordering::SeqCst) {
+        PROCESS_PEAK.fetch_max(peak, Ordering::SeqCst);
+    }
+    PROCESS_LIVE.fetch_sub(release, Ordering::SeqCst);
     let _ = COUNTS.try_with(|state| {
         if let Some(mut counts) = state.get() {
             counts.total = counts.total.saturating_add(allocate);
@@ -69,5 +82,31 @@ impl Measurement {
 impl Drop for Measurement {
     fn drop(&mut self) {
         COUNTS.with(|state| state.set(None));
+    }
+}
+
+/// Use only in an isolated test subprocess: all Rust allocations on all threads
+/// are counted, including unrelated runtime/client state. Native malloc/RSS is
+/// outside this measurement. Existing thread-local decoder witnesses stay scoped.
+pub(crate) struct AllThreads {
+    pub baseline: usize,
+}
+impl AllThreads {
+    pub fn start() -> Self {
+        assert!(!PROCESS_MEASURING.swap(true, Ordering::SeqCst));
+        let baseline = PROCESS_LIVE.load(Ordering::SeqCst);
+        PROCESS_PEAK.store(baseline, Ordering::SeqCst);
+        Self { baseline }
+    }
+    pub fn live(&self) -> usize {
+        PROCESS_LIVE.load(Ordering::SeqCst)
+    }
+    pub fn peak(&self) -> usize {
+        PROCESS_PEAK.load(Ordering::SeqCst)
+    }
+}
+impl Drop for AllThreads {
+    fn drop(&mut self) {
+        PROCESS_MEASURING.store(false, Ordering::SeqCst);
     }
 }

@@ -11,8 +11,7 @@ use icechunk_arrow_object_store::object_store::{
 };
 use std::{ops::Range, sync::Arc};
 
-#[cfg_attr(not(test), allow(dead_code))] // Provider entry points wait for descriptor wiring.
-mod provider;
+pub(crate) mod provider;
 mod transport;
 
 #[derive(Debug, Clone)]

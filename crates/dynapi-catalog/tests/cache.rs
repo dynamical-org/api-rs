@@ -436,3 +436,32 @@ fn byte_weight_evicts_lru_and_never_retains_oversized_handles() {
     assert_eq!(insert("huge", 8).cache_status, CacheStatus::Miss);
     assert_eq!(*a.dataset, 3); // Eviction cannot invalidate an active reader.
 }
+
+#[test]
+fn captured_source_policies_separate_dataset_and_repository_handles() {
+    use dynapi_catalog::cache::RepositoryCache;
+    for snapshot in [None, Some("example-snapshot")] {
+        let legacy = key("example-forecast", snapshot);
+        let first = legacy.clone().with_source_policy([1; 32]);
+        let second = legacy.clone().with_source_policy([2; 32]);
+        assert_eq!(legacy.source_policy_id, None);
+        let count = AtomicUsize::new(0);
+        let cache = DatasetCache::with_defaults(Arc::new(FakeClock::default()));
+        let repositories = RepositoryCache::default();
+        for (number, key) in [legacy, first, second].into_iter().enumerate() {
+            assert_eq!(
+                open(&cache, key.clone(), "same-snapshot", &count).cache_status,
+                CacheStatus::Miss
+            );
+            assert_eq!(
+                open(&cache, key.clone(), "same-snapshot", &count).cache_status,
+                CacheStatus::Hit
+            );
+            let handle = repositories
+                .get_or_open(key.repository_key(), || Ok::<_, CatalogError>(number))
+                .unwrap();
+            assert_eq!(*handle, number);
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+}

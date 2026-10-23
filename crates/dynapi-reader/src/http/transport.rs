@@ -128,12 +128,14 @@ pub(super) struct FetchContext {
     pub policy: Policy,
     terminal: Arc<Mutex<ProviderFailure>>,
     required: RequiredValidator,
+    destination: Option<Arc<(reqwest::Url, Range<u64>)>>,
 }
 impl FetchContext {
     pub(super) fn new(policy: Policy) -> Self {
         Self {
             policy,
             required: RequiredValidator::None,
+            destination: None,
             terminal: Arc::new(Mutex::new(ProviderFailure::Generic)),
         }
     }
@@ -191,6 +193,7 @@ impl BoundedRangeTransport {
     ) -> Result<HttpVirtualChunkResponse, VirtualReferenceError> {
         let expected = expected_length(range)?;
         if matches!(context.policy, Policy::Provider(_)) {
+            context.destination = Some(Arc::new((url.clone(), range.clone())));
             context.required = match checksum {
                 Some(Checksum::ETag(_)) => RequiredValidator::ETag,
                 Some(Checksum::LastModified(_)) => RequiredValidator::LastModified,
@@ -308,6 +311,19 @@ impl HttpService for Connector {
             })
             .filter(|(first, end)| first < end)
             .ok_or_else(|| invalid_response("Expected a bounded HTTP byte range"))?;
+        // object_store may resume an ETag-bearing partial body at a later
+        // start within the same logical range. The fixed end and original
+        // destination remain authoritative; resumption shares the retry budget.
+        if let Some(expected) = &self.context.destination
+            && (request.uri() != expected.0.as_str()
+                || request.method() != reqwest::Method::GET
+                || range.0 < expected.1.start
+                || range.1 != expected.1.end)
+        {
+            return Err(invalid_response(
+                "Provider destination or range changed before send",
+            ));
+        }
         let guard = AttemptGuard::start(self.transport.attempts.clone());
         let response = HttpService::call(&self.transport.client, request).await?;
         let (parts, body) = response.into_parts();
@@ -459,5 +475,34 @@ mod tests {
         assert!(connector.call(request).await.is_err());
         assert_eq!(context.failure(), ProviderFailure::Generic);
         assert_eq!(transport.attempts.counts(), (0, 0, 0, 0));
+    }
+    #[tokio::test]
+    async fn provider_destination_and_range_are_rechecked_before_every_send() {
+        let transport = BoundedRangeTransport::new(true).unwrap();
+        for (uri, span) in [
+            ("https://example.invalid/other", "bytes=7-10"),
+            ("https://other.invalid/file", "bytes=7-10"),
+            ("http://example.invalid/file", "bytes=7-10"),
+            ("https://example.invalid/file?q=x", "bytes=7-10"),
+            ("https://example.invalid/file", "bytes=6-10"),
+            ("https://example.invalid/file", "bytes=7-11"),
+        ] {
+            let mut context = FetchContext::new(Policy::Provider(Provider::S3));
+            context.destination = Some(Arc::new((
+                reqwest::Url::parse("https://example.invalid/file").unwrap(),
+                7..11,
+            )));
+            context.set_failure(ProviderFailure::SlowDown);
+            let connector = Connector {
+                transport: transport.clone(),
+                context: context.clone(),
+            };
+            let mut request = HttpRequest::new(Vec::<u8>::new().into());
+            *request.uri_mut() = uri.parse().unwrap();
+            request.headers_mut().insert("range", span.parse().unwrap());
+            assert!(connector.call(request).await.is_err());
+            assert_eq!(context.failure(), ProviderFailure::Generic);
+            assert_eq!(transport.attempts.counts(), (0, 0, 0, 0));
+        }
     }
 }
