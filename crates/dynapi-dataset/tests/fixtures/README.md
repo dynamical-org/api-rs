@@ -158,3 +158,18 @@ Inventory totals and derived query-axis annotations are not test expectations.
 The separate `bounds` test binary owns the counting allocator and uses declared
 axis sizes, byte widths, caps and fixed margins; it must remain isolated from
 ordinary concurrent tests.
+
+
+The `epoch_coordinates` tests build a local repository at runtime. Its int64
+`time` axis has 524,289 elements in one padded Blosc v2 memcpy chunk (little
+endian, typesize 8), CF seconds since 1970-01-01 and proleptic_gregorian. Stored
+seconds are NaT (`i64::MIN`) at index 0, 2 at indices 262,143/262,144, 7 at
+262,145, 1 at the last index, and 20 elsewhere. A lazy float32 `count` variable
+uses that dimension. Assertions derive every decoded nanosecond from these
+integers, preserve duplicate/source order and the late unsorted record, and select
+`[2,7)` or the last positional record. A second recipe replaces the last epoch
+with `i64::MAX`; conversion must fail after earlier batches have succeeded.
+The `bounds` allocator test uses missing Blosc chunks filled with epoch zero at
+262,143/262,144/262,145/524,287/524,288/524,289/1,048,576 elements, chunk 4096,
+exact/one-over admission and the default cap. An unsupported calendar is refused
+before large selector allocation. These fixtures require no network or Python.

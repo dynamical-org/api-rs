@@ -46,6 +46,7 @@ static ALLOC: Counting = Counting;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn coordinate_staging_peak_obeys_cap_before_selectors_or_groups() {
     implicit_index_capacity_obeys_charge().await;
+    epoch_batches_obey_cap().await;
     // One MiB covers runtime task/thread initialization and this tiny repository's
     // upstream snapshot/manifest/cache allocations, which the adapter cannot charge.
     // It is independent of axis length and below 3.1% of the smallest tested cap.
@@ -161,5 +162,110 @@ async fn implicit_index_capacity_obeys_charge() {
         assert!(retained <= charge + MARGIN);
         assert!(peak <= charge + MARGIN);
         assert!(peak <= limit + MARGIN);
+    }
+}
+
+// Kept in the allocator test's single task so other tests cannot perturb LIVE.
+async fn epoch_batches_obey_cap() {
+    use dynapi_query::Coordinate;
+    const BATCH: usize = 262_144;
+    const MARGIN: usize = 1024 * 1024;
+    for size in [
+        BATCH - 1,
+        BATCH,
+        BATCH + 1,
+        2 * BATCH - 1,
+        2 * BATCH,
+        2 * BATCH + 1,
+        1_048_576,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut meta = common::axis(
+            "time",
+            "int64",
+            size,
+            4096,
+            json!({"units":"seconds since 1970-01-01","calendar":"proleptic_gregorian"}),
+        );
+        // Missing Blosc chunks have no payload scratch; count only adapter staging
+        // plus a fixed allowance for this tiny repository and runtime.
+        meta["codecs"] = json!([
+            {"name":"bytes","configuration":{"endian":"little"}},
+            {"name":"blosc","configuration":{"typesize":8,"cname":"zstd","clevel":3,"shuffle":"shuffle","blocksize":0}}
+        ]);
+        common::repository(temp.path(), &[("time", meta.clone(), None)]).await;
+        let descriptor = StoreDescriptor::Local(temp.path().to_str().unwrap().into());
+        // A full open establishes metadata overhead independently of the new plan.
+        let full = OpenedDataset::open_bounded(
+            &descriptor,
+            DatasetVersion::Branch("main"),
+            &[],
+            256 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+        let full_charge = full.metadata_bytes();
+        let groups = size.div_ceil(4096);
+        let overhead = full_charge - (size * 160 + groups * 512 + "time".len() + 64);
+        let batch_charge =
+            overhead + size * 8 + size.min(BATCH) * 160 + groups * 512 + "time".len() + 64;
+        drop(full);
+        let charge = full_charge.min(batch_charge);
+        for limit in [charge - 1, charge, MAX_METADATA_BYTES] {
+            let baseline = LIVE.load(Relaxed);
+            PEAK.store(baseline, Relaxed);
+            let result = OpenedDataset::open_bounded(
+                &descriptor,
+                DatasetVersion::Branch("main"),
+                &[],
+                limit,
+            )
+            .await;
+            let peak = PEAK.load(Relaxed).saturating_sub(baseline);
+            eprintln!("epoch size={size} limit={limit} peak={peak} charge={charge}");
+            if limit < charge {
+                assert!(matches!(result, Err(OpenError::MetadataLimit { .. })));
+                assert!(peak < MARGIN, "preflight allocated {peak}");
+            } else {
+                let ds = result.unwrap();
+                let Coordinate::Time(values) = &ds.view().coordinates["time"] else {
+                    panic!("epoch coordinate");
+                };
+                assert_eq!(values.len(), size);
+                assert_eq!(values.capacity(), size);
+                assert!(values.iter().all(|x| *x == 0));
+                assert!(ds.metadata_bytes() <= limit);
+                assert!(
+                    peak <= ds.metadata_bytes() + MARGIN,
+                    "peak={peak} charge={}",
+                    ds.metadata_bytes()
+                );
+                assert!(
+                    LIVE.load(Relaxed).saturating_sub(baseline) <= ds.metadata_bytes() + MARGIN
+                );
+                if limit == charge {
+                    assert_eq!(ds.metadata_bytes(), charge);
+                }
+            }
+        }
+        // A different calendar must not gain admission through the fallback.
+        meta["attributes"]["calendar"] = json!("standard");
+        let invalid = tempfile::tempdir().unwrap();
+        common::repository(invalid.path(), &[("time", meta, None)]).await;
+        let baseline = LIVE.load(Relaxed);
+        PEAK.store(baseline, Relaxed);
+        let result = OpenedDataset::open(
+            &StoreDescriptor::Local(invalid.path().to_str().unwrap().into()),
+            DatasetVersion::Branch("main"),
+            &[],
+        )
+        .await;
+        assert!(result.is_err());
+        if size * 160 > MAX_METADATA_BYTES {
+            assert!(
+                matches!(result, Err(OpenError::Reader(e)) if e.kind == dynapi_reader::ErrorKind::Unsupported)
+            );
+            assert!(PEAK.load(Relaxed).saturating_sub(baseline) < MARGIN);
+        }
     }
 }

@@ -16,6 +16,7 @@ serde_json = { workspace = true, features = ["arbitrary_precision", "preserve_or
 serde.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 sha2 = "0.10"
 icechunk.workspace = true
 tempfile = "3"

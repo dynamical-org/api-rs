@@ -90,6 +90,7 @@ does not establish that the edge allows that request.
 | Admission order | Rate debit before validation; validation before compute; busy 503/Retry-After | covered | [server.rs::validation_precedes_compute_but_follows_rate_debit][server] |
 | Request bytes | 16 MiB body cap and 413 envelope | deviation | [D6](../DEVIATIONS.md#d6--bounded-http-request-bodies); **cutover-pending** limit decision: [#31](https://github.com/dynamical-org/api/issues/31) |
 | Metadata/response bytes | Metadata/cache/materialization byte bounds | deviation | [D13](../DEVIATIONS.md#d13--bounded-opened-dataset-metadata), [D14](../DEVIATIONS.md#d14--byte-bounded-dataset-retention-and-response-materialization) |
+| Large integer-epoch coordinates | Dataset: bounded selector staging with exact eager values, NaT/gaps/duplicates, half-open analysis windows and last positional time; exact/one-over byte admission and isolated allocation peaks | covered | [bounds.rs::coordinate_staging_peak_obeys_cap_before_selectors_or_groups][dataset-bounds]; [epoch_coordinates.rs::batched_epochs_keep_nat_gaps_duplicates_source_order_and_analysis_bounds][epoch-coordinates]; [epoch_coordinates.rs::invalid_epoch_in_a_later_batch_cannot_return_a_partial_dataset][epoch-coordinates]; [epoch.rs::epoch_plan_requires_the_exact_encoding_and_checked_charge][epoch]; [epoch.rs::epoch_batches_preserve_order_and_exact_boundaries][epoch]; [epoch.rs::epoch_deadline_spans_all_batches_and_drops_inflight_work][epoch]; [epoch.rs::cancelling_epoch_axis_drops_inflight_selectors][epoch] |
 | Dataset reuse | Miss/hit/30-second revalidation; immutable pinned hit; disabled cache/zero TTL miss | covered | [forecasts.rs::forecasts_and_canonical_links_own_values_units_headers_and_usage][forecasts]; [forecasts.rs::disabled_dataset_cache_and_zero_ttl_never_report_hits][forecasts] |
 | Dataset retention | Main and pinned entries share LRU capacity; byte eviction and oversized entry non-retention | covered | [forecasts.rs::main_and_pinned_snapshots_share_the_configured_lru_capacity][forecasts]; [cache.rs::byte_weight_evicts_lru_and_never_retains_oversized_handles][cache] (cache component) |
 | Response headers | Stable repeat body/ETag, cache status, Server-Timing phase order; analytics work units equal response header | covered | [forecasts.rs::forecasts_and_canonical_links_own_values_units_headers_and_usage][forecasts] |
@@ -202,7 +203,7 @@ for that product-level qualification; family-level fixture evidence is above.
 | `noaa-gfs-analysis`, `noaa-gfs-analysis-virtual`; `noaa-gefs-analysis`, `noaa-gefs-analysis-0-25-degree-virtual` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); virtual GRIB dependency also [#3](https://github.com/dynamical-org/api/issues/3) |
 | `noaa-hrrr-analysis`, `noaa-hrrr-analysis-virtual`; `noaa-mrms-conus-analysis-hourly` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); native projected support does not complete analysis serving |
 | `ucsb-chc-chirps-analysis-final`, `ucsb-chc-chirps-analysis-preliminary` | Analysis POST remains 501 | gap | [#4](https://github.com/dynamical-org/api/issues/4); no claim that all analysis products work through canonical GET |
-| `nasa-imerg-analysis-early`, `nasa-imerg-analysis-late` | Eager coordinate staging exceeds the 64 MiB dataset-open metadata budget independently of the analysis POST stub (11 analysis products total across these four rows) | gap | [#30](https://github.com/dynamical-org/api/issues/30), [reader metadata-bound explanation](reader.md#catalog-units-and-staging-ledger); analysis POST also awaits [#4](https://github.com/dynamical-org/api/issues/4) |
+| `nasa-imerg-analysis-early`, `nasa-imerg-analysis-late` | Integer-epoch staging fits the unchanged 64 MiB open budget through generic bounded batches; analysis POST remains 501 (11 analysis products total across these four rows). Whole-product qualification remains separate from synthetic coordinate tests | gap | [#30](https://github.com/dynamical-org/api/issues/30), [dataset accounting](dataset.md); [epoch_coordinates.rs::batched_epochs_keep_nat_gaps_duplicates_source_order_and_analysis_bounds][epoch-coordinates]; analysis POST awaits [#4](https://github.com/dynamical-org/api/issues/4) |
 
 ## Shared data-route middleware and transport
 
@@ -297,3 +298,7 @@ issue's closed state, a test name, an OpenAPI schema or a successful small reque
 [policy]: ../crates/dynapi-policy/tests/policy.rs
 [refresh]: ../crates/dynapi-catalog/tests/refresh.rs
 [cache]: ../crates/dynapi-catalog/tests/cache.rs
+
+[dataset-bounds]: ../crates/dynapi-dataset/tests/bounds.rs
+[epoch-coordinates]: ../crates/dynapi-dataset/tests/epoch_coordinates.rs
+[epoch]: ../crates/dynapi-dataset/src/epoch.rs
