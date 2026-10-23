@@ -291,3 +291,199 @@ async fn abandoned_request_and_temporary_handle_do_not_close_but_final_app_drop_
         "STAC catalog is closed"
     );
 }
+
+struct FixedHooks;
+impl dynapi_catalog::native::RuntimeHooks for FixedHooks {
+    fn jitter(&self, low: f64, high: f64) -> f64 {
+        assert!(low <= high);
+        high
+    }
+    fn utc_now(&self) -> String {
+        "2026-01-01T00:00:00Z".into()
+    }
+    fn sleep(&self, seconds: f64) -> BoxFuture<'_, ()> {
+        Box::pin(tokio::time::sleep(Duration::from_secs_f64(seconds)))
+    }
+}
+fn detail_catalog(
+    fetches: Arc<Fetches>,
+    clock: Arc<TestClock>,
+    cold_wait_seconds: f64,
+) -> StacCatalog {
+    StacCatalog::with_dependencies(
+        "https://catalog.example.test/catalog.json",
+        CatalogConfig {
+            cold_wait_seconds,
+            ..CatalogConfig::default()
+        },
+        clock,
+        fetches,
+        Arc::new(FixedHooks),
+    )
+    .unwrap()
+}
+fn assert_detail(reply: &Reply, version: &str) {
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    assert_eq!(reply.json()["id"], "fixture-forecast");
+    assert_eq!(reply.json()["version"], version);
+    assert_eq!(
+        reply.headers["cache-control"],
+        "public, max-age=300, stale-while-revalidate=600"
+    );
+    assert!(!reply.headers.contains_key("etag"));
+    assert!(!reply.headers.contains_key("retry-after"));
+}
+
+#[tokio::test]
+async fn detail_startup_timeout_joins_one_flight_through_root_and_child_publication() {
+    let fetches = Fetches::new();
+    fetches.hold.store(true, Ordering::SeqCst);
+    let catalog = detail_catalog(fetches.clone(), Arc::new(TestClock::default()), 0.01);
+    let server = Server::start_with_catalog(&[], Some(catalog.clone())).await;
+    let _held: Vec<_> = (0..server.app.config.compute_slots)
+        .map(|_| server.app.gate.try_acquire().unwrap())
+        .collect();
+    server.app.warm_catalog();
+    until(|| fetches.count() == 1).await;
+    let paths = [
+        "/v1/data-products/fixture-forecast",
+        "/v1/data-products/missing",
+        "/v1/data-products/fixture%2Dforecast",
+    ];
+    for path in paths {
+        let reply = server.request("GET", path, &Value::Null).await;
+        assert_eq!(reply.status, 503);
+        assert_eq!(
+            reply.json(),
+            json!({"detail":"Timed out waiting for STAC catalog"})
+        );
+        for header in ["retry-after", "etag", "cache-control"] {
+            assert!(!reply.headers.contains_key(header));
+        }
+        assert_eq!(fetches.count(), 1);
+        assert!(catalog.status().refreshing);
+    }
+    fetches.release.add_permits(1);
+    until(|| fetches.count() == 2).await;
+    let waiting = server.request("GET", paths[0], &Value::Null).await;
+    assert_eq!(waiting.status, 503);
+    assert_eq!(fetches.count(), 2);
+    assert!(catalog.status().loaded_at.is_none());
+    fetches.release.add_permits(1);
+    until(|| catalog.status().loaded_at.is_some()).await;
+    assert_detail(
+        &server.request("GET", paths[0], &Value::Null).await,
+        "generation-1",
+    );
+    assert_detail(
+        &server.request("GET", paths[2], &Value::Null).await,
+        "generation-1",
+    );
+    let missing = server.request("GET", paths[1], &Value::Null).await;
+    assert_eq!(missing.status, 404);
+    assert_eq!(
+        missing.json(),
+        json!({"detail":"Unknown data product 'missing'"})
+    );
+    assert_eq!(fetches.count(), 2);
+    assert_eq!(catalog.status().consecutive_failures, 0);
+}
+
+#[tokio::test]
+async fn detail_backoff_stale_failure_and_held_refresh_publish_complete_generations() {
+    let fetches = Fetches::new();
+    fetches.fail.store(true, Ordering::SeqCst);
+    let clock = Arc::new(TestClock::default());
+    let catalog = detail_catalog(fetches.clone(), clock.clone(), 10.);
+    let server = Server::start_with_catalog(&[], Some(catalog.clone())).await;
+    server.app.warm_catalog();
+    until(|| catalog.status().consecutive_failures == 1).await;
+    for second in [0, 4] {
+        clock.0.store(second, Ordering::SeqCst);
+        let reply = server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await;
+        assert_eq!(reply.status, 503);
+        assert_eq!(
+            reply.json(),
+            json!({"detail":"STAC catalog refresh failed (HTTPStatusError)"})
+        );
+        assert!(!reply.headers.contains_key("retry-after"));
+        assert_eq!(fetches.count(), 1);
+    }
+    fetches.fail.store(false, Ordering::SeqCst);
+    clock.0.store(5, Ordering::SeqCst);
+    assert_detail(
+        &server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await,
+        "generation-1",
+    );
+    assert_eq!(fetches.count(), 3);
+    let original = catalog.snapshot().await.unwrap();
+    clock.0.store(305, Ordering::SeqCst);
+    fetches.fail.store(true, Ordering::SeqCst);
+    fetches.hold.store(true, Ordering::SeqCst);
+    assert_detail(
+        &server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await,
+        "generation-1",
+    );
+    until(|| fetches.count() == 4).await;
+    for _ in 0..3 {
+        assert_detail(
+            &server
+                .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+                .await,
+            "generation-1",
+        );
+    }
+    assert_eq!(fetches.count(), 4);
+    fetches.release.add_permits(1);
+    until(|| catalog.status().consecutive_failures == 1 && !catalog.status().refreshing).await;
+    assert!(Arc::ptr_eq(&original, &catalog.snapshot().await.unwrap()));
+    clock.0.store(334, Ordering::SeqCst);
+    assert_detail(
+        &server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await,
+        "generation-1",
+    );
+    assert_eq!(fetches.count(), 4);
+    fetches.fail.store(false, Ordering::SeqCst);
+    fetches.generation.store(2, Ordering::SeqCst);
+    clock.0.store(335, Ordering::SeqCst);
+    assert_detail(
+        &server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await,
+        "generation-1",
+    );
+    until(|| fetches.count() == 5).await;
+    fetches.release.add_permits(1);
+    until(|| fetches.count() == 6).await;
+    assert_detail(
+        &server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await,
+        "generation-1",
+    );
+    assert!(Arc::ptr_eq(&original, &catalog.snapshot().await.unwrap()));
+    fetches.release.add_permits(1);
+    until(|| !catalog.status().refreshing).await;
+    assert_detail(
+        &server
+            .request("GET", "/v1/data-products/fixture-forecast", &Value::Null)
+            .await,
+        "generation-2",
+    );
+    assert!(!Arc::ptr_eq(&original, &catalog.snapshot().await.unwrap()));
+    assert_eq!(catalog.status().consecutive_failures, 0);
+    assert_eq!(fetches.count(), 6);
+}
