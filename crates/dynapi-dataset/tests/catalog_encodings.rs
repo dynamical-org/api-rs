@@ -24,6 +24,19 @@ fn raw_zstd(input: &[u8]) -> Vec<u8> {
     frame
 }
 
+fn padded_member_zstd(raw: bool) -> Vec<u8> {
+    // RFC 8878: two decoded zero bytes, 82 empty non-final raw blocks,
+    // then a final RLE block (256 encoded bytes) or raw block (257).
+    let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x20, 2];
+    frame.resize(frame.len() + 82 * 3, 0);
+    if raw {
+        frame.extend_from_slice(&[0x11, 0, 0, 0, 0]);
+    } else {
+        frame.extend_from_slice(&[0x13, 0, 0, 0]);
+    }
+    frame
+}
+
 fn blosc() -> Json {
     json!({"name":"blosc","configuration":{"typesize":4,"cname":"lz4","clevel":5,"shuffle":"shuffle","blocksize":0}})
 }
@@ -96,6 +109,26 @@ async fn leading_scale_offset_decodes_in_float32_before_selection_and_preserves_
 }
 
 #[tokio::test]
+async fn scale_offset_rounds_the_float32_quotient_before_adding_offset() {
+    let mut meta = common::axis("data", "float32", 1, 1, json!({}));
+    meta["codecs"] = json!([
+        {"name":"scale_offset","configuration":{"scale":3,"offset":1}},
+        {"name":"bytes","configuration":{"endian":"little"}},blosc()
+    ]);
+    // IEEE binary32 division rounds 0x402ca9db / 3 before the +1.
+    // Keeping that quotient in binary64 would instead produce 0x3ff31be7.
+    let buffer = read(
+        meta,
+        Some(blosc_memcpy(&0x402ca9dbu32.to_le_bytes(), 4)),
+        &[Selector::Index(0)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(buffer.dtype, "float32");
+    assert_eq!(buffer.bytes, 0x3ff31be8u32.to_le_bytes());
+}
+
+#[tokio::test]
 async fn scale_offset_rejects_unattested_dtype_parameters_and_chain_order() {
     for codec in [
         json!({"name":"scale_offset","configuration":{"scale":0}}),
@@ -156,6 +189,61 @@ async fn int16_standalone_zstd_members_open_with_exact_values_and_edge_padding()
                 .collect::<Vec<_>>()
         );
     }
+}
+
+#[tokio::test]
+async fn member_zstd_decoded_bound_rejects_one_additional_int16_at_open_and_read() {
+    let mut meta = common::axis("ensemble_member", "int16", 65, 65, json!({}));
+    meta["codecs"] = json!([
+        {"name":"bytes","configuration":{"endian":"little"}},
+        {"name":"zstd","configuration":{"level":0,"checksum":false}}
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    common::repository(
+        temp.path(),
+        &[("ensemble_member", meta, Some(raw_zstd(&[0; 130])))],
+    )
+    .await;
+    let descriptor = StoreDescriptor::Local(temp.path().to_str().unwrap().into());
+    let opened = OpenedDataset::open(&descriptor, DatasetVersion::Branch("main"), &[]).await;
+    assert!(matches!(
+        opened,
+        Err(dynapi_dataset::OpenError::Reader(error)) if error.kind == ErrorKind::SizeLimit
+    ));
+    let session = ReadSession::open(&descriptor, DatasetVersion::Branch("main"), &[])
+        .await
+        .unwrap();
+    let error = session
+        .read_dataset_selection("ensemble_member", &[Selector::Index(0)], None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::SizeLimit);
+}
+
+#[tokio::test]
+async fn member_zstd_encoded_bound_accepts_256_and_rejects_257_before_fetch() {
+    let mut meta = common::axis("data", "int16", 1, 1, json!({}));
+    meta["codecs"] = json!([
+        {"name":"bytes","configuration":{"endian":"little"}},
+        {"name":"zstd","configuration":{"level":0,"checksum":false}}
+    ]);
+    let accepted = padded_member_zstd(false);
+    assert_eq!(accepted.len(), 256);
+    let buffer = read(meta.clone(), Some(accepted), &[Selector::Index(0)])
+        .await
+        .unwrap();
+    assert_eq!(buffer.bytes, 0i16.to_le_bytes());
+    let rejected = padded_member_zstd(true);
+    assert_eq!(rejected.len(), 257);
+    let error = read(meta, Some(rejected), &[Selector::Index(0)])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Decode);
+    // This message comes from getsize/range admission, before store.get.
+    assert!(
+        error.message.contains("Encoded chunk exceeds limit"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

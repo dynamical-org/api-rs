@@ -2087,6 +2087,26 @@ fn validate_array_path(array_path: &str) -> Result<(), ReaderError> {
 mod tests {
     use super::*;
     #[test]
+    fn member_zstd_encoded_boundary_frames_are_valid_and_size_checked() {
+        for raw in [false, true] {
+            // RFC 8878: single-segment content size 2, empty raw blocks, then
+            // two zero bytes in an RLE (4-byte) or raw (5-byte) final block.
+            let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x20, 2];
+            frame.resize(frame.len() + 82 * 3, 0);
+            frame.extend_from_slice(if raw {
+                &[0x11, 0, 0, 0, 0]
+            } else {
+                &[0x13, 0, 0, 0]
+            });
+            assert_eq!(frame.len(), if raw { 257 } else { 256 });
+            // Bypass the reader policy to prove that the over-limit control
+            // is a valid frame, rather than failing on unrelated corruption.
+            assert_eq!(zstd::bulk::decompress(&frame, 2).unwrap(), [0, 0]);
+            assert_eq!(validate_member_zstd(&frame, 2).is_ok(), !raw);
+        }
+    }
+
+    #[test]
     fn decoded_unit_boundaries_and_zstd_window_are_fixed() {
         assert_eq!(MAX_CHUNK_BYTES, 58_720_256);
         assert_eq!(chunk_limit("int16"), 16 * 1024 * 1024);

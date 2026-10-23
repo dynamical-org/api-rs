@@ -375,8 +375,10 @@ metadata policy. The library alone enables no service route.
 - The existing 64 MiB int64, 64 MiB output, 8 MiB index, selector/work and dataset
   metadata budgets stay independent. The largest new decode units are analysis
   arrays; this does not implement the analyses endpoint or increase IMERG's
-  dataset metadata budget. Concurrent decode callers must size pools using
-  `MAX_CHUNK_BYTES`; see `docs/reader.md` for the per-unit staging ledger.
+  dataset metadata budget. Concurrent decode pools must budget for the largest
+  admitted unit: the 64 MiB int64 ceiling, or
+  `max(MAX_CHUNK_BYTES, MAX_INTEGER_CHUNK_BYTES)`. See `docs/reader.md` for the
+  per-unit staging ledger.
 - Tests: `float_chunk_boundary_and_in_place_scale_obey_unit_staging_charge` checks
   exact-limit decoding, allocation charge and one-float-over preflight rejection,
   with and without scale/offset. `decoded_unit_boundaries_and_zstd_window_are_fixed`
@@ -398,8 +400,11 @@ metadata policy. The library alone enables no service route.
   a WeatherNext init_time tuple outside those profiles remains unsupported there.
 - Data variables are already lazy: supported siblings remain readable when another
   variable has an unsupported codec. Required query coordinates are eager and
-  may fail dataset open. Reference and Rust fixtures verify this behavior with
-  supported bytes data and a gzip sibling. HRDPS's auxiliary expected_forecast_length CF tuple
+  may fail dataset open. With a gzip sibling, both engines open and read supported
+  bytes data; the reference also reads gzip, while Rust rejects its selection.
+  For a codec neither engine resolves, the reference can fail the whole open
+  while Rust keeps supported siblings readable. This more lenient open is an
+  intentional deviation. HRDPS's auxiliary expected_forecast_length CF tuple
   remains outside the existing exact CF-time tuples; projected point selection
   and nested pressure-level query dimensions are separate unsupported contracts.
 - Tests use synthetic Rust-owned byte recipes, explicit decoded values and dtype

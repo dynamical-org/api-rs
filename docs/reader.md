@@ -322,8 +322,9 @@ The 56 MiB float ceiling (58,720,256 bytes) covers every inventoried root-array
 layout. Largest units are analysis arrays: IMERG 57,600,000 bytes, MRMS
 25,920,000 bytes and HRRR 17,496,000 bytes. IFS forecast units require
 17,756,160 bytes (15-day) and 18,213,120 bytes (46-day six-hourly).
-`MAX_CHUNK_BYTES` is the ceiling used by callers sizing concurrent decode pools;
-output, index, metadata, selector and work budgets remain independent.
+Concurrent decode pools must budget for the largest admitted per-dtype unit:
+64 MiB, the int64 ceiling (`max(MAX_CHUNK_BYTES, MAX_INTEGER_CHUNK_BYTES)`).
+Output, index, metadata, selector and work budgets remain independent.
 
 For one sequential numeric decode unit, a conservative Rust staging charge is
 `2E + 3D + 5I + O`, plus metadata and selector/group charges:
