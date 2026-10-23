@@ -11,7 +11,8 @@ cargo run --locked -p dynapi-reader --example construct_encoding_fixtures -- cra
 
 `inputs.json` identifies each raw buffer, literal integer values and producer
 frame. Its short shuffle-name aliases refer to the same level-three file;
-files are not duplicated. `duration-inputs.json` is a separate literal recipe
+files are not duplicated. These aliases are informational; the test matrices use
+the explicit level keys. `duration-inputs.json` is a separate literal recipe
 and is not rewritten by the constructor. Tests construct repositories, shard
 indexes, memcpy headers, scalar frames and corruptions in temporary directories.
 They derive expected numeric values from these literals and the formulas below.
@@ -51,11 +52,13 @@ CRC32C uses the reflected polynomial 0x82f63b78 and checks the independent
 faults, covering index overlap, range overflow, half-missing sentinels, outside
 payloads and invalid unselected entries. Bad CRC and short indexes are separate
 cases. All seven faults cross 63 configurations and both index locations:
-882 cases. See the [Zarr indexed sharding specification](https://zarr-specs.readthedocs.io/en/latest/v3/codecs/sharding-indexed/index.html).
+882 cases. Arithmetic faults additionally assert the adapter's pre-decode message,
+so a later decoder failure cannot stand in for that guard. See the [Zarr indexed sharding specification](https://zarr-specs.readthedocs.io/en/latest/v3/codecs/sharding-indexed/index.html).
 
-The 2,427 frame cases cross every configuration and all three layouts. They
+The 2,613 frame cases cross every configuration and all three layouts. They
 cover short headers, version/reserved/type/size/block fields, dispatch/shuffle
-fields, truncated/trailing data and compressed-stream length corruption.
+fields (byte-shuffle bit 0 and bitshuffle bit 2 separately), truncated/trailing
+data and compressed-stream length corruption.
 Memcpy ignores compressor/version/shuffle dispatch fields; these cases must
 succeed with exact values. Plain or memcpy payload changes are valid data and
 must return the changed value, not an invented integrity failure. This table

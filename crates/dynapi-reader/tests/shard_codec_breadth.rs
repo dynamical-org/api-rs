@@ -201,6 +201,7 @@ fn mutations(case: &Case) -> Vec<(&'static str, Vec<u8>, bool)> {
         ("compressor", 2, case.a[2] ^ 0x20),
         ("format_version", 1, 99),
         ("shuffle", 2, case.a[2] ^ 1),
+        ("bitshuffle_bit", 2, case.a[2] ^ 0x04),
     ] {
         let mut frame = case.a.clone();
         frame[offset] = value;
@@ -236,7 +237,7 @@ async fn every_codec_level_shuffle_and_layout_enforces_frame_header_policy_inclu
             }
         }
     }
-    assert_eq!(records.len(), (62 * 13 + 3) * 3);
+    assert_eq!(records.len(), (62 * 14 + 3) * 3);
     let reader = fixture.reader().await;
     for (path, accepted, changed) in records {
         let result = reader
@@ -303,17 +304,33 @@ async fn every_sharded_codec_level_shuffle_and_frame_rejects_corrupt_indexes_eve
                 fixture
                     .array(&path, &meta(&case, Some(start)), Some(payload))
                     .await;
-                paths.push(path);
+                let message = match mutation {
+                    "overlap" => Some("Payload overlaps shard index or exceeds data bounds"),
+                    "overflow" => Some("Shard range arithmetic overflow"),
+                    "half_missing" | "outside" | "unselected" => {
+                        Some("Invalid shard range ordering or bounds")
+                    }
+                    _ => None,
+                };
+                paths.push((path, message));
             }
         }
     }
     assert_eq!(paths.len(), 63 * 2 * 7);
     let reader = fixture.reader().await;
-    for path in paths {
+    for (path, expected_message) in paths {
         let error = reader
             .read_dataset_selection(&path, &[Selector::Index(0)], None)
             .await
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Decode, "{path}: {error}");
+        if let Some(expected) = expected_message {
+            assert!(
+                error
+                    .message
+                    .contains(&format!("Payload rejected before decode: {expected}")),
+                "{path}: {error}"
+            );
+        }
     }
 }

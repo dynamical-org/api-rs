@@ -93,6 +93,18 @@ async fn scalar_zstd_frame_matrix_rejects_unsupported_headers_sizes_and_corrupti
     ] {
         let mut frame = valid.clone();
         frame[index] = value;
+        if name == "unknown_content_size" {
+            // Keep the non-single-segment window at 1 KiB so only FCS is absent.
+            frame[5] = 0;
+            assert_eq!(
+                zstd::zstd_safe::get_frame_content_size(&frame).unwrap(),
+                None
+            );
+            assert_eq!(
+                zstd::bulk::decompress(&frame, 8).unwrap(),
+                123i64.to_le_bytes()
+            );
+        }
         cases.push((name, frame));
     }
     // Content size says eight, but the final raw block decodes seven bytes.

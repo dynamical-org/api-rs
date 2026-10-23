@@ -143,7 +143,10 @@ outside this allowlist:
   1 KiB, and the decoder also sets WindowLogMax(10). See D-encb-1 for the explicit
   header check, since fixed-buffer decoding can bypass that decoder parameter. Other standalone Zstd
   layouts remain excluded. The existing C-backed Zstd dependency is now direct;
-  this adds no package versions to the lockfile.
+  this adds no package versions to the lockfile. The existing attestation also
+  requires the format's unused header bit to be zero. This intentionally rejects
+  frames a general Zstd decoder may accept while ignoring that bit; it is stricter
+  than the reference Python service, rather than an invalid-format requirement.
 - The dataset entry point additionally admits rank-one int16 `bytes` little-endian
   + standalone `zstd` with exactly `{"level":0,"checksum":false}`, for member
   coordinates. Full padded chunks are at most 128 decoded bytes; frames are at
@@ -324,7 +327,9 @@ constructing an Icechunk range or slicing inline data. Full-shard decode is allo
 only for bounded single-inner shards, whose index and frame are checked first.
 Partial reads retain at most one validated index and fetch/decode only touched inner
 payloads. Migration checks covered CRC-valid malformed inline indexes in debug
-and release builds; there is no panic-catching fallback.
+and release builds; there is no panic-catching fallback. Validating every entry
+is intentionally stricter than the reference Python service: Rust rejects an out-of-bounds
+unselected entry even when all selected payloads would otherwise be readable.
 
 ## Catalog units and staging ledger
 

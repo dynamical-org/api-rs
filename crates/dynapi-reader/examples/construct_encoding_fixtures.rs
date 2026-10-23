@@ -33,6 +33,12 @@ fn frames(root: &Path, name: &str, raw: &[u8], width: usize) -> Value {
                 0,
                 "{name}/{key} must be genuinely compressed"
             );
+        } else {
+            assert_ne!(
+                encoded[2] & 2,
+                0,
+                "{name}/{key} must use memcpy at level zero"
+            );
         }
         assert!(encoded[3] as usize == width || encoded[3] == 1);
         let file = format!("{name}-{key}.blosc");

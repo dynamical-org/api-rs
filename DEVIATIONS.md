@@ -619,6 +619,9 @@ until virtual GRIB support is implemented. No new public status is introduced.
 - Judgement: enforce the documented small-window policy independently of the
   native decoder's execution path. Scalar frames within that policy retain their
   values; no dependency, public API or allocation limit is added or increased.
+- Qualification: the 2026-10-23 live catalog inventory found 63 scalar int64
+  frames, all 17-byte single-segment frames declaring eight output bytes. None
+  carries a window descriptor, so this guard affects none of those frames.
 - Tests: `scalar_zstd_window_descriptor_cannot_bypass_the_one_kib_decode_bound`
   accepts descriptor zero and rejects descriptors 1 (1,152 bytes) and 0xa0
   (1 GiB). Removing the header check makes this regression fail. The scalar
