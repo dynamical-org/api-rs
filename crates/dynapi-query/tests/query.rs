@@ -312,3 +312,40 @@ fn lead_limit_conversion_precedes_addition_and_bound_conversion_follows_it() {
     assert_eq!(reader.reads, 0);
     assert_eq!((budget.used_values, budget.used_read_values), (0, 0));
 }
+
+#[test]
+fn geographic_xy_global_grid_normalizes_both_hemispheres_and_seam() {
+    let view = DatasetView {
+        dimensions: [("y".into(), 721), ("x".into(), 1440)].into(),
+        coordinates: [
+            (
+                "y".into(),
+                Coordinate::Numeric((0..721).map(|i| -90. + i as f64 / 4.).collect()),
+            ),
+            (
+                "x".into(),
+                Coordinate::Numeric((0..1440).map(|i| i as f64 / 4.).collect()),
+            ),
+        ]
+        .into(),
+        spatial_crs: Some(SpatialCrs::Geographic),
+        ..DatasetView::default()
+    };
+    // Explicit quarter-degree grid expectations, including ties (first index wins).
+    for (latitude, longitude, y, x, selected_lat, selected_lon) in [
+        (43.2, -100.1, 533, 1040, 43.25, 260.),
+        (-33.9, 151.2, 224, 605, -34., 151.25),
+        (-90., -180., 0, 720, -90., 180.),
+        (90., 180., 720, 720, 90., 180.),
+        (0., -0.1, 360, 0, 0., 0.),
+        (0., -0.25, 360, 1439, 0., 359.75),
+        (0.125, 0.125, 360, 0, 0., 0.),
+    ] {
+        let point = select_nearest_point(&view, latitude, longitude).unwrap();
+        assert_eq!(point.indexers, [("y".into(), y), ("x".into(), x)]);
+        assert_eq!(
+            (point.latitude, point.longitude),
+            (selected_lat, selected_lon)
+        );
+    }
+}
