@@ -89,3 +89,39 @@ privacy, unchanged direct products, gated stubs, catalog failure/refresh, expiry
 redirect/timeout/body bounds, cache capacity and coalesced detached tasks. The fake
 proxy uses only loopback HTTP and obviously fictional credentials. No test calls
 the production check endpoint.
+
+## Historical canonical snapshot recipe
+
+`historical_snapshots.rs` copies the committed `forecast/repository` input from
+`dynapi-dataset/tests/fixtures` into a private temporary directory. The source
+repository is never written. Tests use the Icechunk Rust API to commit A to main,
+obtain A's canonical link from a forecast POST, then commit B to the same main.
+These are real repository commits served through the loopback fixture host.
+
+Both snapshots retain the input latitude `[44, 42, 40, 38]`, longitude
+`[0, 60, 120, 180, 240, 300]` and geographic CRS. A removes the input temperature,
+static and auxiliary valid-time arrays. It resets root group attributes to only
+`{"coordinates":"spatial_ref"}` and count attributes to `{}`. It replaces
+init/lead/count metadata and payloads with one uncompressed little-endian bytes
+chunk per array:
+
+- A: init times 2026-07-30 00:00 and 06:00 UTC (int64 epoch seconds), lead times
+  `[0, 3600]` seconds (float64, attested CF duration attributes including encoded
+  NaN `_FillValue`), count shape/chunk `[2, 2, 4, 6]`.
+- B: append the 12:00 run and 7200-second lead, giving shape/chunk `[3, 3, 4, 6]`.
+  Replace all count values and add float64 `humidity` with that same shape.
+- With run index `r`, lead index `l` and flat spatial index `s = 6*y + x`, A's
+  int64 count is `1000 + 100*r + 10*l + s`; B's is
+  `2000 + 100*r + 10*l + s`. B's humidity is `50 + 10*r + l + s`, with unit `%`.
+  At grid `(0, 0)`, A's 00:00 count is `[1000, 1010]`; B's 00:00 count is
+  `[2000, 2010, 2020]`, and B's 12:00 count/humidity are
+  `[2200, 2210, 2220]` / `[70, 71, 72]`.
+
+The fixed catalog advertises count and humidity throughout, modeling a current
+catalog that lists a variable absent from an older snapshot. Tests own A's full
+canonical JSON bytes, independently hashed ETag and immutable headers. Fake-clock
+steps 29/30 exercise main's TTL; a two-entry LRU holds A/B pinned handles together,
+then evicts and reopens A while main remains B. Later revalidation must preserve
+B and never expire pinned A. Snapshot errors, missing A humidity/run/lead bounds,
+and B's added schema/time values have explicit assertions. No saved service
+outputs, Python or external network are needed.
