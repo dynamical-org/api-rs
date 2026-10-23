@@ -23,6 +23,13 @@ allocates an input buffer. Its qualification targets, rounded up to 64 KiB, are:
 - F = 4E + 2 MiB, with E the complete logical message length.
 - X = 8D + 64 KiB, with D the full padded f64 plane, not selected output bytes.
 
+At maximum D (58,720,256 bytes), the 5.3 all-but-one bitmap witness measured
+128,180,508 peak live bytes including its 2,351,315-byte owned input. The peak
+minus input was 125,829,193 bytes, about 2.14D (roughly 2.2D rounded upward),
+beside X = 469,827,584 bytes. This witness includes row/longitude ordering,
+f64 scale/offset and final byte conversion; preflight alone requested zero bytes.
+This measurement does not tighten X or establish bounds for other profiles.
+
 The library does not acquire permits. A future caller must fund the input backing,
 decode/reorder/scale and result/scatter lifetime before those operations. Borrowing
 a short slice of a larger allocation does not charge or release that larger backing;
@@ -53,8 +60,9 @@ bitmap streams that would lose missing masks. No constant output is synthesized.
 Packing 5.3 admits first/second-order spatial differencing, descriptors of 1–4
 octets, group-table/effective value widths up to 31 bits, and no/primary/secondary
 missing management. Missing values do not advance the reconstruction state.
-Zero groups/descriptors are deliberately rejected before the pinned bit loader can
-panic. Zero group-reference width alone is allowed; it is not a constant test.
+Zero groups are deliberately rejected as constants before the pinned bit loader
+can panic. Zero descriptor octets are an unsupported descriptor width, not a
+constant field. Zero group-reference width alone is allowed; it is not a constant test.
 Groups must have positive lengths and their sum must equal the packed count.
 Previous/predefined bitmap reuse is not admitted.
 
@@ -92,8 +100,12 @@ Fixtures are constructed in Rust from explicit section recipes and independently
 stated values: signed scale factors, first/second differences, missing groups,
 bitmap/padding, row/longitude order, f64 parameter precision and typed constant
 rejections. No reference-service captures or Python/network dependency is used.
-Deterministic truncation/byte mutations and arithmetic boundaries exercise rejection
-before unchecked constructors; catching a panic is only a test oracle.
+Exact-error fixtures defend bitmap popcount in both directions, group totals
+before resize/bitmap expansion, ignored zero-bit multi-group length references,
+descriptor widths above four octets and oversized zero-width groups before value
+iteration. Deterministic truncation/byte mutations sample geographic, Lambert and
+bitmap specimens; they check for panics and do not prove exhaustive rejection.
+Catching a panic is only a test oracle.
 
 The test allocator records current-thread requested live bytes and their peak,
 including conservative old/new overlap during reallocation. It separately records

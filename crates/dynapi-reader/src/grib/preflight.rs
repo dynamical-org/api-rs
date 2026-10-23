@@ -148,8 +148,11 @@ fn spatial(p: &[u8], data: &[u8], points: usize) -> Result<()> {
     }
     let groups = u32_at(p, 31)? as usize;
     let octets = p[48] as usize;
-    if groups == 0 || octets == 0 {
+    if groups == 0 {
         return Err(Error::Constant);
+    }
+    if octets == 0 {
+        return Err(Error::Unsupported("zero spatial descriptor octets"));
     }
     if groups > points {
         return Err(Error::Unsupported("more groups than packed points"));

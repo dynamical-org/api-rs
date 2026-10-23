@@ -145,7 +145,7 @@ fn constant_and_other_templates_rejected_before_upstream() {
     bytes[p + 48] = 0;
     assert_eq!(
         decode(&bytes, profile(&[2, 3])).unwrap_err(),
-        Error::Constant
+        Error::Unsupported("zero spatial descriptor octets")
     );
     for template in [2, 40, 41, 42] {
         bytes[p + 9..p + 11].copy_from_slice(&(template as u16).to_be_bytes());
@@ -292,7 +292,116 @@ fn exact_i32_u32_and_f32_implementation_hazards() {
 }
 
 #[test]
+fn bitmap_popcount_must_equal_packed_count_in_both_directions() {
+    // Five packed values on a six-point plane. Neither an extra set bit nor a
+    // missing set bit may be repaired by indexing/truncating the packed values.
+    for mask in [[true; 6], [true, true, false, true, false, true]] {
+        let mut bytes = spatial(2, 3, &[group(1, 0, &[0; 5])], [5, 0, 0], 1, 1, 0);
+        let p = section_range(&bytes, 5).start;
+        u32_at(&mut bytes, p + 5, 5);
+        replace(&mut bytes, 6, bitmap(&mask));
+        assert_eq!(
+            decode(&bytes, profile(&[2, 3])).unwrap_err(),
+            Error::Malformed("bitmap packed count")
+        );
+    }
+}
+
+#[test]
+fn group_lengths_must_equal_packed_count_before_resize_or_bitmap() {
+    // Section 5 promises six values but the only group has five. Without this
+    // rejection, resize pads a zero; with six bitmap bits, expansion indexes
+    // past the five unpacked values.
+    let mut bytes = spatial(2, 3, &[group(1, 0, &[0; 5])], [5, 0, 0], 1, 1, 0);
+    for masked in [false, true] {
+        if masked {
+            replace(&mut bytes, 6, bitmap(&[true; 6]));
+        }
+        assert_eq!(
+            decode(&bytes, profile(&[2, 3])).unwrap_err(),
+            Error::Malformed("group count differs from packed points")
+        );
+    }
+}
+
+#[test]
+fn multiple_groups_with_zero_length_bits_cannot_use_ignored_reference() {
+    let mut bytes = spatial(
+        2,
+        3,
+        &[group(1, 0, &[0; 3]), group(2, 0, &[0; 3])],
+        [5, 0, 0],
+        1,
+        1,
+        0,
+    );
+    let p = section_range(&bytes, 5).start;
+    u32_at(&mut bytes, p + 37, 3);
+    bytes[p + 46] = 0;
+    // First-order descriptors [5, 0], two 4-bit references [1, 2],
+    // two byte-aligned 5-bit zero widths, and no length/value bits.
+    let mut data = section(7, 10);
+    data[5..].copy_from_slice(&[5, 0, 0x12, 0, 0]);
+    replace(&mut bytes, 7, data);
+    assert_eq!(
+        decode(&bytes, profile(&[2, 3])).unwrap_err(),
+        Error::Unsupported("pinned decoder ignores zero-bit length reference")
+    );
+}
+
+#[test]
+fn descriptor_width_above_u32_is_rejected_before_signed_conversion() {
+    let mut bytes = spatial(2, 3, &[group(1, 0, &[0; 6])], [5, 0, 0], 2, 1, 0);
+    let p = section_range(&bytes, 5).start;
+    bytes[p + 48] = 5;
+    // Enough bytes for all three five-octet descriptors: a short-payload
+    // rejection must not mask the unsupported 40-bit signed conversion.
+    replace(&mut bytes, 7, section(7, 20));
+    assert_eq!(
+        decode(&bytes, profile(&[2, 3])).unwrap_err(),
+        Error::Unsupported("spatial packing profile")
+    );
+}
+
+#[test]
+fn excessive_zero_width_group_is_rejected_before_value_iteration() {
+    let mut bytes = spatial(
+        2,
+        3,
+        &[group(1, 0, &[0; 3]), group(1, 0, &[0; 3])],
+        [5, 0, 0],
+        1,
+        1,
+        0,
+    );
+    let p = section_range(&bytes, 5).start;
+    bytes[p + 41] = 255;
+    // Two descriptor bytes, one reference byte, two width bytes. The first
+    // 16-bit length times increment 255 claims 16,711,425 zero-width values.
+    let p = section_range(&bytes, 7).start;
+    bytes[p + 10..p + 12].copy_from_slice(&u16::MAX.to_be_bytes());
+    let start = std::time::Instant::now();
+    assert_eq!(
+        decode(&bytes, profile(&[2, 3])).unwrap_err(),
+        Error::Malformed("group count exceeds packed points")
+    );
+    // The exact error above pins the early guard independently of this loose
+    // timing ceiling, which only rules out expensive value-by-value scans.
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+}
+
+#[test]
 fn deterministic_byte_mutations_do_not_panic() {
+    let mut masked = spatial(2, 3, &[group(1, 0, &[0; 3])], [5, 0, 0], 1, 1, 0);
+    let p = section_range(&masked, 5).start;
+    u32_at(&mut masked, p + 5, 3);
+    replace(
+        &mut masked,
+        6,
+        bitmap(&[true, false, true, false, true, false]),
+    );
+    let mut projected = simple(2, 3, 8, 0., vec![0, 1, 2, 3, 4, 5]);
+    replace(&mut projected, 3, lambert(2, 3, 64));
     let specimens = [
         simple(2, 2, 2, 10., vec![0b00011011]),
         spatial(
@@ -304,6 +413,8 @@ fn deterministic_byte_mutations_do_not_panic() {
             1,
             2,
         ),
+        masked,
+        projected,
     ];
     for (index, bytes) in specimens.iter().enumerate() {
         let shape = if index == 0 { [2, 2] } else { [2, 3] };
@@ -319,6 +430,43 @@ fn deterministic_byte_mutations_do_not_panic() {
             }
         }
     }
+}
+
+#[test]
+fn maximum_decoded_spatial_bitmap_peak() {
+    let (ny, nx) = (1792, 4096);
+    let points = ny * nx;
+    // All but one point is present, exercising near-maximum packed/map overlap.
+    // Zero-width groups encode sixteen values each, except the final fifteen.
+    let mut groups: Vec<_> = (0..points / 16).map(|_| group(1, 0, &[0; 16])).collect();
+    groups.last_mut().unwrap().raw.pop();
+    let mut bytes = spatial(ny, nx, &groups, [1, 0, -1], 1, 2, 0);
+    let p = section_range(&bytes, 5).start;
+    u32_at(&mut bytes, p + 5, (points - 1) as u32);
+    let mask: Vec<_> = (0..points).map(|index| index != 0).collect();
+    replace(&mut bytes, 6, bitmap(&mask));
+    let p = section_range(&bytes, 3).start;
+    bytes[p + 71] = 64;
+    // Preflight has no dynamic scratch even at the maximum decoded size.
+    let measurement = crate::allocation_tests::Measurement::start();
+    preflight::validate(&bytes, profile(&[ny, nx])).unwrap();
+    assert_eq!(measurement.counts().total, 0);
+    drop(measurement);
+    let counts = allocation_sample(&bytes, &[ny, nx], true);
+    let charge = charges(bytes.len() as u64, profile(&[ny, nx])).unwrap();
+    assert!(!counts.foreign_deallocation);
+    assert_eq!(counts.live, 0);
+    assert!(counts.peak <= bytes.len() + charge.decode);
+    eprintln!(
+        "GRIB max-D spatial bitmap E={} D={} peak={} peak-minus-input={} cumulative={} F={} X={}",
+        bytes.len(),
+        MAX_DECODED_BYTES,
+        counts.peak,
+        counts.peak - bytes.len(),
+        counts.total,
+        charge.fetch,
+        charge.decode
+    );
 }
 
 fn allocation_sample(

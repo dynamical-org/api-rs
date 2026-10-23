@@ -46,6 +46,27 @@ pub(super) fn grid(ny: usize, nx: usize, scan: u8) -> Vec<u8> {
     bytes
 }
 
+pub(super) fn lambert(ny: usize, nx: usize, scan: u8) -> Vec<u8> {
+    let mut bytes = section(3, 81);
+    bytes[13] = 30;
+    u32_at(&mut bytes, 6, (ny * nx) as u32);
+    u32_at(&mut bytes, 30, nx as u32);
+    u32_at(&mut bytes, 34, ny as u32);
+    u32_at(&mut bytes, 59, 3_000_000);
+    bytes[64] = scan;
+    bytes
+}
+
+pub(super) fn bitmap(mask: &[bool]) -> Vec<u8> {
+    let mut bytes = section(6, 6 + mask.len().div_ceil(8));
+    for (index, &present) in mask.iter().enumerate() {
+        if present {
+            bytes[6 + index / 8] |= 1 << (7 - index % 8);
+        }
+    }
+    bytes
+}
+
 pub(super) fn simple(ny: usize, nx: usize, bits: u8, reference: f32, payload: Vec<u8>) -> Vec<u8> {
     let mut packing = section(5, 21);
     u32_at(&mut packing, 5, (nx * ny) as u32);
