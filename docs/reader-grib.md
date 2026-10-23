@@ -102,8 +102,13 @@ and retain an owned input inside the measurement through result byte conversion,
 and check zero remaining live bytes. Cases include maximum E and D, small and
 all-missing units, bitmap expansion, group tables, malformed input and four
 independent simultaneous calls. Fixture generators remain outside this ownership
-boundary; the actual unit input copy is included. The allocator flags untracked
-releases, which must be absent in qualified samples.
+boundary; the actual unit input copy is included. Byte-balance underflow is
+flagged, but this counter is not a pointer ownership tracker and cannot detect
+every release of an allocation made before measurement. The controlled samples
+therefore also require the source ownership audit: pre-existing fixture/profile
+backing remains alive outside the measured operation. The malformed-input probe
+separately measures additional allocations after borrowing existing bytes; it does
+not claim that its caller's retained input occupies zero bytes.
 
 These are Rust allocation and source-lifetime witnesses, not allocator fragmentation,
 RSS, upstream metadata/cache, shared pool, cancellation or transport proofs.
