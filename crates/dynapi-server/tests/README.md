@@ -166,3 +166,20 @@ identifiers, and the reader-error table across both POST and both canonical
 routes. Typed one-shot reader faults assert exact public responses and successful
 recovery, without leaking fixture diagnostics. These assertions are independent
 of any reference-service output and require no Python or external network.
+
+## Origin route contract
+
+`docs/route-contract.v1.json` at the repository root is generated from the server's
+single route inventory by the harness-only `route-contract` example. A unit test
+checks exact committed bytes and unique template/method entries. It describes
+origin operation intent and protocol behavior, without deployment admission data.
+
+`route_contract.rs` independently reads that committed metadata. Handler probes
+use packaged static/docs responses, a warmed fictional catalog and intentionally
+invalid data requests with exact domain/validation outcomes. A generic unmatched
+404 cannot stand in for a real data/catalog handler. Other probes hold all compute
+permits and assert method/HEAD/OPTIONS/slash behavior without catalog I/O. A final
+table covers all-path preflight before authentication and decoded-segment path
+boundaries. No external service, policy file or captured response is required.
+See the [generic ingress contract](../../../docs/ingress.md) for regeneration,
+header trust and deployment reachability ownership.

@@ -45,3 +45,7 @@ icechunk.workspace = true
 tempfile = "3"
 httparse = "1"
 tokio = { workspace = true, features = ["test-util"] }
+
+[[example]]
+name = "route-contract"
+required-features = ["harness"]
